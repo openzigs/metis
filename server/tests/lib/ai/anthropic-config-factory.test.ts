@@ -4,7 +4,7 @@
  *
  *   • `loadAIConfig` resolves `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`/
  *     `ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL` into the sdkProvider config, with
- *     `claude-sonnet-4-6` as the bare default model.
+ *     `claude-sonnet-5-5` as the bare default model.
  *   • The public-LLM-host guard does NOT block api.anthropic.com here.
  *   • The factory builds an `AnthropicProvider` and
  *     short-circuits to the offline stub when offline.
@@ -33,6 +33,10 @@ vi.mock("@anthropic-ai/sdk", () => {
 import { loadAIConfig } from "../../../src/lib/ai/config.js";
 import { buildProvider, __resetProviderSingleton } from "../../../src/lib/ai/providers/factory.js";
 import { AnthropicProvider } from "../../../src/lib/ai/providers/anthropic-provider.js";
+import { anthropicThinkingOff } from "../../../src/lib/ai/providers/anthropic-thinking-off.js";
+import { ANTHROPIC_DEFAULT_MODEL_ID } from "../../../src/lib/ai/model-router.js";
+import { lookupModelMaxOutputTokens } from "../../../src/lib/ai/model-output-limits.js";
+import { resolveRate } from "../../../src/lib/finops/provider-rates.js";
 
 const ENV_KEYS = [
   "AI_PROVIDER",
@@ -66,13 +70,27 @@ afterEach(() => {
 });
 
 describe("loadAIConfig — native anthropic (#285)", () => {
-  it("resolves ANTHROPIC_API_KEY and defaults to the bare claude-sonnet-4-6", () => {
+  it("resolves ANTHROPIC_API_KEY and defaults to the bare claude-sonnet-5-5 (#2511)", () => {
     process.env.AI_PROVIDER = "anthropic";
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
     const cfg = loadAIConfig(process.env);
     expect(cfg.provider).toBe("anthropic");
-    expect(cfg.model).toBe("claude-sonnet-4-6");
+    expect(cfg.model).toBe("claude-sonnet-5-5");
     expect(cfg.sdkProvider).toMatchObject({ type: "anthropic", apiKey: "sk-ant-test" });
+  });
+
+  it("config and provider share one default, and the platform covers it (#2511)", () => {
+    process.env.AI_PROVIDER = "anthropic";
+    process.env.ANTHROPIC_API_KEY = "sk-ant-test";
+    const cfg = loadAIConfig(process.env);
+    const provider = new AnthropicProvider({ apiKey: "sk-ant-test" });
+    expect(cfg.model).toBe(ANTHROPIC_DEFAULT_MODEL_ID);
+    expect(provider.model).toBe(ANTHROPIC_DEFAULT_MODEL_ID);
+    expect(ANTHROPIC_DEFAULT_MODEL_ID).toBe("claude-sonnet-5-5");
+    // The default must have a thinking-off spelling, an output ceiling and a price.
+    expect(anthropicThinkingOff(cfg.model, false)).toEqual({ kind: "between-tools" });
+    expect(lookupModelMaxOutputTokens(cfg.model)).not.toBeNull();
+    expect(resolveRate("anthropic", cfg.model, { env: {} })).not.toBeNull();
   });
 
   it("honours ANTHROPIC_MODEL override (bare id)", () => {

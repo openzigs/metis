@@ -428,10 +428,17 @@ describe("AnthropicProvider request building (non-cache paths)", () => {
   });
 
   it("disableThinking sends thinking: disabled and no effort (#25)", async () => {
-    await provider().chat(messages, { disableThinking: true, reasoningEffort: "high" });
+    // Pinned to a model that accepts `disabled`: the default (Sonnet 5.5) does not (#2511).
+    const p = new AnthropicProvider({ apiKey: "test-key", model: "claude-sonnet-4-6" });
+    await p.chat(messages, { disableThinking: true, reasoningEffort: "high" });
     const body = lastCreateBody();
     expect(body.thinking).toEqual({ type: "disabled" });
     expect(body).not.toHaveProperty("output_config");
+  });
+
+  it("the default model (Sonnet 5.5) turns thinking off with between_tools (#2511)", async () => {
+    await provider().chat(messages, { disableThinking: true, reasoningEffort: "high" });
+    expect(lastCreateBody().thinking).toEqual({ type: "between_tools" });
   });
 
   it("uses DeepSeek's documented enabled toggle, not adaptive, on its endpoint (#25)", async () => {
@@ -485,7 +492,7 @@ describe("AnthropicProvider misc surface", () => {
 
   it("models() falls back to the default model on error", async () => {
     modelsListSpy.mockRejectedValue(new Error("boom"));
-    await expect(provider().models()).resolves.toEqual(["claude-sonnet-4-6"]);
+    await expect(provider().models()).resolves.toEqual(["claude-sonnet-5-5"]);
   });
 
   it("ping() returns true when the probe succeeds and false on error", async () => {

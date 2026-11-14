@@ -8,7 +8,7 @@
  *     Anthropic's Messages API.
  *
  * It talks directly to `api.anthropic.com` (or a configured `baseURL`) using
- * BARE model ids (`claude-opus-4-8`, `claude-sonnet-4-6`, `claude-haiku-4-5`).
+ * BARE model ids (`claude-opus-4-8`, `claude-sonnet-5-5`, `claude-haiku-4-5`).
  *
  * Auth: an Anthropic **API key** (`ANTHROPIC_API_KEY`, pay-per-token). An OAuth
  * developer token (`authToken`) and a custom `baseURL` are also supported. A
@@ -29,6 +29,7 @@ import { lastUserText, traceModelChat, traceModelStream } from "../../otel/genai
 import { AIProviderError } from "../errors.js";
 import { isAnthropicApiEndpoint, isDeepSeekEndpoint } from "./anthropic-endpoint.js";
 import { anthropicThinkingOff } from "./anthropic-thinking-off.js";
+import { ANTHROPIC_DEFAULT_MODEL_ID } from "../model-router.js";
 import { baseUrlBillsAsAnthropic } from "../../finops/provider-rates.js";
 import type { ConfigService } from "../../config/config-service.js";
 
@@ -99,8 +100,8 @@ export function normalizeAnthropicModelId(id: string | undefined): string {
   return out;
 }
 
-/** Bare (non-Bedrock) default — mirrors the Bedrock default tier. */
-const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6";
+/** Bare (non-Bedrock) default — the one constant shared with `config.ts` (#2511). */
+const DEFAULT_ANTHROPIC_MODEL = ANTHROPIC_DEFAULT_MODEL_ID;
 /** Messages API non-streaming default budget (#285). */
 export const ANTHROPIC_DEFAULT_MAX_TOKENS = 16_000;
 const DEFAULT_MAX_TOKENS = ANTHROPIC_DEFAULT_MAX_TOKENS;
@@ -116,7 +117,7 @@ export interface AnthropicProviderOptions {
   authToken?: string;
   /** Optional base URL override (`ANTHROPIC_BASE_URL`); defaults to the SDK's. */
   baseUrl?: string;
-  /** Default model id (bare). Defaults to `claude-sonnet-4-6`. */
+  /** Default model id (bare). Defaults to `claude-sonnet-5-5`. */
   model?: string;
   /** Default non-streaming `max_tokens`. */
   defaultMaxTokens?: number;

@@ -155,7 +155,7 @@
         "provider": "cloud",
         "kind": "judge",
         "chars": 8704,
-        "sha256": "d273d96f3285f608ee010f7dea3c8d38fe93a05f419f8f495f692ac7d4b19a9b"
+        "sha256": "3abadc2b8e1593b0673fe4dd2df2bd5e8cdd8a172dfb5d4daa16685888c64cce"
       },
       {
         "provider": "cloud",
@@ -173,7 +173,7 @@
         "provider": "cloud",
         "kind": "judge",
         "chars": 11418,
-        "sha256": "ad3090e7a7012bde13b34378d9cdf1afffd346c160781e06dbac434e561367c3"
+        "sha256": "c1320b05f2c1dea2e8afacb2fe10273d8e88e125ea1cc244991e03d3180402ea"
       },
       {
         "provider": "local",
@@ -509,7 +509,7 @@
         "sectionLabel": "Overview & Domain",
         "sectionIndex": 0,
         "providerKind": "anthropic",
-        "model": "claude-sonnet-4-6",
+        "model": "claude-sonnet-5-5",
         "factsSourceIds": [
           "facts:src_m00:0",
           "facts:src_m01:1",
@@ -540,7 +540,7 @@
         "sectionLabel": "Core Business Capabilities",
         "sectionIndex": 1,
         "providerKind": "anthropic",
-        "model": "claude-sonnet-4-6",
+        "model": "claude-sonnet-5-5",
         "factsSourceIds": [
           "facts:src_m00:0",
           "facts:src_m01:1",
@@ -1096,7 +1096,7 @@
             "sectionLabel": "Overview & Domain",
             "sectionIndex": 0,
             "providerKind": "anthropic",
-            "model": "claude-sonnet-4-6",
+            "model": "claude-sonnet-5-5",
             "factsSourceIds": [
               "facts:src_m00:0",
               "facts:src_m01:1",
@@ -1209,10 +1209,10 @@
             "flow": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "grounding": "a9073553fdd0ffc6a783a1bf5e0dba9aabbcd980f20680b9ef22088c05d62598",
             "context": "b12cb08396244ae66faeb8567845799c36768cc489e74170d12df44750c43304",
-            "config": "dc40f6c28524fcdeb255212816e4811784e3a2d90bfdeddb43926500accbc0f7",
+            "config": "16980da08d48a90bf9b11b2be503ca7e3f02f9579b3d79ebe9da7df3918acd1e",
             "prompts": "a51ec638161d810d3494c74857b120bdee630904f5466521ec9f06de3e0aa7c5"
           },
-          "outputHash": "b286dea70b49fa9d10267532789a873c34b32c2792fdc493f61ba8488c0fdfae"
+          "outputHash": "3cdccde13f9af7e3e63800b0e4b1addaad304a92cc21578657a47cd2f35b346e"
         },
         {
           "markdown": "## Core Business Capabilities\n\n### About m00\n\nm00 rule 0 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [rag:doc:0]\n\nm00 rule 1 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:0]\n\nm00 rule 2 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m01:1]\n\nm00 rule 3 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m02:2]\n\nm00 rule 4 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m03:3]\n\nm00 rule 5 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m04:4]\n\nm00 rule 6 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m05:5]\n\nm00 rule 7 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m06:6]\n\n#### Limits of m00\n\n| Limit | Value |\n| --- | --- |\n| m00 page size | 100 |\n| timeout | 30 |\n\n### More about m00\n\nm00 rule 8 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m07:7]\n\nm00 rule 9 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m08:8]\n\nm00 rule 10 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:canon:9]\n\nm00 rule 11 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [rag:doc:0]\n\nm00 rule 12 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:0]\n\nm00 rule 13 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m01:1]\n\nm00 rule 14 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m02:2]\n\nm00 rule 15 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m03:3]\n\n### About m01\n\nm01 rule 0 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:0]\n\nm01 rule 1 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m01:1]\n\nm01 rule 2 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m02:2]\n\nm01 rule 3 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m03:3]\n\nm01 rule 4 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m04:4]\n\nm01 rule 5 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m05:5]\n\nm01 rule 6 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m06:6]\n\nm01 rule 7 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m07:7]\n\n#### Limits of m01\n\n| Limit | Value |\n| --- | --- |\n| m01 page size | 100 |\n| timeout | 30 |\n\n### More about m01\n\nm01 rule 8 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m08:8]\n\nm01 rule 9 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:canon:9]\n\nm01 rule 10 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [rag:doc:0]\n\nm01 rule 11 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:0]\n\nm01 rule 12 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m01:1]\n\nm01 rule 13 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m02:2]\n\nm01 rule 14 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m03:3]\n\nm01 rule 15 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m04:4]\n\n### About m02\n\nm02 rule 0 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m01:1]\n\nm02 rule 1 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m02:2]\n\nm02 rule 2 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m03:3]\n\nm02 rule 3 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m04:4]\n\nm02 rule 4 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m05:5]\n\nm02 rule 5 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m06:6]\n\nm02 rule 6 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m07:7]\n\nm02 rule 7 as the cloud model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m08:8]\n\n#### Limits of m02\n\n| Limit | Value |\n| --- | --- |\n| m02 page size | 100 |\n| timeout | 30 |\n\n> **Shortened for length.** This section is limited to about 9k characters (DOCS_GEN_SECTION_MAX_CHARS / DOCS_GEN_DOCUMENT_MAX_CHARS). 15 further topics were left out: More about m02; About m03; More about m03; About m04; More about m04; About m05; More about m05; About m06; More about m06; About m07; More about m07; About m08; and 3 more. Narrow the document with path prefixes, or raise the limit, for the full detail.",
@@ -1275,7 +1275,7 @@
             "sectionLabel": "Core Business Capabilities",
             "sectionIndex": 1,
             "providerKind": "anthropic",
-            "model": "claude-sonnet-4-6",
+            "model": "claude-sonnet-5-5",
             "factsSourceIds": [
               "facts:src_m00:0",
               "facts:src_m01:1",
@@ -1405,10 +1405,10 @@
             "flow": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
             "grounding": "e44c16624960a7488338e1074d1af4a6a3af137784fbc235cc3af91fe8972282",
             "context": "b9dca79de26b52e3798e2ef0549be440c2222d1aa361c054a766ce9b26a1b711",
-            "config": "dc40f6c28524fcdeb255212816e4811784e3a2d90bfdeddb43926500accbc0f7",
+            "config": "16980da08d48a90bf9b11b2be503ca7e3f02f9579b3d79ebe9da7df3918acd1e",
             "prompts": "2e183b9ca16865daef779cf8d0a2a6bb29c41c1f6b1e2226c59259af475949da"
           },
-          "outputHash": "abdb09b7049854e72c7b249ce3957f177b7843bd56e403f7d825238edc49f3b2"
+          "outputHash": "f060959ab58e7186e2f979086e676e92f7597649c05c827dcdbc655582a65eb2"
         },
         {
           "markdown": "## Business Rules & Policies\n\n### About m00\n\nm00 rule 0 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [rag:doc:0]\n\nm00 rule 1 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:0]\n\nm00 rule 2 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [rag:doc:0]\n\nm00 rule 3 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:0]\n\nm00 rule 4 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [rag:doc:0]\n\nm00 rule 5 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:0]\n\nm00 rule 6 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [rag:doc:0]\n\nm00 rule 7 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:0]\n\nm00 rule 8 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [rag:doc:0]\n\nm00 rule 9 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:0]\n\nm00 rule 10 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [rag:doc:0]\n\nm00 rule 11 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:0]\n\nm00 rule 1 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:1]\n\nm00 rule 3 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:1]\n\nm00 rule 5 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:1]\n\nm00 rule 7 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:1]\n\nm00 rule 9 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:1]\n\nm00 rule 11 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:1]\n\nm00 rule 1 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:2]\n\nm00 rule 2 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:3]\n\nm00 rule 3 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:4]\n\nm00 rule 5 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:2]\n\nm00 rule 6 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:3]\n\nm00 rule 7 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:4]\n\nm00 rule 9 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:2]\n\nm00 rule 10 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:3]\n\nm00 rule 11 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:4]\n\nm00 rule 13 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:2]\n\nm00 rule 14 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:3]\n\nm00 rule 15 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:4]\n\nm00 rule 17 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:2]\n\nm00 rule 18 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:3]\n\nm00 rule 19 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:4]\n\n#### Limits of m00\n\n| Limit | Value |\n| --- | --- |\n| m00 page size | 100 |\n| timeout | 30 |\n\n---\n\n### More about m00\n\nm00 rule 12 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [rag:doc:0]\n\nm00 rule 13 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:0]\n\nm00 rule 14 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [rag:doc:0]\n\nm00 rule 15 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:0]\n\nm00 rule 16 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [rag:doc:0]\n\nm00 rule 17 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:0]\n\nm00 rule 18 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [rag:doc:0]\n\nm00 rule 19 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [facts:src_m00:0]\n\nm00 rule 20 as the local model wrote it. This policy applies to every request the capability receives today. This policy applies to every request the capability receives today. [rag:doc:0]\n\n> **Shortened for length.** This section is limited to about 9k characters (DOCS_GEN_SECTION_MAX_CHARS / DOCS_GEN_DOCUMENT_MAX_CHARS). 18 further topics were left out: About m01; More about m01; About m02; More about m02; About m03; More about m03; About m04; More about m04; About m05; More about m05; About m06; More about m06; and 6 more. Narrow the document with path prefixes, or raise the limit, for the full detail.",
@@ -3131,7 +3131,7 @@
         "provider": "cloud",
         "kind": "judge",
         "chars": 8704,
-        "sha256": "d273d96f3285f608ee010f7dea3c8d38fe93a05f419f8f495f692ac7d4b19a9b"
+        "sha256": "3abadc2b8e1593b0673fe4dd2df2bd5e8cdd8a172dfb5d4daa16685888c64cce"
       },
       {
         "provider": "cloud",
@@ -3149,7 +3149,7 @@
         "provider": "cloud",
         "kind": "judge",
         "chars": 11418,
-        "sha256": "ad3090e7a7012bde13b34378d9cdf1afffd346c160781e06dbac434e561367c3"
+        "sha256": "c1320b05f2c1dea2e8afacb2fe10273d8e88e125ea1cc244991e03d3180402ea"
       },
       {
         "provider": "local",
@@ -3239,7 +3239,7 @@
         "provider": "cloud",
         "kind": "judge",
         "chars": 7782,
-        "sha256": "04ba9194db10a1cc928743dbbb651314a5f90366fb9c8b842f5f43391be1b67b"
+        "sha256": "41f99094deb6cb6102699ae2325699b621e1233cf9a4816431b48c4c44e4ef95"
       },
       {
         "provider": "cloud",
@@ -3257,7 +3257,7 @@
         "provider": "cloud",
         "kind": "judge",
         "chars": 8836,
-        "sha256": "aadf9a49b818de35b8d685e5e88c4536de2f608cdfd39b6f8bcb077697d8d4ef"
+        "sha256": "0211165ce8e5b24163a7d672f7c7c0c10df7784e126d062b838c5979316cba6d"
       },
       {
         "provider": "cloud",
@@ -3287,7 +3287,7 @@
         "provider": "cloud",
         "kind": "judge",
         "chars": 12848,
-        "sha256": "215f5d332f081f32f6adf5415d6fc781d8819a88953b4e6b54823b00f1845b67"
+        "sha256": "61fbe1f894098fb66617f3c6ebca91b4bedcd6e1800669022bdf1eedc813268b"
       },
       {
         "provider": "cloud",
@@ -3299,7 +3299,7 @@
         "provider": "cloud",
         "kind": "judge",
         "chars": 3346,
-        "sha256": "903e66f801ed7fcef2da9113e6861297d0f818c45a1836f540736e74f2d559f0"
+        "sha256": "fdc85cfe58c45e258c35b7194e84a694ab11c8f386784b36cf30e6a906dda3db"
       },
       {
         "provider": "local",
@@ -3413,7 +3413,7 @@
         "provider": "cloud",
         "kind": "judge",
         "chars": 14689,
-        "sha256": "09532cf1113548a2ae6837919d0ba689790247adf8a403ac056734eb3fd24982"
+        "sha256": "3767010045e3673372208598eb13bbc1c34965b245c46d8a612631aff2c1feb9"
       },
       {
         "provider": "cloud",
@@ -3437,7 +3437,7 @@
         "provider": "cloud",
         "kind": "judge",
         "chars": 7108,
-        "sha256": "ab167b8d31e582546c1e53bab07b2595bb35abb7875533ebcc241efc85babe88"
+        "sha256": "1fd474d12174e65bc29c326b594468d7caa75a97aa36263c859fe2da258d421e"
       },
       {
         "provider": "local",
@@ -3539,7 +3539,7 @@
         "provider": "cloud",
         "kind": "judge",
         "chars": 16165,
-        "sha256": "10b2cb46d4b4bb9fd045df4101e66eb8c130c69b6f27d2b6c4a497ace4465be1"
+        "sha256": "40be0a767978d9a5d3556e4bbb148e4bb9099dab9737010e0ccca8824e428551"
       },
       {
         "provider": "local",
@@ -3641,7 +3641,7 @@
         "provider": "cloud",
         "kind": "judge",
         "chars": 16876,
-        "sha256": "f9df4936018e4bd8a06edf6322cab1dc026aae7a303944426928fc79b27a9b83"
+        "sha256": "7dc718635c56e46b8371d51a00c376dd0eb1259857e2f51fd50ae52a66609bab"
       },
       {
         "provider": "local",
@@ -3677,7 +3677,7 @@
         "provider": "cloud",
         "kind": "judge",
         "chars": 10125,
-        "sha256": "dd11a402aa1f70935ca19e8dbb9f28dd7779d28e47157faf0e66159c69ccf4f1"
+        "sha256": "baaef35c958301f0ac170022ac2f8677c754fbc82d494d62b4f615f82b9986d0"
       }
     ],
     "markdownChars": 29930,
@@ -3691,7 +3691,7 @@
         "sectionLabel": "Overview & Domain",
         "sectionIndex": 0,
         "providerKind": "anthropic",
-        "model": "claude-sonnet-4-6",
+        "model": "claude-sonnet-5-5",
         "factsSourceIds": [
           "facts:src_m00:0",
           "facts:src_m01:1",
@@ -3722,7 +3722,7 @@
         "sectionLabel": "Core Business Capabilities",
         "sectionIndex": 1,
         "providerKind": "anthropic",
-        "model": "claude-sonnet-4-6",
+        "model": "claude-sonnet-5-5",
         "factsSourceIds": [
           "facts:src_m00:0",
           "facts:src_m01:1",
@@ -3772,7 +3772,7 @@
         "sectionLabel": "Business Rules & Policies",
         "sectionIndex": 2,
         "providerKind": "anthropic",
-        "model": "claude-sonnet-4-6",
+        "model": "claude-sonnet-5-5",
         "factsSourceIds": [
           "facts:src_m00:0",
           "facts:src_m00:1",
@@ -3831,7 +3831,7 @@
         "sectionLabel": "Key Workflows",
         "sectionIndex": 3,
         "providerKind": "anthropic",
-        "model": "claude-sonnet-4-6",
+        "model": "claude-sonnet-5-5",
         "factsSourceIds": [
           "facts:src_m00:0",
           "facts:src_m01:1",
@@ -3882,7 +3882,7 @@
         "sectionLabel": "Calculations & Formulas",
         "sectionIndex": 4,
         "providerKind": "anthropic",
-        "model": "claude-sonnet-4-6",
+        "model": "claude-sonnet-5-5",
         "factsSourceIds": [
           "facts:src_m00:0",
           "facts:src_m01:1",
@@ -3932,7 +3932,7 @@
         "sectionLabel": "Data & Domain Model",
         "sectionIndex": 5,
         "providerKind": "anthropic",
-        "model": "claude-sonnet-4-6",
+        "model": "claude-sonnet-5-5",
         "factsSourceIds": [
           "facts:src_m00:0",
           "facts:src_m01:1",
@@ -3982,7 +3982,7 @@
         "sectionLabel": "Integrations & Glossary",
         "sectionIndex": 6,
         "providerKind": "anthropic",
-        "model": "claude-sonnet-4-6",
+        "model": "claude-sonnet-5-5",
         "factsSourceIds": [
           "facts:src_m00:0",
           "facts:src_m01:1",

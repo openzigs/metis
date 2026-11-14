@@ -12,6 +12,14 @@ export const SONNET_MODEL_ID = "us.anthropic.claude-sonnet-5";
 export const FABLE_MODEL_ID = "us.anthropic.claude-fable-5";
 export const OPUS_MODEL_ID = "us.anthropic.claude-opus-4-8";
 /**
+ * #2511 — the native Anthropic API default (BARE id, not the Bedrock
+ * `us.anthropic.*` form): what `AI_PROVIDER=anthropic` runs when
+ * `ANTHROPIC_MODEL` is unset. Claude Sonnet 5.5 is the production model; one
+ * constant read by both `config.ts` and `AnthropicProvider` so the two cannot
+ * drift apart again.
+ */
+export const ANTHROPIC_DEFAULT_MODEL_ID = "claude-sonnet-5-5";
+/**
  * Prior Sonnet identifier (the application inference profile ARN it pointed
  * at was repointed to a Sonnet 5 foundation model). Kept resolvable so
  * preferences/task-type overrides persisted before the rename don't silently

@@ -271,7 +271,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
     valueType: "string",
     schema: z.string().min(1).max(200),
     description:
-      "Cross-provider model id for docs-gen CLAIM EXTRACTION. Unset (default) keeps the per-provider Haiku default — the cost-optimal choice: claim extraction's output:input ratio (~0.47) far exceeds the 0.07 ceiling below which cached-Sonnet could ever beat uncached-Haiku, so Sonnet's 3× output premium wins regardless of cache-hit rate (see docs/OPERATIONS.md §7.5). Set to a Sonnet id (e.g. claude-sonnet-4-6 / us.anthropic.claude-sonnet-4-6) ONLY to flip claim extraction onto the cached-Sonnet path for a workload proven cheaper by #699 telemetry. Provider-specific DOCS_GEN_*_CLAIM_MODEL and DOCS_GEN_GROUNDING_MODEL take precedence. Rollback = unset.",
+      "Cross-provider model id for docs-gen CLAIM EXTRACTION. Unset (default) keeps the per-provider Haiku default — the cost-optimal choice: claim extraction's output:input ratio (~0.47) far exceeds the 0.07 ceiling below which cached-Sonnet could ever beat uncached-Haiku, so Sonnet's 3× output premium wins regardless of cache-hit rate (see docs/OPERATIONS.md §7.5). Set to a Sonnet id (e.g. claude-sonnet-5-5 on native Anthropic / us.anthropic.claude-sonnet-5 on Bedrock) ONLY to flip claim extraction onto the cached-Sonnet path for a workload proven cheaper by #699 telemetry. Provider-specific DOCS_GEN_*_CLAIM_MODEL and DOCS_GEN_GROUNDING_MODEL take precedence. Rollback = unset.",
     sensitive: false,
   },
   // ── Issue #1226 — docs-gen OUTPUT caps (was hardcoded 8192 / 4096) ─────
