@@ -532,7 +532,7 @@ loadAIConfig() ─▶ provider === 'bedrock-gateway' || 'local-gemma'  ──▶
 `bedrock-gateway`, `openai` and `azure` (#134). Provider selection is a
 pure `AI_PROVIDER` config switch (env or runtime tunable) — no code change is
 needed to move between Bedrock and local Gemma, and each provider keeps its own
-default model (`us.anthropic.claude-sonnet-4-6` vs `gemma4:12b`).
+default model (`us.anthropic.claude-sonnet-5` vs `gemma4:12b`).
 
 `local-gemma` uses a dedicated **loopback-allowing** URL validator
 (`validateLocalProviderUrl`) that permits `http://localhost` / RFC-1918 hosts
@@ -10036,7 +10036,7 @@ flowchart TD
 
 ## 29. Intelligent Model Selection & Routing (Epic #593)
 
-METIS automatically routes AI tasks to the optimal model — Claude Haiku 4.5 (fast/cheap) or Claude Sonnet 4.6 (capable/deep reasoning) — based on task complexity, project preferences, and budget constraints. The model ids are the source of truth in [`server/src/lib/ai/model-router.ts`](../server/src/lib/ai/model-router.ts) (`HAIKU_MODEL_ID` = `us.anthropic.claude-haiku-4-5-20251001-v1:0`, `SONNET_MODEL_ID` = `us.anthropic.claude-sonnet-4-6`). These two models have **different Bedrock prompt-cache minimum thresholds** (Sonnet 4.6 = 1,024 tokens, no 1h TTL; Haiku 4.5 = 4,096 tokens, 1h TTL); see the profile → model → cache-min-token mapping in [`docs/OPERATIONS.md` §7.5](./OPERATIONS.md#75-prompt-caching-epic-647) (Issue #387).
+METIS automatically routes AI tasks to the optimal model — Claude Haiku 4.5 (fast/cheap) or Claude Sonnet 5 (capable/deep reasoning) — based on task complexity, project preferences, and budget constraints. The model ids are the source of truth in [`server/src/lib/ai/model-router.ts`](../server/src/lib/ai/model-router.ts) (`HAIKU_MODEL_ID` = `us.anthropic.claude-haiku-4-5-20251001-v1:0`, `SONNET_MODEL_ID` = `us.anthropic.claude-sonnet-5`). These two models have **different Bedrock prompt-cache minimum thresholds** (Sonnet 5 = 1,024 tokens, no 1h TTL; Haiku 4.5 = 4,096 tokens, 1h TTL); see the profile → model → cache-min-token mapping in [`docs/OPERATIONS.md` §7.5](./OPERATIONS.md#75-prompt-caching-epic-647) (Issue #387).
 
 ### 29.1 Architecture
 

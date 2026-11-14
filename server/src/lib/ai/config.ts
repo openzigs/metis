@@ -21,7 +21,7 @@ import { AIConfigError, AIProviderRetiredError } from "./errors.js";
 import type { ProviderKey } from "./types.js";
 import { getConfigService } from "../config/config-service.js";
 import { parseStrictMs } from "../config/env-ms.js";
-import { HAIKU_MODEL_ID, SONNET_MODEL_ID } from "./model-router.js";
+import { ANTHROPIC_DEFAULT_MODEL_ID, HAIKU_MODEL_ID, SONNET_MODEL_ID } from "./model-router.js";
 import {
   COPILOT_MIGRATION_DOC,
   findRetiredEnvRenames,
@@ -195,7 +195,7 @@ const DEFAULT_AZURE_API_VERSION = "2024-10-21";
 const DEFAULT_BEDROCK_MODEL = SONNET_MODEL_ID;
 const DEFAULT_LOCAL_GEMMA_MODEL = "gemma4:12b";
 /** Native Anthropic default — BARE id (not the Bedrock `us.anthropic.*` form). */
-const DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6";
+const DEFAULT_ANTHROPIC_MODEL = ANTHROPIC_DEFAULT_MODEL_ID;
 
 const intOr = (raw: string | undefined, fallback: number, min = 1): number => {
   if (raw == null || raw.trim().length === 0) return fallback;

@@ -240,7 +240,7 @@ describe("resolveProjectProvider — override routing (#254)", () => {
     await ask("p-anth");
 
     expect(anthropicSeen).toHaveLength(1);
-    expect(anthropicSeen[0]!.body.model).toBe("claude-sonnet-4-6");
+    expect(anthropicSeen[0]!.body.model).toBe("claude-sonnet-5-5");
     expect(JSON.stringify(anthropicSeen[0]!.body)).not.toContain(GLOBAL_MODEL);
   });
 
@@ -256,7 +256,7 @@ describe("resolveProjectProvider — override routing (#254)", () => {
     projectFindFirst.mockResolvedValue({ aiProviderId: null, aiModel: null });
     await ask("p-plain");
 
-    expect(anthropicSeen[0]!.body.model).toBe("claude-sonnet-4-6");
+    expect(anthropicSeen[0]!.body.model).toBe("claude-sonnet-5-5");
     // The runtime value is live — it still reaches the deployment's own provider.
     expect(openaiSeen[0]!.body.model).toBe("gpt-admin-runtime");
   });
@@ -396,7 +396,7 @@ describe("Spec Kit route — the command reaches the project's provider (#254)",
     expect(openaiSeen).toHaveLength(0);
     expect(anthropicSeen).toHaveLength(1);
     expect(anthropicSeen[0]!.headers["x-api-key"]).toBe("k-anthropic-project");
-    expect(anthropicSeen[0]!.body.model).toBe("claude-sonnet-4-6");
+    expect(anthropicSeen[0]!.body.model).toBe("claude-sonnet-5-5");
     expect(JSON.stringify(anthropicSeen[0]!.headers)).not.toContain("k-openai-global");
   });
 

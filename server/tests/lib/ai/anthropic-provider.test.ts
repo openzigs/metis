@@ -110,9 +110,9 @@ describe("AnthropicProvider — identity", () => {
     expect(p.offline).toBe(false);
   });
 
-  it("falls back to the bare claude-sonnet-4-6 default when no model supplied", () => {
+  it("falls back to the bare claude-sonnet-5-5 default when no model supplied (#2511)", () => {
     const p = new AnthropicProvider({ apiKey: "sk-test" });
-    expect(p.model).toBe("claude-sonnet-4-6");
+    expect(p.model).toBe("claude-sonnet-5-5");
   });
 
   it("forwards apiKey / authToken / baseURL to the SDK client", () => {

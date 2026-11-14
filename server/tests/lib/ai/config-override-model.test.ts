@@ -28,8 +28,8 @@ afterEach(() => __resetConfigSingleton());
 
 describe("provider override and the deployment-wide model", () => {
   it("an override to another provider drops AI_MODEL for that provider's own default", () => {
-    expect(loadAIConfig(base(), { provider: "anthropic" }).model).toBe("claude-sonnet-4-6");
-    expect(providerDefaultModel("anthropic", base())).toBe("claude-sonnet-4-6");
+    expect(loadAIConfig(base(), { provider: "anthropic" }).model).toBe("claude-sonnet-5-5");
+    expect(providerDefaultModel("anthropic", base())).toBe("claude-sonnet-5-5");
   });
 
   it("the override provider's own *_MODEL setting is honoured", () => {
@@ -64,7 +64,7 @@ describe("provider override and the deployment-wide model", () => {
   it("providerDefaultModel does not require the provider's credentials", () => {
     const env = { ...base(), ANTHROPIC_API_KEY: undefined };
     expect(() => loadAIConfig(env, { provider: "anthropic" })).toThrow();
-    expect(providerDefaultModel("anthropic", env)).toBe("claude-sonnet-4-6");
+    expect(providerDefaultModel("anthropic", env)).toBe("claude-sonnet-5-5");
   });
 
   it("an offline deployment reports the offline-stub model, as loadAIConfig does", () => {
@@ -77,7 +77,7 @@ describe("provider override and the deployment-wide model", () => {
 
   it("an unset AI_PROVIDER is the offline-stub deployment, so AI_MODEL does not follow an override", () => {
     const env = { ...base(), AI_PROVIDER: undefined };
-    expect(providerDefaultModel("anthropic", env)).toBe("claude-sonnet-4-6");
+    expect(providerDefaultModel("anthropic", env)).toBe("claude-sonnet-5-5");
     expect(providerDefaultModel("offline-stub", env)).toBe("gpt-deployment-pinned");
   });
 
