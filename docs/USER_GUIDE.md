@@ -6575,6 +6575,14 @@ An approval is of a wording, so editing that wording reopens it:
   chat say the same. The analysis findings the requirement was written
   from are marked too, in the findings list and the traceability matrix
   ("Stale: the analysis judged v0; the requirement is now v2.").
+  Answering a clarifying question about a requirement that already exists
+  counts as an edit too (#2429): the analysis judged the wording before
+  your answer. METIS re-checks the governing rules on the answered
+  wording by itself, and those results stop being marked stale once the
+  re-check is stored. If that re-check fails, they stay marked stale, so
+  you can **Re-check this requirement**. The analysis findings stay marked
+  until a new analysis. An answer written in when the requirements are
+  first created (on approval) is part of the analysis and marks nothing.
 - **Re-check this requirement.** In the Governing rules panel, a stale
   result has a **Re-check this requirement** button (you need
   permission to run analyses). It checks the governing rules again

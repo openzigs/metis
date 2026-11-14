@@ -16,6 +16,7 @@ import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { isUniqueViolation } from "../db/prisma-errors.js";
 import {
+  normaliseForKey,
   paragraphSimilarity,
   SAME_PARAGRAPH_THRESHOLD,
   sourceSlot,
@@ -283,7 +284,10 @@ export async function findSettledClarifications(
  * reopens it. A question whose key a record already has is about an unchanged
  * paragraph and reopens nothing; and a question reopens at most the one record
  * its quote is most like (none on a tie), so two answers are never reopened by
- * one edit.
+ * one edit. #2429 — nor is a record whose quote the document still holds
+ * ({@link currentDocumentTexts}): its paragraph is unchanged, however alike
+ * the edited one reads, so a near-identical sibling of the edited paragraph
+ * is never taken for it, even when its own question is not raised again.
  */
 export async function reopenChangedSources(
   projectId: string,
@@ -311,12 +315,19 @@ export async function reopenChangedSources(
     if (!slot || !bySlot.has(slot)) continue;
     recordsBySlot.set(slot, [...(recordsBySlot.get(slot) ?? []), r]);
   }
+  if (recordsBySlot.size === 0) return [];
+  const texts = await currentDocumentTexts(projectId, [
+    ...new Set([...recordsBySlot.values()].flat().map((r) => r.source!.documentId!)),
+  ]);
   const changed = new Map<string, StoredClarification>();
   for (const [slot, candidates] of recordsBySlot) {
     const asked = bySlot.get(slot)!;
     const askedKeys = new Set(asked.map((q) => q.key));
-    // A record asked about again under its own key: its paragraph is unchanged.
-    const open = candidates.filter((r) => !askedKeys.has(r.questionKey));
+    // A record asked about again under its own key, or (#2429) whose quote the
+    // document still holds: its paragraph is unchanged.
+    const open = candidates.filter(
+      (r) => !askedKeys.has(r.questionKey) && !holdsQuote(texts, r.source!),
+    );
     for (const q of asked) {
       // A question with a record of its own is about an unchanged paragraph.
       if (known.has(q.key)) continue;
@@ -346,6 +357,45 @@ export async function reopenChangedSources(
     reopened: reopened.length,
   });
   return reopened.map((r) => ({ ...r, status: "reopened" as const, reopenedAt: now }));
+}
+
+/**
+ * #2429 — the current text of each of `documentIds` (of `projectId`) as its
+ * stored chunks hold it (approved, else quarantined, as the document reader
+ * cites them), in {@link normaliseForKey} form. A document with no stored
+ * chunk is absent: what it holds is unknown.
+ */
+export async function currentDocumentTexts(
+  projectId: string,
+  documentIds: readonly string[],
+): Promise<Map<string, string>> {
+  if (documentIds.length === 0) return new Map();
+  const parts = new Map<string, string[]>();
+  const approved = await prisma.knowledgeChunk.findMany({
+    where: { projectId, documentId: { in: [...documentIds] } },
+    select: { documentId: true, text: true },
+    orderBy: { position: "asc" },
+  });
+  for (const c of approved) parts.set(c.documentId, [...(parts.get(c.documentId) ?? []), c.text]);
+  const rest = documentIds.filter((id) => !parts.has(id));
+  if (rest.length > 0) {
+    const quarantined = await prisma.quarantineChunk.findMany({
+      where: { projectId, documentId: { in: rest }, ord: { gte: 0 } },
+      select: { documentId: true, text: true },
+      orderBy: { ord: "asc" },
+    });
+    for (const c of quarantined) {
+      parts.set(c.documentId, [...(parts.get(c.documentId) ?? []), c.text]);
+    }
+  }
+  return new Map([...parts].map(([id, texts]) => [id, normaliseForKey(texts.join("\n"))]));
+}
+
+/** Whether the document `source` cites still holds its quote, word for word. */
+function holdsQuote(texts: ReadonlyMap<string, string>, source: ClarificationSource): boolean {
+  const text = source.documentId ? texts.get(source.documentId) : undefined;
+  const quote = normaliseForKey(source.quote);
+  return text !== undefined && quote.length > 0 && ` ${text} `.includes(` ${quote} `);
 }
 
 /** Record which `documents` row a record is indexed as. */
