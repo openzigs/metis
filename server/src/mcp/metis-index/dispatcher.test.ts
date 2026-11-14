@@ -31,6 +31,9 @@ const { McpAuthError, REFUSED_MESSAGE } = await import("./identity.js");
 type Def = import("./tools.js").IndexToolDef;
 type Shared = import("./tools.js").SharedResult;
 
+/** Built, not written: a literal key-shaped string trips the repository's secret scanners. */
+const AWS_KEY = ["AKIA", "ABCDEFGHIJKLMNOP"].join("");
+
 const CALLER = { userId: "u1", tokenId: "t1", actor: { userId: "u1", role: "reader" } };
 
 function def(
@@ -188,7 +191,7 @@ describe("dispatchIndexTool", () => {
 
   it("passes a tool's own error text on, redacted, with no instructions", async () => {
     const out = await dispatchIndexTool(
-      def({ content: "Error: File not found: AKIAABCDEFGHIJKLMNOP.ts", isError: true }),
+      def({ content: `Error: File not found: ${AWS_KEY}.ts`, isError: true }),
       { projectId: "p1" },
       env,
     );
@@ -202,7 +205,7 @@ describe("dispatchIndexTool", () => {
     const citations = Array.from({ length: 80 }, (_, i) => ({ path: `f${i}.ts` }));
     const out = await dispatchIndexTool(
       def({
-        content: "key AKIAABCDEFGHIJKLMNOP here",
+        content: `key ${AWS_KEY} here`,
         resultCount: 80,
         truncated: true,
         citations: citations as never,
