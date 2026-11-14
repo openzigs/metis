@@ -35,6 +35,7 @@ import {
   unavailableApplicabilitySet,
 } from "../governing/applicability.js";
 import { createChildLogger } from "../logger.js";
+import type { AclActor } from "../rag/acl.js";
 import { reciprocalRankFusion } from "../rag/bm25-index.js";
 import type { KnowledgeService } from "../rag/knowledge-service.js";
 import { getReranker, isRerankEnabled, type Reranker } from "../rag/reranker.js";
@@ -157,10 +158,44 @@ const toContextChunk = (m: HydratedChunk): RetrievalContextChunk => ({
 export interface GroundedSearchSource {
   search(
     ...args: Parameters<KnowledgeService["search"]>
-  ): Promise<Pick<Awaited<ReturnType<KnowledgeService["search"]>>, "hits">>;
+  ): Promise<Pick<Awaited<ReturnType<KnowledgeService["search"]>>, "hits" | "aclMismatch">>;
 }
 
-export interface GroundedRetrievalOptions {
+/**
+ * #2431 — the document ACL a retrieval reads under. An analysis passes the
+ * shared audience (`sharedDocumentAudience`): its findings are read by every
+ * project member. Required, so a new caller cannot forget it and read every
+ * restricted document: an eval over fixed documents opts out by name with
+ * {@link UNRESTRICTED_RETRIEVAL}, and nothing else may.
+ */
+export const UNRESTRICTED_RETRIEVAL = "unrestricted" as const;
+
+export interface RetrievalAccess {
+  actor: AclActor | typeof UNRESTRICTED_RETRIEVAL;
+  /**
+   * Told the ids of the chunks each search dropped because the actor may not
+   * read their document, so a run can count what it left out. Never called
+   * with an empty list.
+   */
+  onAclDenied?: (chunkIds: string[]) => void;
+}
+
+/** The search options that carry {@link RetrievalAccess} to `knowledge.search`. */
+function accessSearchOptions(access: RetrievalAccess): {
+  actor?: AclActor;
+  reportAclMismatch?: boolean;
+} {
+  return access.actor === UNRESTRICTED_RETRIEVAL
+    ? {}
+    : { actor: access.actor, reportAclMismatch: true };
+}
+
+/** Report a search's ACL denials, if any. */
+function reportDenied(access: RetrievalAccess, denied: string[] | undefined): void {
+  if (denied && denied.length > 0) access.onAclDenied?.(denied);
+}
+
+export interface GroundedRetrievalOptions extends RetrievalAccess {
   projectId: string;
   queries: string[];
   documentIds?: string[];
@@ -203,7 +238,9 @@ export async function runGroundedRetrieval(
       k: poolSize,
       documentIds: opts.documentIds,
       fusionPoolSize: poolSize,
+      ...accessSearchOptions(opts),
     });
+    reportDenied(opts, res.aclMismatch);
     const list: { chunkId: string }[] = [];
     for (const h of res.hits) {
       if (!meta.has(h.chunkId)) meta.set(h.chunkId, h);
@@ -281,7 +318,7 @@ export interface RequirementEvidence {
  */
 export async function retrievePerRequirement(
   knowledge: KnowledgeService,
-  input: {
+  input: RetrievalAccess & {
     projectId: string;
     requirements: Array<{ id: string; text: string }>;
     documentIds?: string[];
@@ -310,7 +347,9 @@ export async function retrievePerRequirement(
         k,
         documentIds: input.documentIds,
         fusionPoolSize: poolSize,
+        ...accessSearchOptions(input),
       });
+      reportDenied(input, res.aclMismatch);
       results[i] = {
         requirementId: req.id,
         text: req.text,

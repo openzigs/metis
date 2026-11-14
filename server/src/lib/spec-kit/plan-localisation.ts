@@ -169,6 +169,14 @@ export interface BuildPlanLocalisationInput {
   twinTimeBudgetMs?: number;
   /** Aborting it stops the walk at its next step. */
   signal?: AbortSignal;
+  /**
+   * #2431 — files the block may not name (document access restrictions, read
+   * as a shared audience: a plan is read by the whole project). Every symbol
+   * the walk reads in one is dropped as it is read, so it is neither listed,
+   * excerpted, walked from, nor named in a "left out" sentence. Absent:
+   * nothing is hidden.
+   */
+  hiddenFile?: (filePath: string) => boolean;
 }
 
 export interface PlanLocalisation {
@@ -849,9 +857,13 @@ function rowCap(what: string, limit: number, kind: string, names: readonly strin
 export async function buildPlanLocalisation(
   input: BuildPlanLocalisationInput,
 ): Promise<PlanLocalisation> {
-  const seeds = input.seeds.filter((s) => !isTestFilePath(s.filePath));
+  const hidden = input.hiddenFile;
+  const seeds = input.seeds.filter(
+    (s) => !isTestFilePath(s.filePath) && !(hidden && hidden(s.filePath)),
+  );
   if (!input.projectId || seeds.length === 0 || input.tokenBudget <= 0) return EMPTY;
-  const source = input.source ?? createDefaultPlanLocalisationSource(input.projectId);
+  const base = input.source ?? createDefaultPlanLocalisationSource(input.projectId);
+  const source = hidden ? withoutHiddenFiles(base, hidden) : base;
   const budgetMs = input.timeBudgetMs ?? LOCALISATION_TIME_BUDGET_MS;
   const clock = createWalkClock(budgetMs, input.signal);
   try {
@@ -880,6 +892,45 @@ export async function buildPlanLocalisation(
     });
     return EMPTY;
   }
+}
+
+/**
+ * #2431 — `source` with every symbol in a hidden file dropped from each read
+ * that returns a location: the functions of retrieved files, the handlers, and
+ * the schema source's symbol details and data-model symbols. Every row and
+ * every "left out" sentence of the block is built from those reads, so no
+ * hidden path reaches it. Other reads (edges, names) carry no path.
+ */
+export function withoutHiddenFiles(
+  source: PlanLocalisationSource,
+  hidden: (filePath: string) => boolean,
+): PlanLocalisationSource {
+  const keep = (rows: CodeSymbolDetail[]): CodeSymbolDetail[] =>
+    rows.filter((r) => !hidden(r.filePath));
+  const schema = source.schema;
+  const details = schema.getCodeSymbolDetails?.bind(schema);
+  const model = schema.getDataModelSymbols?.bind(schema);
+  const overrides: Partial<SchemaImpactDataSource> = {
+    ...(details ? { getCodeSymbolDetails: async (ids) => keep(await details(ids)) } : {}),
+    ...(model ? { getDataModelSymbols: async (tables) => keep(await model(tables)) } : {}),
+  };
+  // A proxy, not a copy: the schema source is a class instance whose other
+  // methods must keep running on it.
+  const filtered = new Proxy(schema, {
+    get(target, prop, receiver) {
+      if (Object.hasOwn(overrides, prop)) return overrides[prop as keyof SchemaImpactDataSource];
+      const value: unknown = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const handlers = source.getHttpHandlers?.bind(source);
+  return {
+    schema: filtered,
+    getReaderEdgesTo: (ids) => source.getReaderEdgesTo(ids),
+    getFunctionsInFiles: async (files) => keep(await source.getFunctionsInFiles(files)),
+    calleeNameSets: (ids, checkpoint) => source.calleeNameSets(ids, checkpoint),
+    ...(handlers ? { getHttpHandlers: async (limit) => keep(await handlers(limit)) } : {}),
+  };
 }
 
 /** What the steps of one walk share. */

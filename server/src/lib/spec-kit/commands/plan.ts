@@ -111,6 +111,8 @@ export async function runPlan(input: PlanInput): Promise<PlanResult> {
   // ⇒ "" (ungrounded); never throws (see buildSpecKitRagContext).
   const rag = await buildSpecKitRagContext(input.projectId, extractRequirementText(spec.content), {
     knowledgeService: input.knowledgeService,
+    // #2431 — names the requester on the denial audit rows; grants nothing.
+    ...(input.actorId ? { triggeredBy: input.actorId } : {}),
     fusedCode: input.fusedCode,
     includeCode: true,
     expandDocuments: PINNED_REQUIREMENT_DOCUMENTS,

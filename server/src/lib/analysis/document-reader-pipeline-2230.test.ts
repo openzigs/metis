@@ -379,21 +379,26 @@ describe("#2262 — the document reader before the flag goes on", () => {
     vi.mocked(prisma.document.findMany).mockImplementation((async () => []) as never);
   });
 
-  it("reads as the requester: their ACL actor reaches the loader", async () => {
+  it("#2431 — reads as a shared audience, attributed to the requester: their own ACL grants nothing", async () => {
     await runPipeline();
-    expect(resolveAclActor).toHaveBeenCalledWith("u1");
+    expect(resolveAclActor).not.toHaveBeenCalled();
     expect(loader).toHaveBeenCalledWith(PROJECT_ID, ["doc_1", "doc_gone"], {
       userId: "u1",
-      role: "member",
+      role: "shared-audience",
+      sharedAudience: true,
     });
   });
 
-  it("fails the document agent, reading and retrieving nothing, when the requester is no longer active", async () => {
+  it("#2431 — a requester no longer active reads as the shared audience too, not as nobody", async () => {
     vi.mocked(resolveAclActor).mockRejectedValueOnce(new InactiveAclActorError());
     const { retrieve } = await runPipeline();
-    expect(loader).not.toHaveBeenCalled();
+    expect(loader).toHaveBeenCalledWith(PROJECT_ID, ["doc_1", "doc_gone"], {
+      userId: "u1",
+      role: "shared-audience",
+      sharedAudience: true,
+    });
     expect(retrievedAgents(retrieve)).not.toContain("document");
-    expect(documentRow()?.status).toBe("failed");
+    expect(documentRow()?.status).toBe("completed");
   });
 
   it("does not fall back to retrieval for a document the requester's ACL withheld", async () => {
@@ -438,6 +443,25 @@ describe("#2262 — the document reader before the flag goes on", () => {
     });
     expect(documentRow()?.status).toBe("completed");
     expect(retrievedAgents(retrieve)).not.toContain("document");
+  });
+
+  it("#2431 — with no document selected, leaves out an upload restricted to the requester themself", async () => {
+    vi.mocked(prisma.document.findMany).mockImplementation((async (args: { orderBy?: unknown }) =>
+      args.orderBy
+        ? [
+            {
+              id: "doc_mine",
+              filename: "mine.docx",
+              aclSubjects: JSON.stringify([{ kind: "user", value: "u1" }]),
+            },
+            { id: "doc_1", filename: "booking.docx", aclSubjects: "[]" },
+          ]
+        : []) as never);
+    const { capability } = await runPipeline({ documentIds: undefined });
+    expect(loader).toHaveBeenCalledWith(PROJECT_ID, ["doc_1"], expect.anything());
+    const listed = JSON.stringify(capability.documentReading);
+    expect(listed).not.toContain("doc_mine");
+    expect(listed).not.toContain("mine.docx");
   });
 
   it("with no document selected, reads the newest ready uploads the requester may see", async () => {

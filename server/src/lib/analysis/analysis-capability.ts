@@ -191,6 +191,13 @@ export interface CapabilityTracker {
    * is persisted.
    */
   restrictedSymbolIds?: Set<string>;
+  /**
+   * #2431 — the document-search hits dropped because their document is
+   * restricted (the run's document searches read as a shared audience), by
+   * chunk id, so a chunk dropped by two searches counts once. Only the count is
+   * persisted.
+   */
+  restrictedDocumentChunkIds?: Set<string>;
 }
 
 /**
@@ -199,13 +206,31 @@ export interface CapabilityTracker {
  */
 export function recordRestrictedLeftOut(
   tracker: RestrictedLeftOutCounts,
-  left: { files: number; symbolIds?: readonly string[] },
+  left: RestrictedLeftOutReport,
 ): void {
-  if (left.files > (tracker.restrictedFiles ?? 0)) tracker.restrictedFiles = left.files;
+  if (left.files !== undefined && left.files > (tracker.restrictedFiles ?? 0)) {
+    tracker.restrictedFiles = left.files;
+  }
   if (left.symbolIds && left.symbolIds.length > 0) {
     const ids = (tracker.restrictedSymbolIds ??= new Set());
     for (const id of left.symbolIds) ids.add(id);
   }
+  // #2431 — the chunks a document search dropped for their ACL.
+  if (left.documentChunkIds && left.documentChunkIds.length > 0) {
+    const ids = (tracker.restrictedDocumentChunkIds ??= new Set());
+    for (const id of left.documentChunkIds) ids.add(id);
+  }
+}
+
+/**
+ * What one access check reports to {@link recordRestrictedLeftOut}: a code
+ * read's hidden-file count and dropped symbol ids (#2437), or a document
+ * search's dropped chunk ids (#2431).
+ */
+export interface RestrictedLeftOutReport {
+  files?: number;
+  symbolIds?: readonly string[];
+  documentChunkIds?: readonly string[];
 }
 
 /**
@@ -215,7 +240,7 @@ export function recordRestrictedLeftOut(
  */
 export type RestrictedLeftOutCounts = Pick<
   CapabilityTracker,
-  "restrictedFiles" | "restrictedSymbolIds"
+  "restrictedFiles" | "restrictedSymbolIds" | "restrictedDocumentChunkIds"
 >;
 
 /** #2437 — the persisted notice, or `null` when the run left nothing restricted out. */
@@ -224,7 +249,14 @@ export function restrictedLeftOutOf(
 ): RestrictedLeftOutNotice | null {
   const files = tracker.restrictedFiles ?? 0;
   const symbols = tracker.restrictedSymbolIds?.size ?? 0;
-  return files + symbols > 0 ? { reason: "shared-audience", files, symbols } : null;
+  const documentChunks = tracker.restrictedDocumentChunkIds?.size ?? 0;
+  if (files + symbols + documentChunks === 0) return null;
+  return {
+    reason: "shared-audience",
+    files,
+    symbols,
+    ...(documentChunks > 0 ? { documentChunks } : {}),
+  };
 }
 
 /**

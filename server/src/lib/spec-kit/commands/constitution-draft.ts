@@ -134,6 +134,8 @@ export async function draftConstitution(
 
   const rag = await buildSpecKitRagContext(input.projectId, CONSTITUTION_QUERY, {
     knowledgeService: input.knowledgeService,
+    // #2431 — names the requester on the denial audit rows; grants nothing.
+    ...(input.actorId ? { triggeredBy: input.actorId } : {}),
     fusedCode: input.fusedCode,
     expandDocuments: PINNED_REQUIREMENT_DOCUMENTS,
   });

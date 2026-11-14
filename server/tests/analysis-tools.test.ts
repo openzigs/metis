@@ -11,6 +11,10 @@ import { readFileSliceTool } from "../src/lib/analysis/tools/read-file-slice.js"
 import { listFilesTool } from "../src/lib/analysis/tools/list-files.js";
 import { createSearchKnowledgeTool } from "../src/lib/analysis/tools/search-knowledge.js";
 import type { ToolContext } from "../src/lib/analysis/tools/types.js";
+import { sharedDocumentAudience } from "../src/lib/analysis/document-access.js";
+
+/** #2431 — the analysis search_knowledge tool always searches as a shared audience. */
+const SHARED_SEARCH = { actor: sharedDocumentAudience(), reportAclMismatch: true };
 
 // ── Prisma mock ─────────────────────────────────────────────────────────
 vi.mock("../src/lib/prisma.js", () => ({
@@ -415,6 +419,7 @@ describe("searchKnowledgeTool", () => {
     expect(result.content).toContain("requirements.md#chunk3 documentId=doc-2 chunk=3");
     expect(mockKnowledge.search).toHaveBeenCalledWith("proj-123", "authentication requirements", {
       k: 5,
+      ...SHARED_SEARCH,
     });
   });
 
@@ -467,13 +472,19 @@ describe("searchKnowledgeTool", () => {
   it("respects custom k parameter", async () => {
     mockKnowledge.search.mockResolvedValue({ hits: [], mode: "hybrid" });
     await tool.execute({ query: "test", k: 10 }, baseContext);
-    expect(mockKnowledge.search).toHaveBeenCalledWith("proj-123", "test", { k: 10 });
+    expect(mockKnowledge.search).toHaveBeenCalledWith("proj-123", "test", {
+      k: 10,
+      ...SHARED_SEARCH,
+    });
   });
 
   it("clamps k to max 15", async () => {
     mockKnowledge.search.mockResolvedValue({ hits: [], mode: "hybrid" });
     await tool.execute({ query: "test", k: 100 }, baseContext);
-    expect(mockKnowledge.search).toHaveBeenCalledWith("proj-123", "test", { k: 15 });
+    expect(mockKnowledge.search).toHaveBeenCalledWith("proj-123", "test", {
+      k: 15,
+      ...SHARED_SEARCH,
+    });
   });
 
   it("returns message for no results", async () => {

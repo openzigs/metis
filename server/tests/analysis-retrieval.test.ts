@@ -23,6 +23,7 @@ import {
   retrievePerRequirement,
   RETRIEVAL_QUERIES,
   runGroundedRetrieval,
+  UNRESTRICTED_RETRIEVAL,
 } from "../src/lib/analysis/retrieval.js";
 
 // ── Mock knowledge service ───────────────────────────────────────────────────
@@ -158,7 +159,11 @@ describe("runGroundedRetrieval", () => {
       chunk({ chunkId: "a", source: "repo" }),
       chunk({ chunkId: "b", source: "upload" }),
     ]);
-    const out = await runGroundedRetrieval(knowledge, { projectId: "p1", queries: ["q"] });
+    const out = await runGroundedRetrieval(knowledge, {
+      projectId: "p1",
+      actor: UNRESTRICTED_RETRIEVAL,
+      queries: ["q"],
+    });
     expect(out.map((c) => c.source)).toEqual(["repo", "upload"]);
   });
 
@@ -166,6 +171,7 @@ describe("runGroundedRetrieval", () => {
     const { knowledge, calls } = makeKnowledge(() => [chunk({ chunkId: "a" })]);
     await runGroundedRetrieval(knowledge, {
       projectId: "p1",
+      actor: UNRESTRICTED_RETRIEVAL,
       queries: ["q1", "q2"],
       documentIds: ["doc-keep-1", "doc-keep-2"],
       rerank: false,
@@ -184,6 +190,7 @@ describe("runGroundedRetrieval", () => {
     );
     const out = await runGroundedRetrieval(knowledge, {
       projectId: "p1",
+      actor: UNRESTRICTED_RETRIEVAL,
       queries: ["q1", "q2"],
       rerank: false,
     });
@@ -202,6 +209,7 @@ describe("runGroundedRetrieval", () => {
     ]);
     const out = await runGroundedRetrieval(knowledge, {
       projectId: "p1",
+      actor: UNRESTRICTED_RETRIEVAL,
       queries: ["q1"],
       k: 2,
       rerank: false,
@@ -216,6 +224,7 @@ describe("runGroundedRetrieval", () => {
     ]);
     const out = await runGroundedRetrieval(knowledge, {
       projectId: "p1",
+      actor: UNRESTRICTED_RETRIEVAL,
       queries: ["q1"],
       rerank: false,
     });
@@ -235,6 +244,7 @@ describe("runGroundedRetrieval", () => {
     };
     const out = await runGroundedRetrieval(knowledge, {
       projectId: "p1",
+      actor: UNRESTRICTED_RETRIEVAL,
       queries: ["q1"],
       rerank: true,
       reranker,
@@ -251,6 +261,7 @@ describe("runGroundedRetrieval", () => {
     };
     const out = await runGroundedRetrieval(knowledge, {
       projectId: "p1",
+      actor: UNRESTRICTED_RETRIEVAL,
       queries: ["q1"],
       rerank: true,
       reranker,
@@ -269,6 +280,7 @@ describe("runGroundedRetrieval", () => {
     };
     const out = await runGroundedRetrieval(knowledge, {
       projectId: "p1",
+      actor: UNRESTRICTED_RETRIEVAL,
       queries: ["q1"],
       rerank: true,
       reranker,
@@ -280,6 +292,7 @@ describe("runGroundedRetrieval", () => {
     const { knowledge, calls } = makeKnowledge(() => [chunk({ chunkId: "a" })]);
     const out = await runGroundedRetrieval(knowledge, {
       projectId: "p1",
+      actor: UNRESTRICTED_RETRIEVAL,
       queries: ["", "   "],
       rerank: false,
     });
@@ -295,6 +308,7 @@ describe("retrievePerRequirement", () => {
     const { knowledge } = makeKnowledge(() => [chunk({ chunkId: "a", source: "upload" })]);
     const out = await retrievePerRequirement(knowledge, {
       projectId: "p1",
+      actor: UNRESTRICTED_RETRIEVAL,
       requirements: [{ id: "REQ-001", text: "must encrypt at rest" }],
     });
     expect(out[0].chunks[0].source).toBe("upload");
@@ -304,6 +318,7 @@ describe("retrievePerRequirement", () => {
     const { knowledge, calls } = makeKnowledge((q) => [chunk({ chunkId: q })]);
     const out = await retrievePerRequirement(knowledge, {
       projectId: "p1",
+      actor: UNRESTRICTED_RETRIEVAL,
       requirements: [
         { id: "REQ-001", text: "must encrypt at rest" },
         { id: "REQ-002", text: "must log access" },
@@ -326,6 +341,7 @@ describe("retrievePerRequirement", () => {
     }));
     await retrievePerRequirement(knowledge, {
       projectId: "p1",
+      actor: UNRESTRICTED_RETRIEVAL,
       requirements,
       maxRequirements: 3,
     });
@@ -336,6 +352,7 @@ describe("retrievePerRequirement", () => {
     const { knowledge, calls } = makeKnowledge(() => [chunk({ chunkId: "a" })]);
     const out = await retrievePerRequirement(knowledge, {
       projectId: "p1",
+      actor: UNRESTRICTED_RETRIEVAL,
       requirements: [
         { id: "REQ-001", text: "real one" },
         { id: "REQ-002", text: "   " },
@@ -360,6 +377,7 @@ describe("retrievePerRequirement", () => {
     const requirements = Array.from({ length: 8 }, (_, i) => ({ id: `R${i}`, text: `t${i}` }));
     await retrievePerRequirement(knowledge, {
       projectId: "p1",
+      actor: UNRESTRICTED_RETRIEVAL,
       requirements,
       concurrency: 2,
     });
