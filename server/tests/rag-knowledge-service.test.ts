@@ -297,7 +297,6 @@ import { DocumentStorage } from "../src/lib/documents/storage.js";
 import {
   KnowledgeService,
   __resetKnowledgeServiceSingleton,
-  ACL_CHANGED_DURING_INGEST,
 } from "../src/lib/rag/knowledge-service.js";
 import { approveDocument } from "../src/lib/rag/quarantine.js";
 import { Embedder } from "../src/lib/rag/embedder.js";
@@ -615,27 +614,23 @@ describe("KnowledgeService.ingestDocument", () => {
     expect(documents.get("ghost")?.status).toBe("failed");
   });
 
-  // #2356 — ingest read an ACL holding a legacy group; an editor removed the
-  // group while the document was being embedded. The quarantine write refuses
-  // to put it back; ingest reads the list again and indexes under the editor's
-  // list, without throwing into the queue's re-parse and re-embed.
+  // #2356 / #2435 — ingest read an ACL holding a legacy group; an editor removed
+  // the group while the document was being embedded. Ingest names no ACL, so the
+  // quarantine write keeps the editor's list and indexes under it.
   describe("a legacy group removed mid-ingest", () => {
     const legacy = JSON.stringify([
       { kind: "group", value: "legacy" },
       { kind: "user", value: "alice" },
     ]);
     const edited = JSON.stringify([{ kind: "user", value: "alice" }]);
-    let embedded = false;
     class EditingEmbedder extends Embedder {
       override async embed(texts: string[]) {
         const doc = documents.get("d-acl");
         if (doc) documents.set("d-acl", { ...doc, aclSubjects: edited });
-        embedded = true;
         return super.embed(texts);
       }
     }
     beforeEach(async () => {
-      embedded = false;
       svc = new KnowledgeService({
         storage,
         vectorStore: store,
@@ -657,39 +652,6 @@ describe("KnowledgeService.ingestDocument", () => {
       const indexed = [...chunks.values()].filter((c) => c.documentId === "d-acl");
       expect(indexed).toHaveLength(result.chunkCount);
       for (const c of indexed) expect(c.aclSubjects).toBe(edited);
-    });
-
-    it("fails the ingest with a clear reason when the list changes under the second write too", async () => {
-      // The re-read still sees the legacy group, as if another editor put it back
-      // and it was removed again before the write: the second write is refused.
-      const findFirst = vi.mocked(prisma.document.findFirst);
-      const original = findFirst.getMockImplementation()!;
-      let afterEmbed = 0;
-      findFirst.mockImplementation((async (args: Parameters<typeof original>[0]) => {
-        const row = await original(args);
-        if (!embedded) return row;
-        afterEmbed += 1;
-        // 1: the first write's read; 2: the re-read; 3: the second write's read.
-        return afterEmbed === 2 && row ? { ...row, aclSubjects: legacy } : row;
-      }) as typeof original);
-      try {
-        const result = await svc.ingestDocument("d-acl");
-
-        expect(result).toEqual({
-          documentId: "d-acl",
-          status: "failed",
-          chunkCount: 0,
-          errorMessage: ACL_CHANGED_DURING_INGEST,
-        });
-        const doc = documents.get("d-acl");
-        expect(doc?.status).toBe("failed");
-        expect(doc?.errorMessage).toBe(ACL_CHANGED_DURING_INGEST);
-        // The editor's list stands; nothing was indexed under the old one.
-        expect(doc?.aclSubjects).toBe(edited);
-        expect([...chunks.values()].filter((c) => c.documentId === "d-acl")).toEqual([]);
-      } finally {
-        findFirst.mockImplementation(original);
-      }
     });
   });
 

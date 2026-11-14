@@ -148,6 +148,13 @@ export async function saveDocumentAcl(
     if (groups.length > 0) throw new AclGroupUnsupportedError(groups);
     await deps.afterRead?.();
     const chunkCount = await prisma.$transaction(async (tx) => {
+      // #2435 — load-bearing order: the document row FIRST, its chunks second.
+      // On Postgres this UPDATE waits behind an in-flight approval, which holds
+      // the row lock from its indexState CAS until it commits the new chunks,
+      // so the chunk update below then sees (and restricts) those chunks.
+      // Chunks first would update the rows approval is deleting and miss the
+      // new ones, leaving them on the old list. Pinned by
+      // rag-approve-acl-save-2435-postgres.integration.test.ts.
       const won = await tx.document.updateMany({
         where: { ...where, aclSubjects: doc.aclSubjects },
         data: { aclSubjects: serialized },
