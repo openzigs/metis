@@ -6,6 +6,7 @@ import {
   PORTFOLIO_ASSESSMENT_LIMITS,
   PORTFOLIO_ASSESSMENT_MAX_PRODUCTS,
   PORTFOLIO_COVERAGES,
+  PORTFOLIO_MAX_REQUIREMENTS,
   PORTFOLIO_DEGRADED_REASON,
   PORTFOLIO_NOT_CHECKED_MAX,
   PORTFOLIO_RESOURCE_GROUPS,
@@ -290,6 +291,8 @@ describe("portfolio assessment schemas", () => {
       // #2345 — no change request, and not run before approval.
       sourceAnalysisId: null,
       preApproval: false,
+      // #2301 — no chosen set of requirements.
+      sourceRequirementIds: [],
       scope: "product",
       productIds: ["p"],
       status: "pending",
@@ -496,6 +499,44 @@ describe("createPortfolioAssessmentSchema (#1625)", () => {
     expect(ok({ statement: "s", documentId: "d1", scope: "all-accessible" })).toBe(false);
     expect(ok({ requirementId: "r1", documentId: "d1", scope: "all-accessible" })).toBe(false);
     expect(ok({ documentId: "", scope: "all-accessible" })).toBe(false);
+  });
+
+  it("#2301 — a set of stored requirements: one to the cap, each named once, as the only source", () => {
+    const ids = (n: number) => Array.from({ length: n }, (_, i) => `r${i}`);
+    expect(ok({ requirementIds: ["r1"], scope: "all-accessible" })).toBe(true);
+    expect(ok({ requirementIds: ids(PORTFOLIO_MAX_REQUIREMENTS), scope: "all-accessible" })).toBe(
+      true,
+    );
+    // Past the cap is refused, never cut.
+    expect(
+      ok({ requirementIds: ids(PORTFOLIO_MAX_REQUIREMENTS + 1), scope: "all-accessible" }),
+    ).toBe(false);
+    expect(ok({ requirementIds: [], scope: "all-accessible" })).toBe(false);
+    expect(ok({ requirementIds: ["r1", "r1"], scope: "all-accessible" })).toBe(false);
+    expect(ok({ requirementIds: [""], scope: "all-accessible" })).toBe(false);
+    expect(ok({ requirementIds: ["r1"], requirementId: "r2", scope: "all-accessible" })).toBe(
+      false,
+    );
+    expect(ok({ requirementIds: ["r1"], statement: "s", scope: "all-accessible" })).toBe(false);
+    expect(ok({ requirementIds: ["r1"], analysisId: "a1", scope: "all-accessible" })).toBe(false);
+  });
+
+  it("#2301 — a stored check records its chosen requirements, empty by default and bounded", () => {
+    const base = { statement: "s", scope: "all-accessible", productIds: [], createdById: "u" };
+    expect(portfolioAssessmentInputSchema.parse(base).sourceRequirementIds).toEqual([]);
+    expect(
+      portfolioAssessmentInputSchema.parse({ ...base, sourceRequirementIds: ["r1", "r2"] })
+        .sourceRequirementIds,
+    ).toEqual(["r1", "r2"]);
+    expect(
+      portfolioAssessmentInputSchema.safeParse({
+        ...base,
+        sourceRequirementIds: Array.from(
+          { length: PORTFOLIO_MAX_REQUIREMENTS + 1 },
+          (_, i) => `r${i}`,
+        ),
+      }).success,
+    ).toBe(false);
   });
 
   it("bounds the statement and the products", () => {

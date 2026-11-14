@@ -107,6 +107,8 @@ export async function resolveReaderAccess(user: AuthPayload): Promise<ReaderAcce
 /**
  * #2447 — what of an assessment's source the reader cannot see. `all`: every
  * word of it (a single requirement resting on a source they cannot see).
+ * #2301: a chosen set's requirements are read like a change request's, and
+ * its criteria are written as `title: body` too.
  * Otherwise `hides(text)` says whether one stored text (a criterion, a
  * not-checked entry) may have been drawn from a change-request row they cannot
  * see, and `any` whether any stored text was, which withholds the model's
@@ -127,24 +129,36 @@ export async function resolveReaderAccess(user: AuthPayload): Promise<ReaderAcce
  * on those sources against the access lists as they are now, alongside the
  * rows that exist now: a recorded row hidden from the reader hides as a row
  * that exists would. A single-requirement check whose row is gone (its link is
- * set null) is still one: every word of it goes. A record that does not parse
- * hides everything. A check from before the column whose rows were deleted
+ * set null) is still one: every word of it goes. A chosen set (#2301) records
+ * its rows too and is read like a change request; a member hidden by its row
+ * or by its record has its id withheld. A record that does not parse hides
+ * everything. A check from before the column whose rows were deleted
  * before the migration could record them keeps the rule above.
  */
 async function hiddenSource(
   access: ReaderAccess,
   a: PortfolioAssessment,
   sourceRows: StoredSourceRows,
-): Promise<{ all: boolean; any: boolean; hides: (text: string) => boolean }> {
-  const none = { all: false, any: false, hides: () => false };
-  const all = { all: true, any: true, hides: () => true };
+): Promise<{
+  all: boolean;
+  any: boolean;
+  hides: (text: string) => boolean;
+  /** #2301 — the ids of the source requirements resting on a source the reader cannot see. */
+  ids: ReadonlySet<string>;
+}> {
+  const none = { all: false, any: false, hides: () => false, ids: new Set<string>() };
+  const all = (ids: ReadonlySet<string>) => ({ all: true, any: true, hides: () => true, ids });
+  const isSet = (a.sourceRequirementIds?.length ?? 0) > 0;
   if (access.admin) return none;
-  if (sourceRows === "unreadable") return all;
+  if (sourceRows === "unreadable") return all(new Set(a.sourceRequirementIds ?? []));
   const where = a.sourceRequirementId
     ? { id: a.sourceRequirementId }
     : a.sourceAnalysisId
       ? { analysisId: a.sourceAnalysisId }
-      : null;
+      : // #2301 — a chosen set: those of its requirements resting on a hidden source.
+        isSet
+        ? { id: { in: a.sourceRequirementIds } }
+        : null;
   const recorded = sourceRows ?? [];
   if (!where && recorded.length === 0) return none;
   const rows = where
@@ -160,10 +174,15 @@ async function hiddenSource(
     ...recorded.map((r) => ({ ...r, id: `recorded:${r.id}` })),
   ]);
   if (hidden.size === 0) return none;
-  // Fails closed by design: a recorded check with no change request reads fully
+  // #2301 — a set's requirement is hidden by its row now or by its record.
+  const ids = new Set([...hidden].map((id) => id.replace(/^recorded:/, "")));
+  // A recorded check with no change request and no set is a single requirement
+  // whose link was set null. Fails closed by design: such a check reads fully
   // Restricted to non-admins even where nothing is restricted, if a requirement's
   // Analysis was ever hard-deleted (no app path does; deletes are soft).
-  if (a.sourceRequirementId || (sourceRows !== null && !a.sourceAnalysisId)) return all;
+  if (a.sourceRequirementId || (sourceRows !== null && !a.sourceAnalysisId && !isSet)) {
+    return all(ids);
+  }
   const visible = rows
     .filter((r) => !hidden.has(r.id))
     .map((r) => normalized(`${r.title}: ${r.body}`));
@@ -177,7 +196,7 @@ async function hiddenSource(
   const any =
     criteria.length === 0 ||
     [...criteria, ...a.notChecked.filter(carriesText).map((n) => n.text)].some(hides);
-  return { all: false, any, hides };
+  return { all: false, any, hides, ids };
 }
 
 /** Whitespace collapsed, as a not-checked entry's opening is written (`oneLine`). */
@@ -675,6 +694,11 @@ export async function viewPortfolioAssessment(
   return {
     ...a,
     statement: hidden.all ? RESTRICTED_SOURCE_TITLE : a.statement,
+    // #2301 — a chosen set names only the requirements this reader can see; of
+    // the rest only how many there are, so the page can tell the set is not
+    // all theirs to re-open.
+    sourceRequirementIds: (a.sourceRequirementIds ?? []).filter((id) => !hidden.ids.has(id)),
+    sourceRequirementCount: (a.sourceRequirementIds ?? []).length,
     notChecked: a.notChecked.map((n) =>
       hidden.all || (carriesText(n) && fromHidden(n.text))
         ? { ...n, text: RESTRICTED_SOURCE_TITLE }

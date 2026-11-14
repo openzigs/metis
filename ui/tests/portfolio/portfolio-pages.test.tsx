@@ -116,6 +116,29 @@ describe("portfolio assessment page", () => {
     expect(await axeViolations(container)).toEqual([]);
   });
 
+  it("#2301 — a check of a chosen set of requirements is headed as one", async () => {
+    api.get.mockResolvedValue({
+      ...fiveStates(),
+      sourceRequirementIds: ["r-1", "r-2"],
+      sourceRequirementCount: 2,
+      statement: '2 chosen requirements of project "Checkout"',
+    });
+    render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByRole("heading", { name: "Chosen requirements" })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "Requirement" })).toBeNull();
+  });
+
+  it("#2301 — a set this reader sees only part of is still headed as a set", async () => {
+    api.get.mockResolvedValue({
+      ...fiveStates(),
+      sourceRequirementIds: [],
+      sourceRequirementCount: 1,
+      statement: '1 chosen requirement of project "Checkout"',
+    });
+    render(<PortfolioAssessmentPage />, { wrapper: makeWrapper() });
+    expect(await screen.findByRole("heading", { name: "Chosen requirements" })).toBeVisible();
+  });
+
   it("#2345 — a change request's check before approval is labelled, and links back to it", async () => {
     api.get.mockResolvedValue({
       ...fiveStates(),

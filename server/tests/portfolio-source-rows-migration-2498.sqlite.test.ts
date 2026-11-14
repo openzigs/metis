@@ -71,7 +71,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         x.id.localeCompare(y.id),
       );
     };
-    const IDS = ["pa-cr", "pa-req", "pa-req-gone", "pa-statement"];
+    const IDS = ["pa-cr", "pa-req", "pa-req-gone", "pa-statement", "pa-set"];
     const seeded: Record<string, Record<string, unknown>> = {};
     let before: string[];
 
@@ -108,6 +108,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         // Its requirement was deleted before the migration: the link was set null.
         insert.run("pa-req-gone", ts, null, null);
         insert.run("pa-statement", ts, null, null);
+        // #2301 — a chosen set, across runs: its requirements, and only those.
+        db.prepare(
+          `INSERT INTO "portfolio_assessments"
+             ("id","statement","scope","status","createdById","updatedAt","sourceRequirementIds")
+           VALUES ('pa-set','s','product','completed','u-1',?,'["r-other","r-secret"]')`,
+        ).run(ts);
       });
       for (const id of IDS) seeded[id] = check(id);
       before = columns();
@@ -125,6 +131,10 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         // The change request's rows, of that run only, with their sources (NULL kept as null).
         expect(recorded("pa-cr")).toEqual([
           { id: "r-open", analysisId: "an-1", sourceIds: null },
+          { id: "r-secret", analysisId: "an-1", sourceIds: SECRET_SOURCES },
+        ]);
+        expect(recorded("pa-set")).toEqual([
+          { id: "r-other", analysisId: "an-2", sourceIds: null },
           { id: "r-secret", analysisId: "an-1", sourceIds: SECRET_SOURCES },
         ]);
         expect(recorded("pa-req")).toEqual([
@@ -158,6 +168,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // The backfill fills only an unrecorded check, so a re-run changes nothing.
       expect(pgUp).toMatch(/WHERE "pa"\."sourceRows" IS NULL/);
       expect(pgUp).toContain(`'[]'`);
+      // #2301 — a chosen set records its requirements; only a valid array is read.
+      expect(pgUp).toContain(`json_array_elements_text("pa"."sourceRequirementIds"::json)`);
+      expect(pgUp).toContain(`"pa"."sourceRequirementIds" IS JSON ARRAY`);
       expect(pgDown).toContain(
         `ALTER TABLE "portfolio_assessments" DROP COLUMN IF EXISTS "sourceRows";`,
       );

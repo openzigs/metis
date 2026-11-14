@@ -205,7 +205,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
 
     /** Checks started while `d-secret` was open, and one after it was restricted. */
-    const checks = { withheld: "", resynthesis: "", single: "", readOpenOnly: "", moved: "" };
+    const checks = {
+      withheld: "",
+      resynthesis: "",
+      single: "",
+      readOpenOnly: "",
+      moved: "",
+      set: "",
+    };
     const MOVED = "Invoices show the tax";
 
     beforeAll(async () => {
@@ -262,6 +269,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await requirement("cr-moved-row", "cr-moved", MOVED, "d-secret");
       checks.moved = await start({ analysisId: "cr-moved" });
       await complete(checks.moved, [quote(MOVED)]);
+      // #2301 — a chosen set of two stored requirements, one resting on d-secret.
+      await run("cr-set");
+      await requirement("cr-set-open", "cr-set", OPEN, "d-open");
+      await requirement("cr-set-secret", "cr-set", SECRET, "d-secret");
+      checks.set = await start({ requirementIds: ["cr-set-open", "cr-set-secret"] });
+      await complete(checks.set, [quote(OPEN), quote(SECRET)]);
       for (const id of [checks.withheld, checks.resynthesis]) {
         await complete(id, [quote(OPEN), quote(SECRET)]);
       }
@@ -378,6 +391,26 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(bob.summary).toBe(STORED_SUMMARY);
       expect(criteriaOf(bob)).toEqual([quote(OPEN)]);
       expect(bob.report?.requirements.map((r) => r.text)).toEqual([`${quote(OPEN)}, restated`]);
+    });
+
+    it("a chosen set (#2301) records its rows, and a member hard-deleted since stays hidden", async () => {
+      const row = await db.portfolioAssessment.findUniqueOrThrow({ where: { id: checks.set } });
+      expect(parseSourceRows(row.sourceRows)).toEqual([
+        { id: "cr-set-open", analysisId: "cr-set", sourceIds: sources(["d-open"]) },
+        { id: "cr-set-secret", analysisId: "cr-set", sourceIds: sources(["d-secret"]) },
+      ]);
+      await db.requirement.deleteMany({ where: { id: "cr-set-secret" } });
+      const bob = await view("bob", checks.set);
+      expect(JSON.stringify(bob)).not.toContain("Payroll");
+      // Read like a change request: the open member's criterion stands, not every word.
+      expect(criteriaOf(bob)).toEqual([quote(OPEN), RESTRICTED_SOURCE_TITLE]);
+      expect(bob.report?.requirements).toEqual([]);
+      // #2301 — the hidden member's id is withheld from Bob; the count is not.
+      expect(bob.sourceRequirementIds).toEqual(["cr-set-open"]);
+      expect(bob.sourceRequirementCount).toBe(2);
+      const root = await view("root", checks.set);
+      expect(criteriaOf(root)).toEqual([quote(OPEN), quote(SECRET)]);
+      expect(root.sourceRequirementIds).toEqual(["cr-set-open", "cr-set-secret"]);
     });
 
     it("a recorded row that still exists is decided on its sources now, not only as recorded", async () => {

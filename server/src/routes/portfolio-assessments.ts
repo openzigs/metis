@@ -19,11 +19,13 @@
  *   anything else is 404 (no existence oracle). So must (#2345) `analysisId` a
  *   live change request; its requirements are read by the server, never the form. So must (#2272) `documentId` a
  *   live document in such a project, and an `all-accessible` scope's
- *   `hostProductId` a product they can read.
+ *   `hostProductId` a product they can read. So must (#2301) every id of
+ *   `requirementIds`, and they must all be one project's (400 otherwise).
  * - #2272 — a check started from a document records the document's project as
  *   its source project, so only a reader of that project may read the check
  *   (`viewPortfolioAssessment`): its statement and requirements are the
- *   document's words.
+ *   document's words. #2301 — so does a chosen set of requirements: all of one
+ *   project, so that one project's readers are every source's readers.
  * - Reads never trust what was stored: `viewPortfolioAssessment` re-filters
  *   every product and repo against the reader's access now.
  *
@@ -65,6 +67,7 @@ import { PORTFOLIO_ASSESSMENT_HEARTBEAT_MS } from "../lib/portfolio/interrupted-
 import {
   evaluatePortfolioGap,
   loadReadableSourceRequirement,
+  loadReadableSourceRequirements,
   mapWithConcurrency,
   portfolioGapInputSchema,
   scopedToChange,
@@ -238,6 +241,8 @@ interface RunSource {
   preApproval?: boolean;
   /** #2498 — the requirement rows it reads, recorded with the check; none for any other source. */
   sourceRows?: CheckedSourceRow[];
+  /** #2301 — the chosen requirements checked; absent for any other source. */
+  requirementIds?: string[];
 }
 
 /**
@@ -306,6 +311,41 @@ export async function gapInputFor(
       sourceRows: changeRequest.requirements.map((r) => ({
         id: r.id,
         analysisId: changeRequest.id,
+        sourceIds: r.sourceIds,
+      })),
+    };
+  }
+  if (body.requirementIds !== undefined) {
+    // #2301 — a chosen set of stored requirements, each one criterion: read
+    // with the caller's access (404 for any they cannot read), one project's.
+    const set = await loadReadableSourceRequirements(user, body.requirementIds);
+    const project = await prisma.project.findUnique({
+      where: { id: set.projectId },
+      select: { name: true },
+    });
+    const criteria = boundedRequirements(
+      set.requirements.map((r) => `${r.title}: ${r.body}`.trim()),
+    );
+    const n = set.requirements.length;
+    return {
+      input: portfolioGapInputSchema.parse({
+        // Never a requirement's title: a later reader may not see every one (#2447).
+        statement: cutText(
+          `${n} chosen ${n === 1 ? "requirement" : "requirements"} of project "${(project?.name ?? "").replace(/\s+/g, " ").trim()}"`,
+          PORTFOLIO_STATEMENT_MAX_CHARS,
+        ).text,
+        criteria: criteria.criteria,
+        sourceProjectId: set.projectId,
+        ...scoped,
+      }),
+      notChecked: criteria.notChecked,
+      documentId: null,
+      requirementIds: set.requirements.map((r) => r.id),
+      preApproval: set.requirements.some((r) => r.reviewStatus !== "approved"),
+      // #2498 — the rows read (every one the starter can see, or the set is refused).
+      sourceRows: set.requirements.map((r) => ({
+        id: r.id,
+        analysisId: r.analysisId,
         sourceIds: r.sourceIds,
       })),
     };
@@ -553,6 +593,8 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
             // #2345 — the change request it was started from, and whether it ran before approval.
             sourceAnalysisId: source.analysisId ?? null,
             preApproval: source.preApproval ?? false,
+            // #2301 — the chosen set, so its host-picker link re-opens the same set.
+            sourceRequirementIds: source.requirementIds ?? [],
             scope: input.scope,
             productIds: input.productIds,
             // #1725 — stored so the page can say which product will build it.
