@@ -1,0 +1,2764 @@
+{
+  "issue": 2357,
+  "measuredCommits": {
+    "with": "3f5cf5272 (main): #2198's section in CITATION_INSTRUCTION",
+    "without": "3f5cf5272 with the section (and the requirement-id rule under it) deleted from CITATION_INSTRUCTION in the working tree",
+    "final": "this PR: the five claim-check rules removed, the requirement-id rule kept"
+  },
+  "questions": "with/without runs: S7,S8,S9,S10,S11; base23 runs: the 23 one-turn questions S1-S11, M1-M4, A1-A4, U1-U4",
+  "totalSpentUsd": 4.787277,
+  "runs": [
+    {
+      "label": "with-1",
+      "prompt": "with",
+      "runId": "2026-11-14T20-36-04-907Z-on",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "on",
+      "fixtureVersion": 3,
+      "spentUsd": 0.388632,
+      "questions": [
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 13,
+            "of": 13
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 5,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 1,
+          "costUsd": 0.0508551
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 9,
+            "of": 9
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 8,
+          "turnsUsed": 4,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.06440030000000001
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 4,
+            "of": 4
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 4,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0429575
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 17,
+            "of": 17
+          },
+          "citationsFile": {
+            "supported": 3,
+            "of": 3
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 17,
+          "turnsUsed": 6,
+          "turnsExhausted": true,
+          "truncatedToolResults": 0,
+          "costUsd": 0.1337061
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 8,
+            "of": 8
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 2,
+            "of": 3
+          },
+          "toolCalls": 5,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0459952
+        }
+      ]
+    },
+    {
+      "label": "without-1",
+      "prompt": "without",
+      "runId": "2026-11-14T20-40-29-863Z-on",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "on",
+      "fixtureVersion": 3,
+      "spentUsd": 0.348919,
+      "questions": [
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 10,
+            "of": 10
+          },
+          "citationsFile": {
+            "supported": 1,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 7,
+          "turnsUsed": 4,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.058104300000000005
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 7,
+            "of": 7
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 6,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.053362400000000004
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 4,
+            "of": 4
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 3,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.038251
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 17,
+            "of": 17
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 2,
+            "of": 3
+          },
+          "toolCalls": 13,
+          "turnsUsed": 6,
+          "turnsExhausted": true,
+          "truncatedToolResults": 0,
+          "costUsd": 0.1086543
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 6,
+            "of": 6
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 2,
+            "of": 3
+          },
+          "toolCalls": 6,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0423931
+        }
+      ]
+    },
+    {
+      "label": "with-2",
+      "prompt": "with",
+      "runId": "2026-11-14T20-41-59-070Z-on",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "on",
+      "fixtureVersion": 3,
+      "spentUsd": 0.406241,
+      "questions": [
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 10,
+            "of": 10
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 7,
+          "turnsUsed": 4,
+          "turnsExhausted": false,
+          "truncatedToolResults": 1,
+          "costUsd": 0.0572793
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 11,
+            "of": 11
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 7,
+          "turnsUsed": 4,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0623458
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 7,
+            "of": 7
+          },
+          "citationsFile": {
+            "supported": 1,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 2,
+            "of": 3
+          },
+          "toolCalls": 5,
+          "turnsUsed": 4,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.047895599999999997
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 23,
+            "of": 23
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 2
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 19,
+          "turnsUsed": 6,
+          "turnsExhausted": true,
+          "truncatedToolResults": 0,
+          "costUsd": 0.1437119
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 5,
+            "of": 5
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 2,
+            "of": 3
+          },
+          "toolCalls": 5,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0428709
+        }
+      ]
+    },
+    {
+      "label": "without-2",
+      "prompt": "without",
+      "runId": "2026-11-14T20-43-57-747Z-on",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "on",
+      "fixtureVersion": 3,
+      "spentUsd": 0.264555,
+      "questions": [
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 12,
+            "of": 12
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 6,
+          "turnsUsed": 4,
+          "turnsExhausted": false,
+          "truncatedToolResults": 1,
+          "costUsd": 0.0312667
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 7,
+            "of": 7
+          },
+          "citationsFile": {
+            "supported": 1,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 6,
+          "turnsUsed": 4,
+          "turnsExhausted": false,
+          "truncatedToolResults": 1,
+          "costUsd": 0.0341836
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 2,
+            "of": 2
+          },
+          "citationsFile": {
+            "supported": 1,
+            "of": 3
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 3,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0188506
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 16,
+            "of": 16
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 2
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 16,
+          "turnsUsed": 6,
+          "turnsExhausted": true,
+          "truncatedToolResults": 0,
+          "costUsd": 0.11983450000000001
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 5,
+            "of": 5
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 2,
+            "of": 3
+          },
+          "toolCalls": 4,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.015656
+        }
+      ]
+    },
+    {
+      "label": "with-3",
+      "prompt": "with",
+      "runId": "2026-11-14T20-45-41-006Z-on",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "on",
+      "fixtureVersion": 3,
+      "spentUsd": 0.248073,
+      "questions": [
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 11,
+            "of": 11
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 5,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.024256200000000002
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 8,
+            "of": 8
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 7,
+          "turnsUsed": 4,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0391142
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 9,
+            "of": 9
+          },
+          "citationsFile": {
+            "supported": 1,
+            "of": 2
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 5,
+          "turnsUsed": 4,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0280764
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 0,
+            "contradicted": 1,
+            "missing": 2,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 15,
+            "of": 15
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 2,
+            "of": 3
+          },
+          "toolCalls": 17,
+          "turnsUsed": 6,
+          "turnsExhausted": true,
+          "truncatedToolResults": 0,
+          "costUsd": 0.08470120000000002
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 6,
+            "of": 6
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 2,
+            "of": 3
+          },
+          "toolCalls": 6,
+          "turnsUsed": 4,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.021936499999999998
+        }
+      ]
+    },
+    {
+      "label": "without-3",
+      "prompt": "without",
+      "runId": "2026-11-14T20-47-21-360Z-on",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "on",
+      "fixtureVersion": 3,
+      "spentUsd": 0.267983,
+      "questions": [
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 11,
+            "of": 11
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 8,
+          "turnsUsed": 5,
+          "turnsExhausted": false,
+          "truncatedToolResults": 1,
+          "costUsd": 0.032660800000000004
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 7,
+            "of": 8
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 7,
+          "turnsUsed": 4,
+          "turnsExhausted": false,
+          "truncatedToolResults": 1,
+          "costUsd": 0.0410866
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 4,
+            "of": 4
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 3,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0184328
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 15,
+            "of": 15
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 21,
+          "turnsUsed": 6,
+          "turnsExhausted": true,
+          "truncatedToolResults": 0,
+          "costUsd": 0.11291259999999999
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 5,
+            "of": 6
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 2,
+            "of": 3
+          },
+          "toolCalls": 5,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0183559
+        }
+      ]
+    },
+    {
+      "label": "default-with-1",
+      "prompt": "with",
+      "runId": "2026-11-14T20-49-11-220Z-default",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "default",
+      "fixtureVersion": 3,
+      "spentUsd": 0.368843,
+      "questions": [
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 8,
+            "of": 8
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 10,
+          "turnsUsed": 6,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.08436550000000001
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 10,
+            "of": 10
+          },
+          "citationsFile": {
+            "supported": 2,
+            "of": 2
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 10,
+          "turnsUsed": 5,
+          "turnsExhausted": false,
+          "truncatedToolResults": 1,
+          "costUsd": 0.07694469999999999
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 2,
+            "of": 2
+          },
+          "citationsFile": {
+            "supported": 1,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 2,
+            "of": 3
+          },
+          "toolCalls": 3,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0363985
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 5,
+            "of": 6
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 3
+          },
+          "toolCalls": 10,
+          "turnsUsed": 5,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.07867779999999999
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 1,
+            "contradicted": 1,
+            "missing": 1,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 8,
+            "of": 8
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 1,
+            "of": 3
+          },
+          "toolCalls": 4,
+          "turnsUsed": 4,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0482466
+        }
+      ]
+    },
+    {
+      "label": "default-without-1",
+      "prompt": "without",
+      "runId": "2026-11-14T20-50-49-434Z-default",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "default",
+      "fixtureVersion": 3,
+      "spentUsd": 0.40421,
+      "questions": [
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 8,
+            "of": 8
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 2,
+            "of": 3
+          },
+          "toolCalls": 6,
+          "turnsUsed": 4,
+          "turnsExhausted": false,
+          "truncatedToolResults": 1,
+          "costUsd": 0.0651017
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 9,
+            "of": 10
+          },
+          "citationsFile": {
+            "supported": 1,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 8,
+          "turnsUsed": 5,
+          "turnsExhausted": false,
+          "truncatedToolResults": 1,
+          "costUsd": 0.06646729999999999
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 2,
+            "of": 2
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 2,
+            "of": 3
+          },
+          "toolCalls": 3,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0339982
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 10,
+            "of": 10
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 16,
+          "turnsUsed": 6,
+          "turnsExhausted": true,
+          "truncatedToolResults": 0,
+          "costUsd": 0.14059660000000002
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 1,
+            "contradicted": 1,
+            "missing": 1,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 8,
+            "of": 8
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 1,
+            "of": 3
+          },
+          "toolCalls": 3,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.044251900000000004
+        }
+      ]
+    },
+    {
+      "label": "default-with-2",
+      "prompt": "with",
+      "runId": "2026-11-14T20-52-30-891Z-default",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "default",
+      "fixtureVersion": 3,
+      "spentUsd": 0.349979,
+      "questions": [
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 10,
+            "of": 10
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 8,
+          "turnsUsed": 6,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0474582
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 12,
+            "of": 12
+          },
+          "citationsFile": {
+            "supported": 1,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 11,
+          "turnsUsed": 6,
+          "turnsExhausted": true,
+          "truncatedToolResults": 0,
+          "costUsd": 0.079314
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 2,
+            "of": 2
+          },
+          "citationsFile": {
+            "supported": 1,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 2,
+            "of": 3
+          },
+          "toolCalls": 3,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0171099
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 1,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 15,
+            "of": 15
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 3
+          },
+          "toolCalls": 16,
+          "turnsUsed": 6,
+          "turnsExhausted": true,
+          "truncatedToolResults": 2,
+          "costUsd": 0.11901389999999999
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 1,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 4,
+            "of": 4
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 1,
+            "of": 3
+          },
+          "toolCalls": 4,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0323913
+        }
+      ]
+    },
+    {
+      "label": "default-without-2",
+      "prompt": "without",
+      "runId": "2026-11-14T20-54-28-812Z-default",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "default",
+      "fixtureVersion": 3,
+      "spentUsd": 0.33781,
+      "questions": [
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 7,
+            "of": 8
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 3
+          },
+          "expectedFilesCited": {
+            "n": 2,
+            "of": 3
+          },
+          "toolCalls": 9,
+          "turnsUsed": 5,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0487898
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 9,
+            "of": 9
+          },
+          "citationsFile": {
+            "supported": 1,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 10,
+          "turnsUsed": 6,
+          "turnsExhausted": false,
+          "truncatedToolResults": 1,
+          "costUsd": 0.0645798
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 2,
+            "of": 2
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 2,
+            "of": 3
+          },
+          "toolCalls": 3,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0156684
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 0,
+            "contradicted": 1,
+            "missing": 2,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 15,
+            "of": 15
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 3
+          },
+          "toolCalls": 15,
+          "turnsUsed": 6,
+          "turnsExhausted": true,
+          "truncatedToolResults": 3,
+          "costUsd": 0.126568
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 5,
+            "of": 5
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 2,
+            "of": 3
+          },
+          "toolCalls": 5,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0346224
+        }
+      ]
+    },
+    {
+      "label": "base23-off",
+      "prompt": "final",
+      "runId": "2026-11-14T21-00-04-939Z-off",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "off",
+      "fixtureVersion": 3,
+      "spentUsd": 0.466734,
+      "questions": [
+        {
+          "id": "S1",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 6
+          },
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 1,
+            "of": 4
+          },
+          "expectedFilesCited": {
+            "n": 1,
+            "of": 3
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.032358000000000005
+        },
+        {
+          "id": "S2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 5
+          },
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 1,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 1,
+            "of": 4
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0256955
+        },
+        {
+          "id": "S3",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 1,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 4
+          },
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 1,
+            "of": 4
+          },
+          "expectedFilesCited": {
+            "n": 1,
+            "of": 4
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0317705
+        },
+        {
+          "id": "S4",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 1,
+            "of": 3
+          },
+          "expectedFilesCited": {
+            "n": 1,
+            "of": 1
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.030805499999999996
+        },
+        {
+          "id": "S5",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 2,
+            "of": 4
+          },
+          "expectedFilesCited": {
+            "n": 2,
+            "of": 2
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.019663
+        },
+        {
+          "id": "S6",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 1,
+            "of": 2
+          },
+          "expectedFilesCited": {
+            "n": 1,
+            "of": 1
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0240855
+        },
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 2
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 3
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0312705
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 1,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 1,
+            "of": 2
+          },
+          "expectedFilesCited": {
+            "n": 1,
+            "of": 3
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.026608
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 1,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 2,
+            "of": 2
+          },
+          "expectedFilesCited": {
+            "n": 2,
+            "of": 3
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.023643
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 5
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 3
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.034867999999999996
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 1,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 1,
+            "of": 4
+          },
+          "expectedFilesCited": {
+            "n": 1,
+            "of": 3
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.022958
+        },
+        {
+          "id": "M1",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 7,
+            "total": 7
+          },
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 8
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.00456
+        },
+        {
+          "id": "M2",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 3
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.006172
+        },
+        {
+          "id": "M3",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 3
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.006770000000000001
+        },
+        {
+          "id": "M4",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 3
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.004124
+        },
+        {
+          "id": "A1",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 0
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.004236
+        },
+        {
+          "id": "A2",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 0
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0032420000000000005
+        },
+        {
+          "id": "A3",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 0
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0229955
+        },
+        {
+          "id": "A4",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 0
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.003666
+        },
+        {
+          "id": "U1",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 0
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0034719999999999994
+        },
+        {
+          "id": "U2",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 0
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.004282
+        },
+        {
+          "id": "U3",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 2
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 0
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.021895500000000002
+        },
+        {
+          "id": "U4",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 2
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 0
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0113855
+        }
+      ]
+    },
+    {
+      "label": "base23-on",
+      "prompt": "final",
+      "runId": "2026-11-14T21-03-30-931Z-on",
+      "model": "claude-sonnet-5-5",
+      "judgeModel": "claude-sonnet-5-5",
+      "arm": "on",
+      "fixtureVersion": 3,
+      "spentUsd": 0.935298,
+      "questions": [
+        {
+          "id": "S1",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 6
+          },
+          "citationsLines": {
+            "supported": 5,
+            "of": 5
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 3
+          },
+          "expectedFilesCited": {
+            "n": 1,
+            "of": 3
+          },
+          "toolCalls": 5,
+          "turnsUsed": 4,
+          "turnsExhausted": false,
+          "truncatedToolResults": 1,
+          "costUsd": 0.0693875
+        },
+        {
+          "id": "S2",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 5,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 5
+          },
+          "citationsLines": {
+            "supported": 15,
+            "of": 15
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 4,
+            "of": 4
+          },
+          "toolCalls": 7,
+          "turnsUsed": 4,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0621532
+        },
+        {
+          "id": "S3",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "citationsLines": {
+            "supported": 10,
+            "of": 10
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 2
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 4
+          },
+          "toolCalls": 7,
+          "turnsUsed": 4,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0542217
+        },
+        {
+          "id": "S4",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 5,
+            "of": 5
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 1,
+            "of": 1
+          },
+          "toolCalls": 5,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0563161
+        },
+        {
+          "id": "S5",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "citationsLines": {
+            "supported": 6,
+            "of": 6
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 1,
+            "of": 2
+          },
+          "toolCalls": 4,
+          "turnsUsed": 4,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.035350099999999995
+        },
+        {
+          "id": "S6",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 4
+          },
+          "citationsLines": {
+            "supported": 6,
+            "of": 6
+          },
+          "citationsFile": {
+            "supported": 1,
+            "of": 2
+          },
+          "expectedFilesCited": {
+            "n": 1,
+            "of": 1
+          },
+          "toolCalls": 4,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.04267010000000001
+        },
+        {
+          "id": "S7",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 9,
+            "of": 9
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 7,
+          "turnsUsed": 5,
+          "turnsExhausted": false,
+          "truncatedToolResults": 1,
+          "costUsd": 0.0558716
+        },
+        {
+          "id": "S8",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 9,
+            "of": 9
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 8,
+          "turnsUsed": 5,
+          "turnsExhausted": false,
+          "truncatedToolResults": 1,
+          "costUsd": 0.06868659999999999
+        },
+        {
+          "id": "S9",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 2,
+            "of": 2
+          },
+          "citationsFile": {
+            "supported": 1,
+            "of": 3
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 4,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.042423899999999994
+        },
+        {
+          "id": "S10",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 3,
+            "contradicted": 0,
+            "missing": 0,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 18,
+            "of": 18
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 1
+          },
+          "expectedFilesCited": {
+            "n": 3,
+            "of": 3
+          },
+          "toolCalls": 20,
+          "turnsUsed": 6,
+          "turnsExhausted": true,
+          "truncatedToolResults": 1,
+          "costUsd": 0.1422755
+        },
+        {
+          "id": "S11",
+          "expect": "answer",
+          "behaviour": "answer",
+          "facts": {
+            "stated": 2,
+            "contradicted": 0,
+            "missing": 1,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 6,
+            "of": 6
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 2,
+            "of": 3
+          },
+          "toolCalls": 6,
+          "turnsUsed": 4,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0473274
+        },
+        {
+          "id": "M1",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 7,
+            "total": 7
+          },
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 8
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.00451
+        },
+        {
+          "id": "M2",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 3
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.005692
+        },
+        {
+          "id": "M3",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 3,
+            "total": 3
+          },
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 3
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.00661
+        },
+        {
+          "id": "M4",
+          "expect": "answer",
+          "behaviour": "abstain",
+          "facts": {
+            "stated": 0,
+            "contradicted": 0,
+            "missing": 2,
+            "total": 2
+          },
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 3
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.003764
+        },
+        {
+          "id": "A1",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 0
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0041259999999999995
+        },
+        {
+          "id": "A2",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 0
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0029720000000000002
+        },
+        {
+          "id": "A3",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "citationsLines": {
+            "supported": 2,
+            "of": 2
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 0
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.030938
+        },
+        {
+          "id": "A4",
+          "expect": "follow-up",
+          "behaviour": "follow-up",
+          "facts": null,
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 0
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.003836
+        },
+        {
+          "id": "U1",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 0
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.0035219999999999995
+        },
+        {
+          "id": "U2",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 0
+          },
+          "toolCalls": 0,
+          "turnsUsed": 1,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.004352
+        },
+        {
+          "id": "U3",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "citationsLines": {
+            "supported": 2,
+            "of": 2
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 0
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 0
+          },
+          "toolCalls": 6,
+          "turnsUsed": 3,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.044499500000000004
+        },
+        {
+          "id": "U4",
+          "expect": "abstain",
+          "behaviour": "abstain",
+          "facts": null,
+          "citationsLines": {
+            "supported": 0,
+            "of": 0
+          },
+          "citationsFile": {
+            "supported": 0,
+            "of": 2
+          },
+          "expectedFilesCited": {
+            "n": 0,
+            "of": 0
+          },
+          "toolCalls": 2,
+          "turnsUsed": 2,
+          "turnsExhausted": false,
+          "truncatedToolResults": 0,
+          "costUsd": 0.021930900000000003
+        }
+      ]
+    }
+  ]
+}
