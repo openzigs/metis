@@ -10,6 +10,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { AIConfig } from "../ai/config.js";
 import type { AIProvider } from "../ai/types.js";
+import { ANTHROPIC_DEFAULT_MODEL_ID } from "../ai/model-router.js";
 
 // A throwaway provider stub returned by the mocked factory.
 const fakeProvider = {
@@ -64,8 +65,8 @@ describe("docsGenTuning supportsCaching by provider kind", () => {
 
   it("pins a BARE Claude model id for anthropic (never the Bedrock us.* form)", () => {
     const tuning = docsGenTuning("anthropic", "ignored");
-    expect(tuning.phase1Model).toBe("claude-sonnet-4-6");
-    expect(tuning.phase2Model).toBe("claude-sonnet-4-6");
+    expect(tuning.phase1Model).toBe(ANTHROPIC_DEFAULT_MODEL_ID);
+    expect(tuning.phase2Model).toBe(ANTHROPIC_DEFAULT_MODEL_ID);
     expect(tuning.phase1Model.startsWith("us.")).toBe(false);
   });
 });
@@ -104,7 +105,7 @@ describe("docsGenTuning claim/judge model routing", () => {
   it("anthropic: claim extraction defaults to Haiku, judge STAYS on Sonnet", () => {
     const tuning = docsGenTuning("anthropic", "ignored");
     expect(tuning.claimModel).toBe("claude-haiku-4-5");
-    expect(tuning.judgeModel).toBe("claude-sonnet-4-6");
+    expect(tuning.judgeModel).toBe(ANTHROPIC_DEFAULT_MODEL_ID);
     expect(tuning.judgeModel).toBe(tuning.phase2Model);
   });
 
@@ -113,7 +114,7 @@ describe("docsGenTuning claim/judge model routing", () => {
     const tuning = docsGenTuning("anthropic", "ignored");
     expect(tuning.claimModel).toBe("claude-haiku-4-5");
     // The judge must remain on Sonnet even when the shared knob is set.
-    expect(tuning.judgeModel).toBe("claude-sonnet-4-6");
+    expect(tuning.judgeModel).toBe(ANTHROPIC_DEFAULT_MODEL_ID);
   });
 
   it("anthropic: claim + judge each honor their dedicated override", () => {
@@ -132,7 +133,7 @@ describe("docsGenTuning claim/judge model routing", () => {
     const flipped = docsGenTuning("anthropic", "ignored");
     expect(flipped.claimModel).toBe("claude-sonnet-4-6");
     // Judge is untouched by the flip.
-    expect(flipped.judgeModel).toBe("claude-sonnet-4-6");
+    expect(flipped.judgeModel).toBe(ANTHROPIC_DEFAULT_MODEL_ID);
   });
 
   it("#701 the provider-specific claim override wins over the cross-provider DOCS_GEN_CLAIM_MODEL", () => {
@@ -191,7 +192,7 @@ describe("buildDocsGenProvider — anthropic provider", () => {
     buildDocsGenProvider(1, 4096);
     const arg = buildProviderMock.mock.calls[0][0] as { config: AIConfig };
     expect(arg.config.provider).toBe("anthropic");
-    expect(arg.config.model).toBe("claude-sonnet-4-6");
+    expect(arg.config.model).toBe(ANTHROPIC_DEFAULT_MODEL_ID);
   });
 });
 

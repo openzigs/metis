@@ -2093,8 +2093,8 @@ default path. To flip claim extraction onto cached-Sonnet for a workload that a
 future measurement proves cheaper, set it to a Sonnet id:
 
 ```
-DOCS_GEN_CLAIM_MODEL=us.anthropic.claude-sonnet-5       # Bedrock
-DOCS_GEN_CLAIM_MODEL=claude-sonnet-5-5                # native Anthropic
+DOCS_GEN_CLAIM_MODEL=us.anthropic.claude-sonnet-5  # Bedrock
+DOCS_GEN_CLAIM_MODEL=claude-sonnet-5-5               # native Anthropic
 ```
 
 Precedence: the provider-specific `DOCS_GEN_ANTHROPIC_CLAIM_MODEL` /

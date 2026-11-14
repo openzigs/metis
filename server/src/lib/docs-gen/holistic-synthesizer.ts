@@ -59,6 +59,7 @@ import {
 } from "./code-graph-summary.js";
 import { buildProvider, loadAIConfig } from "../ai/index.js";
 import { validateLocalProviderUrl } from "../ai/config.js";
+import { ANTHROPIC_DEFAULT_MODEL_ID } from "../ai/model-router.js";
 import { resolveLocalSampling } from "./local-sampling-defaults.js";
 import { AnthropicProvider } from "../ai/providers/anthropic-provider.js";
 import {
@@ -765,7 +766,7 @@ export function docsGenTuning(kind: DocsGenProviderKind, configModel: string): D
     // namespace so Bedrock/local settings can never leak in. supportsCaching is
     // TRUE so the provider emits `cache_control` on the system + facts prefix,
     // cutting Sonnet input cost (~65% on cache hits) with no output change.
-    const anthropicModel = envStr("ANTHROPIC_MODEL") ?? "claude-sonnet-4-6";
+    const anthropicModel = envStr("ANTHROPIC_MODEL") ?? ANTHROPIC_DEFAULT_MODEL_ID;
     return {
       phase1Model: envStr("DOCS_GEN_ANTHROPIC_PHASE1_MODEL") ?? anthropicModel,
       phase2Model: envStr("DOCS_GEN_ANTHROPIC_PHASE2_MODEL") ?? anthropicModel,
