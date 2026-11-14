@@ -23,7 +23,9 @@
  *      a USER turn ahead of the thread: it is user-editable text, so it never
  *      enters a system message.
  *   4. Persist an `authorKind=ai` `DiscussionMessage` (via `buildAiMessageData`,
- *      which nulls `authorUserId` and asserts the author invariant), record ONE
+ *      which nulls `authorUserId` and asserts the author invariant) — #2290:
+ *      with its citations, each checked against the excerpts the reply was
+ *      given and what its tools read (#2242's verifier) — record ONE
  *      `AITokenUsage` row and ONE project-ledger `TokenUsage` row for the whole
  *      reply — every model call it made, tool rounds included.
  *
@@ -49,6 +51,13 @@ import {
   type TokenUsage,
 } from "../ai/index.js";
 import { runChatToolTurn } from "../ai/tool-runtime/chat-turn.js";
+import {
+  collectCitationEvidence,
+  verifyCitations,
+  type RetrievedEvidence,
+  type ToolEvidence,
+} from "../ai/citation-verification.js";
+import type { ChatCitation } from "@metis/shared";
 import { ANSWER_POLICY_SENTENCES } from "../ai/chat-system-prompt.js";
 import { recordUsage as recordProjectUsage } from "../finops/token-tracker.js";
 import { ledgerRequests } from "../finops/summed-requests.js";
@@ -60,6 +69,7 @@ import {
   type DiscussionToolRuntime,
 } from "./grounding.js";
 import { loadAnchorContext } from "./thread-context.js";
+import { citationsField, discussionMessageMeta } from "./message-citations.js";
 import { createChildLogger } from "../logger.js";
 
 const log = createChildLogger("discussion-ai-responder");
@@ -109,6 +119,11 @@ export interface RetrievedContext {
    * the model most needs to be told.
    */
   indexStatus?: string;
+  /**
+   * #2290 — what retrieval put in the block (its excerpts and fused code
+   * entries), so the reply's citations are checked against it.
+   */
+  evidence?: RetrievedEvidence;
 }
 
 export interface StreamAIReplyInput {
@@ -133,7 +148,15 @@ export interface StreamAIReplyInput {
 }
 
 export interface StreamAIReplyResult {
-  message: { id: string; body: string; aiModel: string; aiProvider: string; aiSessionId: string };
+  message: {
+    id: string;
+    body: string;
+    aiModel: string;
+    aiProvider: string;
+    aiSessionId: string;
+    /** #2290 — the reply's checked citations; absent when it cited nothing. */
+    citations?: ChatCitation[];
+  };
   usage: TokenUsage;
 }
 
@@ -279,12 +302,13 @@ function recordToProjectLedger(
  */
 async function retrieveSafely(
   input: StreamAIReplyInput,
-): Promise<{ retrieved: string; indexStatus: string }> {
+): Promise<{ retrieved: string; indexStatus: string; evidence?: RetrievedEvidence }> {
   if (!input.retrieve) return { retrieved: "", indexStatus: "" };
   try {
     const r = await input.retrieve(input.triggerMessage.body);
+    // #2290 — the excerpts are evidence only when the block reached the prompt.
     return r.sources > 0
-      ? { retrieved: r.block, indexStatus: "" }
+      ? { retrieved: r.block, indexStatus: "", ...(r.evidence ? { evidence: r.evidence } : {}) }
       : { retrieved: "", indexStatus: r.indexStatus ?? "" };
   } catch (err) {
     log.warn("Discussion retrieval failed; answering without excerpts", {
@@ -367,7 +391,7 @@ export async function streamAIReply(input: StreamAIReplyInput): Promise<StreamAI
 
   // 2. Ground: the project's excerpts, its read-only tools when offered, and
   //    (#2226) the requirement or analysis the thread is anchored to.
-  const [{ retrieved, indexStatus }, tools, anchor] = await Promise.all([
+  const [{ retrieved, indexStatus, evidence }, tools, anchor] = await Promise.all([
     retrieveSafely(input),
     resolveToolsSafely(input, session.id),
     anchorSafely(input),
@@ -392,6 +416,8 @@ export async function streamAIReply(input: StreamAIReplyInput): Promise<StreamAI
 
   const meter = new ReplyMeter();
   let body = "";
+  /** #2290 — what the reply's tools returned, for its citations. */
+  let toolRecords: readonly ToolEvidence[] = [];
 
   try {
     if (tools) {
@@ -420,6 +446,7 @@ export async function streamAIReply(input: StreamAIReplyInput): Promise<StreamAI
         },
       );
       body = loop.replyText;
+      toolRecords = loop.toolResults;
       // The tool rounds are not streamed; the answer goes out as one delta.
       if (body) onChunk?.({ type: "delta", content: body });
       if (meter.spent) onChunk?.({ type: "usage", usage: meter.spent });
@@ -465,14 +492,29 @@ export async function streamAIReply(input: StreamAIReplyInput): Promise<StreamAI
   }
   const usage = meter.spent ?? { ...ZERO_USAGE };
 
-  // 3. Persist the AI message with attribution (asserts the author invariant).
-  const data = buildAiMessageData({
-    threadId: thread.id,
-    aiProvider: provider.key,
-    aiModel: provider.model,
-    aiSessionId: session.id,
+  // #2290 — every citation in the reply, checked as chat checks its own
+  // (#2242): against the excerpts the reply was given and what its tools
+  // returned, of which only what the model's capped copy showed (#2315).
+  // A thread's earlier replies are plain text with no tool records, so a
+  // citation only an earlier reply read is not evidence here.
+  const citations = verifyCitations(
     body,
-  });
+    collectCitationEvidence(evidence, toolRecords, [], {
+      toolResultMaxChars: DISCUSSION_TOOL_RESULT_MAX_CHARS,
+    }),
+  );
+
+  // 3. Persist the AI message with attribution (asserts the author invariant).
+  const data = {
+    ...buildAiMessageData({
+      threadId: thread.id,
+      aiProvider: provider.key,
+      aiModel: provider.model,
+      aiSessionId: session.id,
+      body,
+    }),
+    meta: discussionMessageMeta(citations),
+  };
   const persisted = (await prisma.discussionMessage.create({ data })) as {
     id: string;
     body: string;
@@ -496,6 +538,7 @@ export async function streamAIReply(input: StreamAIReplyInput): Promise<StreamAI
       aiModel: provider.model,
       aiProvider: provider.key,
       aiSessionId: session.id,
+      ...citationsField(citations),
     },
     usage,
   };

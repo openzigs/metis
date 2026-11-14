@@ -4,6 +4,7 @@
  * 409 conflict loader so the two cannot drift. Dependency-free on purpose: a
  * route test that mocks the analysis barrel still gets the real rule.
  */
+import { REQUIREMENT_REVIEW_STATUSES } from "@metis/shared";
 
 /** A label the caller never sees: `finding:*` traceability or legacy `review:*`. */
 export function isHiddenRequirementLabel(label: string): boolean {
@@ -40,4 +41,29 @@ export function mergeHiddenRequirementLabels(next: string[], stored: string[]): 
  */
 export function visibleRequirementLabels(raw: string | null | undefined): string[] {
   return parseRequirementLabels(raw).filter((l) => !isHiddenRequirementLabel(l));
+}
+
+/**
+ * #1016 — the status a requirement holds for review purposes: the typed column,
+ * else a legacy `review:*` label (rows written before the column existed), the
+ * precedence every reader uses (`resolveRequirementReviewStatus`). Null when it
+ * has neither, or the label is not a known status.
+ *
+ * Deliberately not `resolveRequirementReviewStatus` itself: that one is for
+ * display and reads "nothing recorded" as `draft`, whereas this result is what
+ * a submit CAPTURES to restore later. A requirement that never had a status
+ * must get null back on withdraw (#989), not a `draft` it never held — and a
+ * `draft` capture is skipped by the restore, which would leave the submit's
+ * `draft` in the column for good. The precedence (column, then label) is the
+ * same; only the empty case differs. An unknown column value is returned as
+ * is, so it is restored exactly; readers show it as `draft` either way.
+ */
+export function heldReviewStatus(column: string | null, labelsRaw: string | null): string | null {
+  if (column !== null) return column;
+  const label = parseRequirementLabels(labelsRaw).find((l) => l.startsWith("review:"));
+  const fromLabel = label ? label.slice("review:".length) : null;
+  return fromLabel !== null &&
+    (REQUIREMENT_REVIEW_STATUSES as readonly string[]).includes(fromLabel)
+    ? fromLabel
+    : null;
 }

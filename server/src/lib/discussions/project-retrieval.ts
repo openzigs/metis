@@ -34,6 +34,8 @@ export function projectRetriever(
       block,
       sources: capture.sources,
       ...(capture.indexStatusLine ? { indexStatus: capture.indexStatusLine } : {}),
+      // #2290 — what the block held, to check the reply's citations against.
+      evidence: capture,
     };
   };
 }

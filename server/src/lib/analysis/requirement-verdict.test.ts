@@ -19,6 +19,7 @@ import {
   schemaObjectUnsupported,
   type SchemaObjectEvidence,
   type VerdictFindingInput,
+  wasDowngradedFromImplemented,
 } from "./requirement-verdict.js";
 
 const codeCitation: CodeCitation = { filePath: "src/foo.ts", startLine: 1, endLine: 9 };
@@ -639,5 +640,23 @@ describe("#826 — gateFindingVerdict schema gate (DOWNGRADE-only)", () => {
         schemaEvidence: [notFound],
       }),
     ).toBeNull();
+  });
+});
+
+describe("#2509 wasDowngradedFromImplemented", () => {
+  const code = [codeCitation];
+  it("is true for an implemented claim with grounded code the gate capped", () => {
+    expect(wasDowngradedFromImplemented("implemented", "could-not-verify", code)).toBe(true);
+  });
+  it("is false for the model's own could-not-verify", () => {
+    expect(wasDowngradedFromImplemented("could-not-verify", "could-not-verify", code)).toBe(false);
+  });
+  it("is false for a downgraded gap claim", () => {
+    expect(wasDowngradedFromImplemented("gap-confirmed", "could-not-verify", code)).toBe(false);
+  });
+  it("is false when the claim stood, no code was grounded, or there was no claim", () => {
+    expect(wasDowngradedFromImplemented("implemented", "implemented", code)).toBe(false);
+    expect(wasDowngradedFromImplemented("implemented", "could-not-verify", [])).toBe(false);
+    expect(wasDowngradedFromImplemented(null, "could-not-verify", code)).toBe(false);
   });
 });

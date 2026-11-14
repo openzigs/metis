@@ -333,6 +333,25 @@ export interface GateFindingVerdictInput {
 }
 
 /**
+ * #2509 — true when the gate, not the model, made this finding `could-not-verify`
+ * out of an `implemented` claim that cites grounded code (unhealthy retrieval or
+ * the #826 schema gate). The cited code survived the #734 provenance gate, so it
+ * is still the requirement's code; the model's OWN could-not-verify (or a capped
+ * gap claim) says the cited code is not. Seeding code links reads the difference.
+ */
+export function wasDowngradedFromImplemented(
+  modelVerdict: FindingVerdict | null | undefined,
+  gated: FindingVerdict | null,
+  groundedCitations: readonly Citation[] | undefined,
+): boolean {
+  return (
+    modelVerdict === "implemented" &&
+    gated === "could-not-verify" &&
+    (groundedCitations ?? []).some(isCodeCitation)
+  );
+}
+
+/**
  * Apply the deterministic gate. Returns the verdict to persist on the finding, or
  * `null` when the finding makes no requirement claim at all (a generic
  * observation), in which case it is neither a gap nor an unverifiable one.

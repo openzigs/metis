@@ -3796,6 +3796,11 @@ model DiscussionMessage {
   /// mirroring (#550) skips `teams`-origin rows so a Teams-sourced message is
   /// never echoed back out to Teams (no echo loop). Free-form like `authorKind`.
   origin       String    @default("metis")
+  /// #2290 — an AI reply's metadata, JSON-as-TEXT (no Json columns): today
+  /// `{"citations":[...]}`, each citation checked against what the reply
+  /// retrieved or read (#2242's verifier). NULL on a human message, on an AI
+  /// reply that cited nothing, and on every reply written before #2290.
+  meta         String?
   createdAt    DateTime  @default(now())
   editedAt     DateTime?
   deletedAt    DateTime?

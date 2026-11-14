@@ -5,6 +5,7 @@
 import type { AGENT_RESULT_STATUSES, ANALYSIS_AGENT_KEYS } from "./constants.js";
 import type { AnalysisCapability, AnalysisSkippedRepo } from "./analysis.js";
 import type { AiToolEvent } from "./conversation.js";
+import type { ChatCitation } from "./chat-citations.js";
 import type { PresenceArtifactType } from "./socket-rooms.js";
 
 export interface ProjectRoomEvent {
@@ -265,6 +266,12 @@ export interface DiscussionMessagePayload {
    * message does not render as a raw user id.
    */
   authorName?: string;
+  /**
+   * #2290 — an AI reply's citations, each checked against what the reply
+   * retrieved or read (as a chat reply's are, #2242). Absent when it cited
+   * nothing, on a human message, and on a reply written before #2290.
+   */
+  citations?: ChatCitation[];
 }
 
 /** Epic #475 (#481) — a new message was posted to a discussion thread. */

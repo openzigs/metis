@@ -18,7 +18,28 @@ import {
   RequirementVersionError,
   type VersionPrismaClient,
   type VersionRow,
+  holdsApproval,
 } from "./requirement-version-service.js";
+import { heldReviewStatus } from "../analysis/requirement-labels.js";
+
+describe("holdsApproval (#2224 — one precedence with heldReviewStatus)", () => {
+  const labels = (...l: string[]) => JSON.stringify(l);
+  it("reads the typed column first, then the first legacy review label", () => {
+    expect(holdsApproval({ reviewStatus: "approved", labels: labels() })).toBe(true);
+    expect(holdsApproval({ reviewStatus: "draft", labels: labels("review:approved") })).toBe(false);
+    expect(holdsApproval({ reviewStatus: null, labels: labels("review:approved") })).toBe(true);
+    expect(holdsApproval({ reviewStatus: null, labels: labels("x") })).toBe(false);
+    expect(holdsApproval({})).toBe(false);
+  });
+
+  it("agrees with heldReviewStatus on a row carrying several review labels", () => {
+    // The copy it replaced said "approved" for any `review:approved` label;
+    // every review path reads the first one.
+    const raw = labels("review:draft", "review:approved");
+    expect(heldReviewStatus(null, raw)).toBe("draft");
+    expect(holdsApproval({ reviewStatus: null, labels: raw })).toBe(false);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Pure helpers

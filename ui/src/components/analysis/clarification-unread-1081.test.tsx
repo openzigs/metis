@@ -7,7 +7,7 @@
  *   - grounding: "open" because the check failed is not "open" by verdict;
  *   - web research: a search run on the need's own wording is labelled.
  */
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClarificationStatePayload } from "@/lib/analysis-api";
@@ -110,6 +110,8 @@ describe("#1081 clarification start whose questions could not be read", () => {
   it("says the questions could not be read, not that there is nothing to clarify", async () => {
     clarify.mockRejectedValue(new ApiError(502, "unreadable", "MODEL_REPLY_UNREADABLE"));
     renderResults(WITH_AMBIGUITY);
+    // #2509 — the session starts on the user's click.
+    fireEvent.click(await screen.findByTestId("clarify-ask"));
     const alert = await screen.findByTestId("clarify-start-error");
     expect(alert.textContent).toContain("could not read the clarifying questions");
     expect(alert.textContent).toContain("does not mean there is nothing to clarify");
@@ -118,6 +120,7 @@ describe("#1081 clarification start whose questions could not be read", () => {
   it("keeps the generic wording for any other start failure", async () => {
     clarify.mockRejectedValue(new ApiError(500, "boom", "INTERNAL"));
     renderResults(WITH_AMBIGUITY);
+    fireEvent.click(await screen.findByTestId("clarify-ask"));
     await waitFor(() => expect(screen.getByTestId("clarify-start-error")).toBeTruthy());
     expect(screen.getByTestId("clarify-start-error").textContent).toContain(
       "Could not start the interactive session",

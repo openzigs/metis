@@ -59,6 +59,7 @@ interface Card {
   id: string;
   reviewStatus: string;
   selfApprovalForbidden?: true;
+  approvalReopened?: { reviewId: string; reviewTitle: string; approvedVersion: number };
 }
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
@@ -260,6 +261,41 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         await withRun(status, null, async () => {
           expect(await flagged("u-coord", "coordinator")).toEqual(["r-checkpoint", "r-reworded"]);
         });
+      }
+    });
+
+    // #2224 — the same route names the approved review a since-edited draft
+    // came from (`flagApprovalReopened`), under the same polling rule.
+    it("#2224 — a draft edited since an approved review pinned it names that review", async () => {
+      await db.requirement.update({ where: { id: "r-theirs" }, data: { version: 2 } });
+      await db.reviewRequest.create({
+        data: {
+          id: "rev-2224",
+          projectId: P,
+          title: "Checkout sign-off",
+          status: "approved",
+          requestedById: "u-other",
+          items: { create: { requirementId: "r-theirs", pinnedVersion: 1 } },
+        },
+      });
+      const reopened = async () =>
+        (await cards("u-coord", "coordinator"))
+          .filter((r) => r.approvalReopened !== undefined)
+          .map((r) => [r.id, r.approvalReopened]);
+      try {
+        expect(await reopened()).toEqual([
+          [
+            "r-theirs",
+            { reviewId: "rev-2224", reviewTitle: "Checkout sign-off", approvedVersion: 1 },
+          ],
+        ]);
+        // Not while the page polls a run in progress.
+        await withRun("running", null, async () => {
+          expect(await reopened()).toEqual([]);
+        });
+      } finally {
+        await db.reviewRequest.delete({ where: { id: "rev-2224" } });
+        await db.requirement.update({ where: { id: "r-theirs" }, data: { version: 0 } });
       }
     });
 

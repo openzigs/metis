@@ -40,6 +40,7 @@ import type { AgentKind, AgentRef } from "./agents.js";
 import type { CrossDocFindings } from "./cross-doc.js";
 import type { ImpactAffectedRelation } from "./impact.js";
 import type { TestLinkRelation } from "./traceability.js";
+import type { RequirementApprovalReopened } from "./requirement-approval.js";
 // Type-only, and the dependency runs the other way at runtime: the presentation
 // seam imports this module's types. Erased at build, so no import cycle exists.
 import type { RequirementSupportConfidence } from "./support-panel-view.js";
@@ -732,6 +733,14 @@ export const agentFindingPayloadSchema = z.object({
    * #1610 — three states only: `partial` is a requirement-level roll-up.
    */
   verdict: z.enum(FINDING_VERDICTS).nullish(),
+  /**
+   * #2509 — set by the orchestrator (never trusted from the model: both gating
+   * sites overwrite it) when the gate made an `implemented` claim that cites
+   * grounded code `could-not-verify`. Unlike the model's own `could-not-verify`,
+   * such a finding's citations are still the requirement's code, so code links
+   * may be seeded from them. Absent otherwise.
+   */
+  downgradedFromImplemented: z.boolean().nullish().catch(undefined),
   /**
    * Epic #1107 (#1109) — the multi-lens support panel's confidence signal, set
    * by the orchestrator AFTER the deterministic verifier, and only when
@@ -1878,6 +1887,12 @@ export interface AnalysisSnapshot {
      * requirement the viewer could otherwise approve; absent otherwise.
      */
     selfApprovalForbidden?: true;
+    /**
+     * #2224 — a formal review approved an earlier version and it was edited
+     * since, so it awaits a re-review. Set by `GET /api/analyses/:id` for a
+     * viewer with `review.read`; absent otherwise.
+     */
+    approvalReopened?: RequirementApprovalReopened;
     /**
      * #2447 — the reader cannot see a source this requirement draws on: its
      * text is the restricted placeholder and it carries no criteria, labels or

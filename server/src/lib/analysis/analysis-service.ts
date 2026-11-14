@@ -1307,6 +1307,10 @@ async function writeAgentResult(
             // blob (no migration): `implemented` | `gap-confirmed` |
             // `could-not-verify`. Null for findings that make no requirement claim.
             verdict: f.verdict ?? null,
+            // #2509 — only when the gate made an implemented claim unverifiable.
+            ...(f.downgradedFromImplemented && f.verdict === "could-not-verify"
+              ? { downgradedFromImplemented: true }
+              : {}),
             // Epic #1107 (#1109) — the multi-lens panel's confidence signal, on
             // the same evidence blob (no migration). Written ONLY when a panel
             // actually ran, so a flag-off run persists a byte-identical blob to
@@ -2893,6 +2897,7 @@ const EMPTY_EVIDENCE = {
   tags: [] as string[],
   requirementId: null as string | null,
   verdict: null as FindingVerdict | null,
+  downgradedFromImplemented: false,
   supportPanel: null as FindingSupportPanel | null,
   faithfulness: null as FindingFaithfulness | null,
 };
@@ -2905,10 +2910,12 @@ function parseEvidence(raw: string | null): typeof EMPTY_EVIDENCE {
       tags?: string[];
       requirementId?: unknown;
       verdict?: unknown;
+      downgradedFromImplemented?: unknown;
       supportPanel?: unknown;
       faithfulness?: unknown;
     };
     return {
+      downgradedFromImplemented: obj.downgradedFromImplemented === true,
       citations: Array.isArray(obj.citations) ? obj.citations : [],
       tags: Array.isArray(obj.tags) ? obj.tags : [],
       requirementId: typeof obj.requirementId === "string" ? obj.requirementId : null,
@@ -3468,6 +3475,8 @@ export async function readFlattenedFindings(analysisId: string): Promise<FlatFin
         // Issue #773 — carry the gated verdict into synthesis so the per-requirement
         // roll-up (`computeVerdictsForRequirements`) reads a persisted value.
         verdict: ev.verdict,
+        // #2509 — read back by the code-evidence mark (Approvals, #1568).
+        downgradedFromImplemented: ev.downgradedFromImplemented || undefined,
         // Epic #1107 (#1110) — carry the panel's confidence into synthesis so
         // `orderFindingsForSynthesis` can RANK by it and the findings table can
         // mark it. Null on every flag-off run, which makes the ranking a no-op.

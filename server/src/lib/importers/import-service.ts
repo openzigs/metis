@@ -39,6 +39,7 @@ import { parseRequirementLabels } from "../analysis/requirement-labels.js";
 import { sourcelessRunTitle } from "../analysis/change-request.js";
 import { audit } from "../audit/audit-service.js";
 import { noteProjectRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
+import { dispatchReviewedRequirementEdited } from "../reviews/notify.js";
 import {
   RequirementVersionError,
   parseChangedFields,
@@ -881,8 +882,9 @@ export class ImportService {
        * network calls would lock the database for the length of the import.
        */
       async update(id, input, expectedVersion) {
+        let written: Awaited<ReturnType<typeof updateRequirementWithHistory>>;
         try {
-          await updateRequirementWithHistory(prisma as unknown as VersionPrismaClient, {
+          written = await updateRequirementWithHistory(prisma as unknown as VersionPrismaClient, {
             requirementId: id,
             patch: {
               type: input.type,
@@ -906,6 +908,10 @@ export class ImportService {
             // #1220 — only onto the row the re-sync decided from: an analyst
             // save since that read wins, and the row is decided again.
             expectedVersion,
+            // #2224 — an approval is of a wording. A re-sync that rewrites an
+            // approved requirement returns it to awaiting review, as an
+            // analyst's edit or "Take the source version" does (#2219).
+            reopenApproval: true,
           });
         } catch (err) {
           if (!(err instanceof RequirementVersionError)) throw err;
@@ -915,6 +921,16 @@ export class ImportService {
             reason: err.code,
           });
           return { id, skipped: true, conflict: err.code === "VERSION_CONFLICT" };
+        }
+        // #2224 — post-commit: a review that pinned the replaced wording is
+        // told, as for an analyst's edit. A system write has no actor to skip.
+        if (written.changed) {
+          dispatchReviewedRequirementEdited({
+            requirementId: id,
+            fromVersion: written.version - 1,
+            toVersion: written.version,
+            actorId: null,
+          });
         }
         return { id };
       },

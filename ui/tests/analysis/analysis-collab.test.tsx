@@ -191,6 +191,9 @@ vi.mock("@/components/traceability/data-mappings-panel", () => ({
 }));
 vi.mock("@/components/traceability/traceability-view", () => ({
   TraceabilityView: () => null,
+  // #2224 — the page refreshes a saved requirement's traceability chain.
+  traceabilityKey: (projectId: string, requirementId: string) =>
+    ["traceability-chain", projectId, requirementId] as const,
 }));
 vi.mock("@/components/requirements/RequirementHistoryTab", () => ({
   RequirementHistoryTab: () => null,

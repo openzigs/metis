@@ -3950,7 +3950,9 @@ Opening Chat from a project (`/chat?projectId=…`) scopes it to that project.
 - **⚠ the file was read, but not these lines**: the turn read that file, but not the lines cited. It also shows when a document excerpt, which has no line numbers, is cited by line.
 - **✗ not in anything this reply retrieved or read**: no source the turn used is that file. Treat the claim as unsupported.
 
-The list opens by itself when any citation did not check out. A file name mentioned with no path and no line, such as "add a `config.yaml`", is a mention, not a citation, and is not listed. Paths in code blocks and links are not checked. The Workbench shows the same list. Discussion replies are not checked yet. [#2242]
+The list opens by itself when any citation did not check out. A file name mentioned with no path and no line, such as "add a `config.yaml`", is a mention, not a citation, and is not listed. Paths in code blocks and links are not checked. The Workbench shows the same list. [#2242]
+
+The AI's replies in a project discussion are checked the same way, against the excerpts and files that reply read, and show the same **Citations** list under the reply, for everyone in the thread and after a reload. A discussion reply has no "read earlier in this conversation": a citation of a file only an earlier reply read is marked as not read. Replies posted before this was added show no list. [#2290]
 
 **Which version of the code a citation describes.** Each citation of the project's code shows the commit it was read at, as a short SHA such as `@0123456`. Hover it for the full commit. Its GitHub link opens the file at that commit, not at the latest one, so the lines it shows are the lines the answer read. A citation with no commit says **version unknown**: METIS did not record the version, which is the case for every answer from before this was added and for an uploaded or local folder. Read that as "not known", not as "current". When the project's index is behind the repository (new commits were pulled but the index was not rebuilt yet), a file the answer read is marked **⚠ index is behind the repository**. The lines it quoted are the newer ones, and line numbers from a search may not match them. A stale citation is still listed and still counts as verified: it is flagged, never dropped. Re-index the repository to clear it. [#2325]
 
@@ -6292,7 +6294,9 @@ On the **Analysis** page for a project, you'll see an **Enhancement Options** se
 - **Enable Web Research** — When checked, METIS searches the web for supporting evidence (standards, regulations, best practices) related to your requirements. Results include domain trust badges (🟢 High / 🟡 Medium / 🔴 Low) so you can quickly assess source quality.
 - **Enable Clarification** — When checked, METIS identifies ambiguities in the extracted requirements and asks clarifying questions before generating tickets. You can answer up to 3 rounds of questions.
 
-Web research starts **off** and clarifying questions start **on** (#95): questions grounded in your documents appear without you asking for them, and you can untick the toggle to skip them for a run.
+Web research starts **off** and clarifying questions start **on** (#95): the gaps grounded in your documents are listed on the Questions tab without you asking for them, and you can untick the toggle to skip them for a run.
+
+**Opening the Questions tab does not start your first questions (#2509).** The tab lists the gaps the run found and offers **Ask these questions**. Pressing it turns them into questions for you to answer; that runs the model, and its cost is added to the run's. Before #2509 the questions were prepared the moment the tab was first opened, so opening the tab of a finished run raised its cost (by $0.04 in one walkthrough). Two cases still start work when the tab opens, both for a dialog you already began: rounds 2 and 3 are prepared once you submit the answers to the round before, and a finished dialog is re-opened if a finding that needs BA input is still waiting after its checks were run again with your answer (that re-open may run the model).
 
 A **pipeline status indicator** shows progress through the enhancement steps: Extraction → Web Research → Clarification → Approval → Complete.
 
@@ -6601,12 +6605,20 @@ An approval is of a wording, so editing that wording reopens it:
   a **Request re-review** button on such a review. After a confirmation
   it puts the review back to **In review** on each requirement's current
   version, clears every reviewer's decision and asks them again. The
-  baseline the first approval created is kept, and the next approval
-  creates a new one (named "… round 2").
+  baseline the first approval created is kept (the review page shows it
+  as "Baseline from the earlier approval" while the re-review runs), and
+  the next approval creates a new one, named "<review title> (round 2)".
+  A banner at the top of the review counts the requirements edited since
+  the approval.
 - **Who is told.** The review's reviewers and requester get one
-  notification, on the first edit after the approval (not on every
-  save), linking to the review. The person who made the edit is not
-  notified.
+  notification for each version they approved, linking to the review: a
+  second edit before the re-review does not notify again, and an edit
+  after the re-review does. An edit made by an import re-sync notifies
+  too. The person who made the edit is not notified.
+- **The requirement says it is waiting.** On the analysis page, an
+  edited requirement whose approval was reopened reads "Changed since
+  approval · awaiting re-review" and links to the review, instead of
+  "draft". A requirement you rejected or deferred keeps that status.
 - **The analysis results say they judged the old wording (#2222).**
   Once a requirement is edited, the governing findings that checked its
   earlier wording are marked **Stale** in the Governing rules panel,

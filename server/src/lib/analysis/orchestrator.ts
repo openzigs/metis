@@ -149,6 +149,7 @@ import {
   assertsAbsence,
   computeVerdictsForRequirements,
   gateFindingVerdict,
+  wasDowngradedFromImplemented,
   retitleUnverifiableFinding,
   schemaEvidenceFromAffectedRows,
   type VerdictFindingInput,
@@ -4499,6 +4500,9 @@ export class AnalysisOrchestrator {
               title: unverifiable ? retitleUnverifiableFinding(f.title) : f.title,
               severity: unverifiable ? ("info" as const) : f.severity,
               verdict,
+              // #2509 — always overwritten, so a model cannot assert it.
+              downgradedFromImplemented:
+                wasDowngradedFromImplemented(f.verdict, verdict, citations) || undefined,
               verificationStatus: verifyFinding({
                 groundedCitations: citations,
                 droppedCitations: dropped,
@@ -5199,6 +5203,9 @@ export class AnalysisOrchestrator {
             title: unverifiable ? retitleUnverifiableFinding(f.title) : f.title,
             severity: unverifiable ? ("info" as const) : f.severity,
             verdict,
+            // #2509 — always overwritten, so a model cannot assert it.
+            downgradedFromImplemented:
+              wasDowngradedFromImplemented(f.verdict, verdict, grounded) || undefined,
             verificationStatus: verifyFinding({
               groundedCitations: grounded,
               droppedCitations: dropped,

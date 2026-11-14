@@ -22,10 +22,12 @@ import type {
   DiscussionMessageNewEvent,
   DiscussionMessagePayload,
   DiscussionMessageStreamEvent,
+  ChatCitation,
 } from "@metis/shared";
 import { getSocketServer } from "../socket/registry.js";
 import { threadRoom } from "../socket/discussion-rooms.js";
 import { createChildLogger } from "../logger.js";
+import { citationsField } from "./message-citations.js";
 
 const log = createChildLogger("discussion-emitter");
 
@@ -43,6 +45,8 @@ export interface DiscussionMessageRow {
   editedAt?: Date | string | null;
   /** #734 — the human author's display name, when the caller read it. */
   authorName?: string | null;
+  /** #2290 — an AI reply's checked citations, when it made any. */
+  citations?: readonly ChatCitation[];
 }
 
 /** Normalize a Date|string|null into the wire ISO-string|null shape. */
@@ -65,6 +69,7 @@ export function toMessagePayload(row: DiscussionMessageRow): DiscussionMessagePa
     createdAt: toIso(row.createdAt) ?? new Date(0).toISOString(),
     editedAt: toIso(row.editedAt),
     ...(row.authorName ? { authorName: row.authorName } : {}),
+    ...citationsField(row.citations ?? []),
   };
 }
 

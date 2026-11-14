@@ -877,7 +877,13 @@ describe("discussions routes", () => {
         }),
       );
       expect(grounded).toEqual([
-        { block: "## Retrieved Knowledge", sources: 2, indexStatus: "## Index status" },
+        {
+          block: "## Retrieved Knowledge",
+          sources: 2,
+          indexStatus: "## Index status",
+          // #2290 — the capture, for the reply's citations.
+          evidence: expect.objectContaining({ sources: 2, contexts: expect.any(Array) }),
+        },
         { toolset: "ts" },
       ]);
     });
@@ -1730,6 +1736,89 @@ describe("discussions routes", () => {
         messageId: "m1",
         actorId: "alice",
       });
+    });
+  });
+
+  describe("#2290 — an AI reply's checked citations", () => {
+    const CITED = [
+      { text: "FRD-12.md", path: "FRD-12.md", status: "verified", source: "document" },
+      { text: "src/made/up.ts:3", path: "src/made/up.ts", lines: [3, 3], status: "not-read" },
+    ];
+    const row = (id: string, extra: Record<string, unknown>) => ({
+      id,
+      threadId: "t1",
+      authorKind: "ai",
+      authorUserId: null,
+      aiProvider: "stub",
+      aiModel: "stub-model",
+      aiSessionId: "sess-1",
+      body: "answer",
+      createdAt: new Date("2026-11-01T00:00:00Z"),
+      editedAt: null,
+      authorUser: null,
+      ...extra,
+    });
+
+    it("the history read returns the citations stored on the row, never the raw column", async () => {
+      canAccessThread.mockResolvedValue({ ok: true, projectId: "p1" });
+      messageFindMany.mockResolvedValue([
+        row("ai-1", { meta: JSON.stringify({ citations: CITED }) }),
+        row("ai-2", { meta: null }),
+        // A malformed column, or an entry the UI cannot render, is dropped.
+        row("ai-3", { meta: "{not json" }),
+        row("ai-4", { meta: JSON.stringify({ citations: [{ text: "x", status: "made-up" }] }) }),
+      ]);
+
+      const res = await request(app).get("/discussions/threads/t1/messages");
+
+      expect(res.status).toBe(200);
+      expect(messageFindMany.mock.calls[0][0].select).toMatchObject({ meta: true });
+      const [first, ...rest] = res.body.data as Array<Record<string, unknown>>;
+      expect(first!.citations).toEqual(CITED);
+      for (const m of [first!, ...rest]) expect(m).not.toHaveProperty("meta");
+      for (const m of rest) expect(m).not.toHaveProperty("citations");
+    });
+
+    it("hands the responder what retrieval put in the block, and fans the citations out", async () => {
+      canAccessThread.mockResolvedValue({ ok: true, projectId: "p1" });
+      threadFindFirst.mockResolvedValue({ id: "t1", projectId: "p1", aiResponseMode: "auto" });
+      messageFindFirst.mockResolvedValue({ id: "m1", body: "refunds?", authorKind: "human" });
+      messageFindMany.mockResolvedValue([]);
+      const excerpts = [{ name: "FRD-12.md", source: "upload" }];
+      buildAutoRagContext.mockImplementation(
+        async (_p: unknown, _m: unknown, _a: unknown, _f: unknown, capture: never) => {
+          Object.assign(capture, { sources: 1, excerpts, contexts: ["Refunds…"] });
+          return "## Retrieved Knowledge\n[1] FRD-12.md#0\nRefunds…";
+        },
+      );
+      let retrieved: unknown;
+      streamAIReply.mockImplementation(
+        async (input: { retrieve: (q: string) => Promise<unknown> }) => {
+          retrieved = await input.retrieve("refunds?");
+          return {
+            message: {
+              id: "ai-1",
+              aiProvider: "stub",
+              aiModel: "stub-model",
+              aiSessionId: "sess-1",
+              body: "answer",
+              citations: CITED,
+            },
+            usage: { totalTokens: 1 },
+          };
+        },
+      );
+
+      await request(app).post("/discussions/threads/t1/ai-respond").send({ messageId: "m1" });
+
+      expect(retrieved).toMatchObject({
+        sources: 1,
+        evidence: { excerpts, contexts: ["Refunds…"] },
+      });
+      expect(emitMessageNew).toHaveBeenCalledWith(
+        "t1",
+        expect.objectContaining({ id: "ai-1", citations: CITED }),
+      );
     });
   });
 });

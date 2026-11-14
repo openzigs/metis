@@ -13,7 +13,7 @@
  * and carry on as instructions.
  */
 import { z } from "zod";
-import { FINDING_VERDICTS } from "@metis/shared";
+import { DEFAULT_RAG_CHUNK_SIZE, FINDING_VERDICTS } from "@metis/shared";
 import {
   scrubGapFenceLookalikes,
   scrubRequirementFenceLookalikes,
@@ -26,8 +26,30 @@ export function fenced(text: string): string {
   return scrubGapFenceLookalikes(scrubRequirementFenceLookalikes(text, REDACTED), REDACTED);
 }
 
-/** Characters of one retrieved chunk shown to the model. */
-export const HIT_TEXT_CHARS = 1_500;
+/**
+ * Characters of one retrieved chunk shown to the model: a whole chunk at the
+ * default chunk size. #2509 — at 1,500 the last quarter of every 2,048-character
+ * repository chunk was cut off. In the walkthrough's miniflux/v2 index the
+ * `reading_time` field of `internal/model/entry.go` sits at character 1,514 of
+ * its chunk, so the model was never shown the field it was asked about and
+ * answered `could-not-verify` for a product that has it.
+ */
+export const HIT_TEXT_CHARS = DEFAULT_RAG_CHUNK_SIZE;
+
+/** Ceiling on a configured chunk size, so a mistaken RAG_CHUNK_SIZE cannot flood a prompt. */
+export const MAX_HIT_TEXT_CHARS = 8_192;
+
+/**
+ * The characters of one chunk shown: the configured `RAG_CHUNK_SIZE` (the size the
+ * index was cut at, so the whole chunk), never below the default and never above
+ * {@link MAX_HIT_TEXT_CHARS}. An operator who raised the chunk size would
+ * otherwise get the tail of every chunk cut off again.
+ */
+export function hitTextChars(): number {
+  const n = Number.parseInt(process.env.RAG_CHUNK_SIZE ?? "", 10);
+  if (!Number.isFinite(n) || n <= 0) return HIT_TEXT_CHARS;
+  return Math.min(Math.max(n, HIT_TEXT_CHARS), MAX_HIT_TEXT_CHARS);
+}
 
 export const DECOMPOSE_SYSTEM_PROMPT = [
   "You split a software requirement into acceptance criteria that can each be checked",
@@ -87,9 +109,10 @@ export function buildRepoVerdictPrompt(input: {
   repoLabel: string;
   hits: readonly PromptHit[];
 }): string {
+  const limit = hitTextChars();
   const criteria = input.criteria.map((c, i) => `[${i + 1}] ${fenced(c)}`);
   const hits = input.hits.map(
-    (h, i) => `[${i + 1}] ${fenced(h.path)}\n${fenced(h.text.slice(0, HIT_TEXT_CHARS))}`,
+    (h, i) => `[${i + 1}] ${fenced(h.path)}\n${fenced(h.text.slice(0, limit))}`,
   );
   return [
     "<<<REQUIREMENT>>>",
