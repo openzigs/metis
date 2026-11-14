@@ -1110,11 +1110,12 @@ export async function persistAgentResult(
   const { persisted, refusedMetrics } =
     mode === "supersede"
       ? await prisma.$transaction(async (tx) => {
-          await deleteAgentResultsInScope(tx, input, starter);
+          await deleteAgentResultsInScope(tx, input, { starter, inTransaction: true });
           return writeAgentResult(tx, input, recorded);
         }, SUPERSEDE_TRANSACTION_OPTIONS)
       : await (async () => {
-          if (mode === "replace") await deleteAgentResultsInScope(prisma, input, starter);
+          if (mode === "replace")
+            await deleteAgentResultsInScope(prisma, input, { starter, inTransaction: false });
           return writeAgentResult(prisma, input, recorded);
         })();
   if (refusedMetrics > 0) {
@@ -1129,11 +1130,15 @@ export async function persistAgentResult(
   return persisted;
 }
 
-/** The prior rows a replace removes: the pair, scoped to the connector when one is set. */
+/**
+ * The prior rows a replace removes: the pair, scoped to the connector when one
+ * is set. `inTransaction` says whether `db` is an open transaction (supersede)
+ * rather than the base client (a plain replace).
+ */
 async function deleteAgentResultsInScope(
   db: Prisma.TransactionClient,
   input: PersistAgentResultInput,
-  starter: boolean,
+  { starter, inTransaction }: { starter: boolean; inTransaction: boolean },
 ): Promise<void> {
   const where = {
     analysisId: input.analysisId,
@@ -1146,7 +1151,8 @@ async function deleteAgentResultsInScope(
   // Kept first: the analysis row is locked before the rows go, as every
   // metadata writer takes it (#909), and a delete that then fails only
   // widens the run's corpus (fail closed).
-  if (replaced.length > 0) await keepReplacedReads(db, input.analysisId, replaced);
+  if (replaced.length > 0)
+    await keepReplacedReads(inTransaction ? db : undefined, input.analysisId, replaced);
   await db.agentResult.deleteMany({ where });
 }
 
@@ -1163,7 +1169,8 @@ async function deleteAgentResultsInScope(
 export const REPLACED_READS_METADATA_KEY = "replacedReadSourceIds";
 
 async function keepReplacedReads(
-  db: Prisma.TransactionClient,
+  /** The open transaction to merge in; `undefined` outside one. */
+  tx: Prisma.TransactionClient | undefined,
   analysisId: string,
   replaced: ReadonlyArray<{ readSourceIds: string | null }>,
 ): Promise<void> {
@@ -1181,7 +1188,7 @@ async function keepReplacedReads(
       return { ...current, [REPLACED_READS_METADATA_KEY]: [...ids].sort() };
     },
     // Outside a transaction (a plain replace) the merge opens its own, locked one.
-    db === (prisma as unknown) ? undefined : db,
+    tx,
   );
 }
 

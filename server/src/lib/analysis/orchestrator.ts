@@ -274,6 +274,7 @@ import {
 } from "./requirements-extractor.js";
 import {
   NO_WEB_SEARCH_PROVIDER_NOTICE,
+  RESTRICTED_READ_WEB_RESEARCH_NOTICE,
   WebResearchAugmenter,
   createSearchProvider,
   isWebSearchConfigured,
@@ -3496,7 +3497,24 @@ export class AnalysisOrchestrator {
     // Web research — only when explicitly enabled and there is something to
     // research. Honours WEB_SEARCH_API_KEY via createSearchProvider() (stub
     // returns [] when no key, so this stays a no-op offline / unconfigured).
-    if (input.enableWebResearch && structured.requirements.length > 0) {
+    // #2506 — on a run a person started whose passes read a document only
+    // some of the project can read, the requirements may restate it, and each
+    // becomes a query sent to an outside search service: nothing is sent.
+    // A marker or read set that cannot be read is treated as restricted.
+    const egressWithheld =
+      input.enableWebResearch &&
+      structured.requirements.length > 0 &&
+      (await mayRestOnRestrictedRead(input.analysisId).catch(() => true));
+    if (egressWithheld) {
+      await persistAnalysisEnhancement(input.analysisId, {
+        webResearch: {
+          digests: [],
+          totalSources: 0,
+          reviewRequired: 0,
+          notice: RESTRICTED_READ_WEB_RESEARCH_NOTICE,
+        },
+      });
+    } else if (input.enableWebResearch && structured.requirements.length > 0) {
       const augmenter = new WebResearchAugmenter({
         provider,
         searchProvider: createSearchProvider(),
