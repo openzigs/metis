@@ -19,6 +19,7 @@ import { scheduleIncrementalRegeneration } from "../../docs-gen/regeneration-sch
 import { buildCodeGraphSchemaWiring } from "../db/db-service.js";
 import { ingestRepoMetadata, ingestSourceAsKnowledge } from "../connector-ingest.js";
 import { assertConnectorIngestLease, type ConnectorIngestLease } from "../ingest-guard.js";
+import { startConnectorHistoryRefresh } from "./history-refresh.js";
 import {
   fetchRepoMetadata,
   pullOrCloneRepo,
@@ -95,6 +96,9 @@ export async function runRepoConnectorRefresh(
       sqlLineageOverride: schemaWiring.sqlLineageOverride,
       embedSymbols: true, // #797 — the scheduled refresh re-embeds changed symbols
     });
+    // #2338 — the commit history at the commit the graph now records: started,
+    // not awaited, so it never delays the knowledge ingest; the signal stops it.
+    if (!isNonGit) void startConnectorHistoryRefresh(projectId, connectorId, signal);
     abortGuard(signal);
     // Step 3 — incremental RAG knowledge ingest
     const srcSummary = await ingestSourceAsKnowledge(

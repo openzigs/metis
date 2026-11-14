@@ -82,6 +82,7 @@ vi.mock("../src/lib/prisma.js", () => {
           where.id.in.map((id) => ({ id, projectId: "p1", sourceAccess: null })),
         ),
       },
+      // #2331 — get_requirement reads the caller's code-access filter: no restricted file.
       document: { findMany: vi.fn(async () => []) },
       // The stub APPLIES the where the tool sends, so a query that dropped the
       // project scope would leak the other project's row into the result.

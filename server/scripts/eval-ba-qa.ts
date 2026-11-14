@@ -28,6 +28,13 @@
  * (`search_code_context`). Every named arm sets that flag itself: on in `on`
  * and the `no-*` arms, off in `off`, `tools-only` and `tools-primitives`.
  *
+ * #2331 — `mcp` is `tools-only` with the session's tools replaced by
+ * `metis-index-mcp`'s eight `metis_*` tools, called through a real MCP client
+ * as the eval user's own API token (minted for the run, revoked after it):
+ *
+ *   pnpm eval:ba-qa --arm tools-only --budget 2
+ *   pnpm eval:ba-qa --arm mcp --budget 2 --include <tools-only>.json
+ *
  * Arms (#2243): `off` sets `CHAT_CODE_SEARCH_TOOLS`, `CHAT_FUSED_CODE_RETRIEVAL`
  * and `RAG_RERANK` off and `on` sets all three, whatever the shell or `.env` set;
  * `no-tools`, `no-fused` and `no-rerank` take one flag away from `on`; `default`
@@ -106,6 +113,7 @@ import {
   type RetrievalSample,
 } from "../src/lib/eval/ba-qa/relevance-floor.js";
 import { formatBaQaReport, type ReportSession } from "../src/lib/eval/ba-qa/report.js";
+import { MCP_ARM, openMcpArm, type McpArm } from "../src/lib/eval/ba-qa/mcp-arm.js";
 import type { ReplyToolCall } from "../src/lib/ai/conversation/turn.js";
 import type { RagContextCapture } from "../src/routes/ai.js";
 import {
@@ -309,6 +317,7 @@ async function main(): Promise<void> {
     withoutApprovalGatedTools,
   } = await import("../src/lib/ai/tool-runtime/session-tools.js");
   const { runChatToolTurn } = await import("../src/lib/ai/tool-runtime/chat-turn.js");
+  const { makeToolset } = await import("../src/lib/ai/tool-runtime/toolset.js");
   const { prepareTurn, loadChatTurnConfig, recordReply } =
     await import("../src/lib/ai/conversation/turn.js");
   const { chatToolLoopPromptCaching } = await import("../src/lib/ai/chat-prompt-caching.js");
@@ -450,6 +459,33 @@ async function main(): Promise<void> {
   }
   for (const p of fixture.products) await ensureKnowledge(p, repos.get(p.name)!);
 
+  // #2338 — an arm that offers get_change_history reads each product's commit
+  // history: fetched at the materialized commit, as an ingest fetches it at the
+  // indexed one, and kept while it stays at that commit.
+  if (flags.CHAT_CHANGE_HISTORY_TOOL === "1") {
+    const history = await import("../src/lib/connectors/repo/history-repo.js");
+    const { resolveRepoCloneMaxBytes } = await import("../src/lib/connectors/repo/repo-service.js");
+    const env: Record<string, string> = {};
+    for (const k of ["PATH", "HOME", "HTTPS_PROXY", "https_proxy", "NO_PROXY", "no_proxy"]) {
+      if (process.env[k] !== undefined) env[k] = process.env[k]!;
+    }
+    for (const p of fixture.products) {
+      const repo = repos.get(p.name)!;
+      const st = await history.readHistoryState(repo.connectorId);
+      if (st?.status === "ready" && st.commitSha === p.sha) continue;
+      const out = await history.fetchHistoryRepository({
+        connectorId: repo.connectorId,
+        remoteUrl: p.url,
+        commitSha: p.sha,
+        env,
+        windowDays: history.resolveHistoryWindowDays(),
+        maxBytes: history.resolveRepoHistoryMaxBytes(resolveRepoCloneMaxBytes()),
+      });
+      if (out.status !== "ready") throw new Error(`${p.name}: commit history ${out.status}`);
+      console.log(`${p.name}: commit history since ${out.windowStart.slice(0, 10)} fetched`);
+    }
+  }
+
   /**
    * #2336 — the routing pool's projects: the question set's two products, the
    * other corpus's materialized repositories (their source chunks ingested as
@@ -573,6 +609,10 @@ async function main(): Promise<void> {
   }
 
   const sessionFlags = loadSessionToolsFlags();
+  // #2331 — the `mcp` arm's tools: metis-index-mcp over an in-memory MCP
+  // transport, as the eval user's own token. Started inside the `try` below,
+  // so the `finally` (or the signal handler) always revokes the token.
+  let mcpArm: McpArm | null = null;
   // #2326 — the fault is written for this run only, and restored after it.
   const indexFault = values["index-fault"] ? parseIndexFault(values["index-fault"]) : null;
   const savedIngestStates = new Map<string, string | null>();
@@ -583,11 +623,14 @@ async function main(): Promise<void> {
       await prisma.repoConnection.update({ where: { id }, data: { sourceIngestState: saved } });
     }
   };
-  // An interrupted run (Ctrl-C) must not leave the products' index faulted.
+  // An interrupted run (Ctrl-C) must not leave the products' index faulted,
+  // nor the `mcp` arm's token live.
   const onSignal = (signal: NodeJS.Signals) => {
-    void restoreIngestStates().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+    void Promise.allSettled([mcpArm?.close(), restoreIngestStates()]).finally(() =>
+      process.exit(signal === "SIGINT" ? 130 : 143),
+    );
   };
-  if (indexFault) {
+  if (indexFault || flagArm === MCP_ARM) {
     process.once("SIGINT", onSignal);
     process.once("SIGTERM", onSignal);
   }
@@ -611,6 +654,7 @@ async function main(): Promise<void> {
     });
 
   try {
+    if (flagArm === MCP_ARM) mcpArm = await startMcpArm(user.id);
     if (indexFault) {
       const faulted = JSON.stringify(indexFaultState(indexFault, new Date()));
       for (const repo of repos.values()) {
@@ -689,7 +733,8 @@ async function main(): Promise<void> {
         flags: sessionFlags,
         mcp: null,
       });
-      const tools = (await withoutApprovalGatedTools(resolved, session, async () => false)).runtime;
+      const gated = (await withoutApprovalGatedTools(resolved, session, async () => false)).runtime;
+      const tools = mcpArm ? { ...gated, toolset: makeToolset(mcpArm.tools) } : gated;
       const library = await buildLibrarySystemMessages(
         session,
         tools.mode === "native" ? NATIVE_CHAT_TOOL_NOTE : tools.schemaBlock,
@@ -933,6 +978,7 @@ async function main(): Promise<void> {
       );
     }
   } finally {
+    await mcpArm?.close();
     await restoreIngestStates();
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
@@ -1131,6 +1177,44 @@ async function runFloorSweep(input: {
   );
   await fs.writeFile(path.join(outDir, `${runId}.md`), `${markdown}\n`);
   console.log(markdown);
+}
+
+/**
+ * #2331 — the `mcp` arm's server and client, over an in-memory transport. The
+ * credential is the eval user's own API token with `acp:read`, minted for this
+ * run and revoked when it ends, so the server resolves every call to that user
+ * exactly as it would a developer's. `openMcpArm` revokes the token however
+ * the arm ends, including when it fails to start.
+ */
+async function startMcpArm(userId: string): Promise<McpArm> {
+  const { createApiToken, revokeApiToken } = await import("../src/lib/acp/api-tokens.js");
+  const { createIndexMcpServer } = await import("../src/mcp/metis-index/server.js");
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
+  return openMcpArm(userId, {
+    mint: (id) =>
+      createApiToken({ userId: id, name: "eval:ba-qa mcp arm (#2331)", scopes: ["acp:read"] }),
+    revoke: revokeApiToken,
+    async connect(credential) {
+      const server = createIndexMcpServer({ credential });
+      const client = new Client({ name: "eval-ba-qa", version: "0.0.0" });
+      const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+      const close = async () => {
+        try {
+          await client.close();
+        } finally {
+          await server.close();
+        }
+      };
+      try {
+        await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
+      } catch (err) {
+        await close().catch(() => {});
+        throw err;
+      }
+      return { client, close };
+    },
+  });
 }
 
 /**

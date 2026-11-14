@@ -191,6 +191,7 @@ import {
   planApprovedRequirementSet,
 } from "./approved-requirement-set.js";
 import {
+  countUndecidedRequirements,
   offerElicitedNfrsForReview,
   offerUnmatchedItemsForReview,
 } from "./offer-synthesis-items.js";
@@ -5404,6 +5405,45 @@ export class AnalysisOrchestrator {
       // analysis metadata and surfaced on the socket so the UI (#217) can show
       // a clear "promotion blocked" notice — never a silent promotion.
       let ticketStatus = await canCreateTickets(input.analysisId);
+      // #2427 review — whether the gate was closed before the NFR offer below
+      // could close it: the #1569 offer runs on exactly those runs, as before
+      // #2427, so whether a run's unmatched items are listed never depends on
+      // whether its elicitor found a new NFR.
+      const blockedBeforeNfrOffer = !ticketStatus.allowed;
+      let reviewedList: ReadonlyArray<StructuredRequirement> = refined?.requirements ?? [];
+      // Issue #2449 — the NFRs this run elicited are offered at the checkpoint,
+      // so it lists every requirement promotion writes: promotion of a reviewed
+      // set writes the approved ones and no other. From a degraded synthesis
+      // too (the NFRs are the elicitor's, not its items), compared with its
+      // items only when they are requirements. #2427 — before the gate is read,
+      // not only once it is closed: a checkpoint the analyst approved while the
+      // run was still going (or before a re-run) left the gate open, and the
+      // NFRs were written as drafts beside the approved set, awaiting a review
+      // the checkpoint never listed. An offered NFR reopens the checkpoint, as
+      // on a gate-blocked run. Best-effort: a failure leaves the NFRs
+      // unoffered, and so unwritten.
+      if (reviewedList.length > 0 && elicitedNfrs.length > 0) {
+        try {
+          const { offered, withdrawn } = await offerElicitedNfrsForReview(input.analysisId, {
+            nfrs: elicitedNfrs,
+            findingIdsByIndex,
+            synthesized: result.degraded ? [] : result.output.requirements,
+          });
+          if (offered.length > 0 || withdrawn.length > 0) {
+            const gone = new Set(withdrawn);
+            reviewedList = (await getStructuredRequirements(input.analysisId))?.requirements ?? [
+              ...reviewedList.filter((r) => !gone.has(r.id)),
+              ...offered,
+            ];
+            ticketStatus = await canCreateTickets(input.analysisId);
+          }
+        } catch (err) {
+          log.error("Could not offer the elicited NFRs for review", {
+            analysisId: input.analysisId,
+            error: (err as Error).message,
+          });
+        }
+      }
       if (!ticketStatus.allowed) {
         // Issue #1569 — the items synthesis wrote up that restate no reviewed
         // requirement join onto nothing at promotion, so their criteria and
@@ -5411,8 +5451,7 @@ export class AnalysisOrchestrator {
         // instead. Not from a degraded synthesis, whose keyword-fallback items
         // are findings rather than requirements. Best-effort: a failure leaves
         // the run as it was before #1569, with the #930 notice.
-        let reviewedList: ReadonlyArray<StructuredRequirement> = refined?.requirements ?? [];
-        if (reviewedList.length > 0 && !result.degraded) {
+        if (blockedBeforeNfrOffer && reviewedList.length > 0 && !result.degraded) {
           try {
             const offered = await offerUnmatchedItemsForReview(
               input.analysisId,
@@ -5432,33 +5471,6 @@ export class AnalysisOrchestrator {
             });
           }
         }
-        // Issue #2449 — and the NFRs this run elicited, so the checkpoint lists
-        // every requirement promotion writes: promotion of a reviewed set writes
-        // the approved ones and no other. From a degraded synthesis too (the
-        // NFRs are the elicitor's, not its items), compared with its items only
-        // when they are requirements. Best-effort: a failure leaves the NFRs
-        // unoffered, and so unwritten.
-        if (reviewedList.length > 0 && elicitedNfrs.length > 0) {
-          try {
-            const offered = await offerElicitedNfrsForReview(input.analysisId, {
-              nfrs: elicitedNfrs,
-              findingIdsByIndex,
-              synthesized: result.degraded ? [] : result.output.requirements,
-            });
-            if (offered.length > 0) {
-              reviewedList = (await getStructuredRequirements(input.analysisId))?.requirements ?? [
-                ...reviewedList,
-                ...offered,
-              ];
-              ticketStatus = await canCreateTickets(input.analysisId);
-            }
-          } catch (err) {
-            log.error("Could not offer the elicited NFRs for review", {
-              analysisId: input.analysisId,
-              error: (err as Error).message,
-            });
-          }
-        }
         // Issue #1104 (finding B) — the run produced requirements; the gate is
         // WITHHOLDING them. Record how many so every surface (metadata, socket,
         // job event, UI) can say "N requirements awaiting approval" instead of
@@ -5466,8 +5478,13 @@ export class AnalysisOrchestrator {
         // Issue #730 — promotion persists the APPROVED structured requirements
         // when there are any (`promoteApprovedRequirements`), so that list — the
         // one the Approvals tab shows — is what is awaiting, not the synthesis set.
+        // #2427 review — of that list, the ones still awaiting a decision: on a
+        // checkpoint reopened after it was approved, "3 awaiting" for 3 pending,
+        // not the list's 4 (#2330). The list's size is recorded beside it.
         const awaitingRequirementCount =
-          reviewedList.length > 0 ? reviewedList.length : result.output.requirements.length;
+          reviewedList.length > 0
+            ? await countUndecidedRequirements(input.analysisId, reviewedList)
+            : result.output.requirements.length;
         const { reason: blockedReason } = describePromotionGate({
           pendingCount: ticketStatus.pendingCount,
           awaitingRequirementCount,
@@ -5485,6 +5502,9 @@ export class AnalysisOrchestrator {
             pendingCount: ticketStatus.pendingCount,
             rejectedCount: ticketStatus.rejectedCount,
             awaitingRequirementCount,
+            // #2427 review — the reviewed list's size, decided or not: what
+            // approving promotes, for the #909 comparison below.
+            ...(reviewedList.length > 0 ? { reviewedRequirementCount: reviewedList.length } : {}),
             // #909 — lets the Approvals tab say, before anyone approves, that the
             // reviewed list (not this many synthesized rows) is what is promoted.
             synthesisRequirementCount: result.output.requirements.length,
@@ -5601,9 +5621,12 @@ export class AnalysisOrchestrator {
       // Issue #1613 — each elicited NFR the set does not already state, as a
       // draft non-functional requirement, its coverage and verdict rolled up
       // by the same rules from the findings it cites. None elicited: the set
-      // is written exactly as before.
+      // is written exactly as before. #2427 — only on a set no checkpoint
+      // reviewed: a reviewed set's NFRs were offered at its checkpoint above
+      // (the approved ones are in `plan`), and writing the rest here as drafts
+      // brought back one the checkpoint rejected, unseen.
       const { requirements: elicited, dropped: droppedNfrs } = elicitedNfrRequirements({
-        nfrs: elicitedNfrs,
+        nfrs: plan ? [] : elicitedNfrs,
         findingIdsByIndex,
         existing: toPersist.requirements,
       });

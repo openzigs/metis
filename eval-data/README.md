@@ -866,22 +866,29 @@ Each question is its own one-turn chat session, run through production's chat pi
 `eval:chat-cache`. A question scoped to both products is asked the way chat takes it today,
 as an unscoped session with no retrieval (`chatSessionScope`, mirroring
 `server/src/routes/ai.ts`). Every arm sets `CHAT_CODE_SEARCH_TOOLS`,
-`CHAT_FUSED_CODE_RETRIEVAL`, `RAG_RERANK`, `CHAT_CODE_SEARCH_PRIMITIVES` and
-`CHAT_CODE_CONTEXT_TOOL` itself, whatever the shell or `.env` says (#2243, #2327, #2412):
+`CHAT_FUSED_CODE_RETRIEVAL`, `RAG_RERANK`, `CHAT_CODE_SEARCH_PRIMITIVES`,
+`CHAT_CODE_CONTEXT_TOOL` and `CHAT_CHANGE_HISTORY_TOOL` itself, whatever the shell or `.env`
+says (#2243, #2327, #2412, #2338):
 
-| Arm | Code-search tools | Fused code retrieval | Reranker | Search primitives | Context tool |
-|---|---|---|---|---|---|
-| `off` | off | off | off | off | off |
-| `on` | on | on | on | on | on |
-| `no-tools` | off | on | on | on | on |
-| `no-fused` | on | off | on | on | on |
-| `no-rerank` | on | on | off | on | on |
-| `tools-only` | on | off | off | off | off |
-| `tools-primitives` | on | off | off | on | off |
-| `tools-context` | on | off | off | off | on |
-| `default` | unset: the server's default | unset | unset | unset | unset |
+| Arm | Code-search tools | Fused code retrieval | Reranker | Search primitives | Context tool | History tool |
+|---|---|---|---|---|---|---|
+| `off` | off | off | off | off | off | off |
+| `on` | on | on | on | on | on | off |
+| `no-tools` | off | on | on | on | on | off |
+| `no-fused` | on | off | on | on | on | off |
+| `no-rerank` | on | on | off | on | on | off |
+| `tools-only` | on | off | off | off | off | off |
+| `tools-primitives` | on | off | off | on | off | off |
+| `tools-context` | on | off | off | off | on | off |
+| `tools-history` | on | off | off | off | off | on |
+| `mcp` | on | off | off | off | off | off |
+| `default` | unset: the server's default | unset | unset | unset | unset | unset |
 
 Each session in the JSON records the tools it called, in order (`toolNames`, #2327).
+
+`mcp` (#2331) sets `tools-only`'s flags and then replaces the session's tools with
+`metis-index-mcp`'s eight `metis_*` tools, called through a real MCP client as the eval user's
+own API token, minted for the run and revoked after it (`src/lib/eval/ba-qa/mcp-arm.ts`).
 
 Since #2327 the `on` and `no-*` arms set `CHAT_CODE_SEARCH_PRIMITIVES=1`, so they offer
 `grep_files`, `list_files` and the symbol filters. They do not reproduce the #2243 numbers below,
@@ -889,6 +896,16 @@ which were measured without them; `tools-only` is the arm that still matches #22
 Since #2412 they also set `CHAT_CODE_CONTEXT_TOOL=1`, so they offer `search_code_context`, and an
 `on` or `no-*` run from then on does not reproduce an earlier one either. `tools-only` and
 `tools-primitives` set it off, so they still match their earlier runs.
+
+#2338 adds `get_change_history` (`CHAT_CHANGE_HISTORY_TOOL`), and only `tools-history` turns it
+on: the `on` and `no-*` arms keep it off, so they keep their meaning and run with no network
+beyond the model. The question set (version 3) adds three "when and why did this change"
+questions, `H1`–`H3`, whose facts come from the commit history of `internal/model/feed.go`
+before the pinned commit, so an arm's totals from version 3 on are not comparable with earlier
+ones. The `tools-history` arm first fetches each product's history repository at its pinned commit
+(docs/decisions/0023), once; the window is the year before that commit, so the answers do not
+age out. `tools-history` paired with `tools-only` measures the tool: the `H*` questions for the
+gain, the rest for a regression. The tool stays off by default until that pair is run.
 
 An arm with the reranker on runs the embedder inline so the reranker can share the main
 thread (#222). On macOS such an arm can abort with `libc++abi: … mutex lock failed` as it
@@ -1717,3 +1734,52 @@ multi-product questions reach chat unscoped and abstain in both arms).
 The per-question scores and tool calls of the six runs (no transcripts) are in
 `readings/ba-qa/2412-code-context-paired.json`. Spend for #2412: **$5.765561** for the six
 runs, answers and judge. The first run's knowledge ingest asked no model.
+
+### The index over MCP (#2331), 2026-11-14
+
+`metis-index-mcp` exposes the index to external agents (`docs/integrations/metis-index-mcp.md`).
+#2331 asked whether an agent answers as well through it as through chat's in-process tools. The
+`mcp` arm is `tools-only` with the tools swapped. The prompt, auto-RAG block, tool loop and judge
+are unchanged. The model sees the MCP names, descriptions and schemas from `tools/list`. It must
+find the `projectId` with `metis_list_projects`, and it reads each result as an MCP client
+reads `content`. One materialization, Sonnet 5.5 answers and judge, all 23 questions:
+
+```bash
+pnpm eval:ba-qa --arm tools-only --budget 2
+pnpm eval:ba-qa --arm mcp --budget 3 --include eval-results/ba-qa/<tools-only>.json
+```
+
+| | tools-only | mcp, JSON content | mcp |
+|---|---:|---:|---:|
+| Correctness: mean facts stated | 52% | 62% | 64% |
+| Fully correct answers | 3/15 | 5/15 | 7/15 |
+| Citation precision, line spans | 100% (81/81) | 99% (90/91) | 99% (75/76) |
+| Citation precision, files without lines | 23% (3/13) | 40% (4/10) | 31% (5/16) |
+| Citation recall (expected files cited) | 19/47 | 21/47 | 22/47 |
+| False abstention on answerable | 4/15 | 4/15 | 4/15 |
+| Follow-up on ambiguous | 3/4 | 4/4 | 4/4 |
+| Tool results cut by the model cap | 4 in 3 sessions | 39 in 14 | 19 in 10 |
+| Input tokens per question | 30,513 | 45,661 | 41,022 |
+| Total spend | $0.9602 | $1.2919 | $1.1986 |
+
+"mcp, JSON content" is the first build. Its text content was the whole structured result as
+JSON, as the MCP spec suggests: escaped newlines, with the citation array repeated. The shipped
+build sends the result's own text, then a trailer with the count, the truncation note and the
+instructions. The structured result, citations included, is still in `structuredContent`. That
+change halved the cut results and saved about 4,600 input tokens per question.
+
+**No material quality gap.** Facts stated, citation precision and citation recall are as good
+through MCP as in process. The 12-point rise in facts stated is inside #2412's spread for
+`tools-only` (53% to 59% over three runs), so it is not a measured gain.
+
+**The cost gap comes from the tool set, not the transport.** The MCP surface includes
+`metis_search_code_context`, which `tools-only` does not offer. The agent called it 34 times out
+of 82, and nine of the ten sessions with a cut result called it. #2412 found the same thing for
+`tools-context`: the tool's 4,000-token budget is above the tool loop's 2,000-token result cap,
+so its results are cut in the model's copy. An external agent's own client has no such cap.
+The one extra call per question, to `metis_list_projects`, is the rest.
+
+A third run, `tools-context` beside `mcp`, would separate the two causes exactly. It did not
+run: the API account ran out of credit first. Spend for #2331: **$3.45** over the three runs,
+answers and judge.
+

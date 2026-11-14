@@ -307,6 +307,25 @@ describe("#909 — warns before approval when the reviewed list is not the synth
     );
   });
 
+  it("#2427 — states the undecided count, and compares the whole reviewed list with the synthesis", async () => {
+    // A checkpoint reopened after it was approved: 1 decided, 3 awaiting.
+    renderPanel({
+      promotionBlocked: {
+        blocked: true,
+        pendingCount: 3,
+        rejectedCount: 0,
+        awaitingRequirementCount: 3,
+        reviewedRequirementCount: 4,
+        synthesisRequirementCount: 4,
+      },
+    });
+    expect(await screen.findByTestId("promotion-banner")).toHaveTextContent(
+      "3 requirement(s) awaiting approval",
+    );
+    // 4 reviewed, 4 synthesized: nothing differs, so nothing is said.
+    expect(screen.queryByTestId("approved-set-difference")).toBeNull();
+  });
+
   it("#930 — says nothing when the same requirements are on both sides", async () => {
     renderPanel({
       promotionBlocked: {

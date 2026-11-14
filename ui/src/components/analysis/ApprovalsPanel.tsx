@@ -1066,7 +1066,9 @@ export function ApprovalsPanel({
               readEnhancementMetadata(metadata).promotionBlocked?.awaitingRequirementCount
             }
             setDifference={describeSetDifference(
-              readEnhancementMetadata(metadata).promotionBlocked?.awaitingRequirementCount,
+              // #2427 — the reviewed list, decided or not: what approving promotes.
+              readEnhancementMetadata(metadata).promotionBlocked?.reviewedRequirementCount ??
+                readEnhancementMetadata(metadata).promotionBlocked?.awaitingRequirementCount,
               readEnhancementMetadata(metadata).promotionBlocked?.synthesisRequirementCount,
               readEnhancementMetadata(metadata).promotionBlocked?.setDifference,
             )}

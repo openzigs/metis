@@ -62,3 +62,18 @@ export function legacyTmpCloneRoot(): string | null {
 export function resolveRepoClonePath(connectorId: string): string {
   return path.join(resolveRepoCloneRoot(), connectorId);
 }
+
+/**
+ * #2338 — where connector `connectorId`'s commit HISTORY repository lives: a
+ * bare, blobless repository beside the clone (`<root>/<id>.history.git`,
+ * docs/decisions/0023). Separate from the working-tree clone, so a failed or
+ * oversized history fetch costs the history and nothing else.
+ */
+export function resolveRepoHistoryPath(connectorId: string): string {
+  return path.join(resolveRepoCloneRoot(), `${connectorId}.history.git`);
+}
+
+/** #2338 — the history repository's state record (`<root>/<id>.history.json`). */
+export function resolveRepoHistoryStatePath(connectorId: string): string {
+  return path.join(resolveRepoCloneRoot(), `${connectorId}.history.json`);
+}

@@ -1293,6 +1293,12 @@ export interface EnhancementMetadata {
     rejectedCount: number;
     awaitingRequirementCount?: number;
     /**
+     * Issue #2427 — the reviewed list's size, decided or not.
+     * `awaitingRequirementCount` counts only the undecided ones; absent on a
+     * run recorded before #2427, where that count was the list's.
+     */
+    reviewedRequirementCount?: number;
+    /**
      * Issue #909 — how many requirements the synthesis produced. When it differs
      * from `awaitingRequirementCount` (the reviewed list), approving promotes the
      * reviewed list, and the Approvals tab says so before anyone approves.
