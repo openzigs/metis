@@ -1528,7 +1528,7 @@ export class KnowledgeService {
       for (let i = 0; i < pending.length; i += batchSize) {
         const batch = pending.slice(i, i + batchSize);
         const embedResult = await this.embedder.embed(
-          batch.map((c) => indexedTextOf(c.text, c.metadata)),
+          batch.map((c) => indexedTextOf(c.text, c.metadata, c.document.filename)),
         );
         const { vectors } = embedResult;
         // #792 — tag rows with the composite identity, not the bare model id.
@@ -1628,7 +1628,9 @@ export class KnowledgeService {
         for (let i = 0; i < missing.length; i += batchSize) {
           const batch = missing.slice(i, i + batchSize);
           const result = await this.embedder.embed(
-            batch.map((chunk) => indexedTextOf(chunk.text, chunk.metadata)),
+            batch.map((chunk) =>
+              indexedTextOf(chunk.text, chunk.metadata, chunk.document.filename),
+            ),
           );
           const tag = result.identity ?? result.model;
           if (

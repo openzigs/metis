@@ -821,8 +821,11 @@ Projects needing re-ingest: 1/2 (chunker drift — a reindex does NOT fix this)
   the indexes see differs by mode and only a re-ingest changes it. Turning the flag
   on, off, or between modes therefore lists the affected projects under
   `Projects needing re-ingest`. With the flag `off` nothing is appended, so the
-  identity is exactly what it was before. A repository file is never prefixed and is
-  tagged `;ctx=none`, which counts as current under every mode. One known
+  identity is exactly what it was before. A repository file never gets a contextual
+  prefix and is tagged `;ctx=none`, which counts as current under every mode. Its
+  chunks are indexed behind a `File: <repository path>` line instead (#2193), the same
+  in every mode, so that line is not part of the identity: rows written before #2193
+  get it from a **reindex**, not a re-ingest. One known
   over-report: repository files ingested while the flag was off carry the plain
   identity and are listed once when the flag is first turned on. A `model`-mode
   document whose calls were stopped is tagged `;ctx=model-partial` (#2355): the

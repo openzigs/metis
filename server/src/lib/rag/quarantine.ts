@@ -345,7 +345,7 @@ export async function approveDocument(
           id: data.id,
           vector: vector as number[],
           text: r.text,
-          indexedText: indexedTextOf(r.text, meta),
+          indexedText: indexedTextOf(r.text, meta, doc.filename),
           position: r.ord,
         });
       }

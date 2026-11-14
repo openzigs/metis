@@ -32,6 +32,7 @@ import {
   MODEL_CONTEXT_MAX_TOKENS,
   modelChunkContextGenerator,
   prefixedText,
+  repoFilePrefix,
   resolveContextualChunksMode,
   savedChunkContexts,
 } from "./contextual-chunks.js";
@@ -202,7 +203,21 @@ describe("contextPrefixOf / indexedTextOf", () => {
   it("is the bare text for a row with no prefix, bad JSON or a non-string value", () => {
     for (const meta of [null, undefined, "", "{", "[]", "null", '{"contextPrefix":7}', "{}"]) {
       expect(indexedTextOf("body", meta)).toBe("body");
+      expect(indexedTextOf("body", meta, "frd.md")).toBe("body");
     }
+  });
+  it("#2193: derives the file line for a repository row stored without a prefix", () => {
+    const repo = "connector:repo:r1:src/internal/model/feed.go";
+    expect(indexedTextOf("func f() {}", null, repo)).toBe(
+      "File: internal/model/feed.go\n\nfunc f() {}",
+    );
+    expect(indexedTextOf("func f() {}", "{}", repo)).toBe(
+      "File: internal/model/feed.go\n\nfunc f() {}",
+    );
+    // A persisted prefix is what ingest indexed, and wins.
+    expect(indexedTextOf("body", '{"contextPrefix":"P"}', repo)).toBe("P\n\nbody");
+    // Fitted like any prefix: none behind a chunk it does not fit.
+    expect(indexedTextOf("漢".repeat(680), null, repo)).toBe("漢".repeat(680));
   });
 });
 
@@ -210,6 +225,24 @@ describe("isContextualDocument", () => {
   it("excludes repository source files only", () => {
     expect(isContextualDocument("frd.docx")).toBe(true);
     expect(isContextualDocument("connector:repo:r1:src/a/b.go")).toBe(false);
+  });
+});
+
+describe("repoFilePrefix (#2193)", () => {
+  it("names the repository path of a repository file", () => {
+    expect(repoFilePrefix("connector:repo:r1:src/internal/model/feed.go")).toBe(
+      "File: internal/model/feed.go",
+    );
+  });
+  it("is empty for any other document", () => {
+    expect(repoFilePrefix("frd.docx")).toBe("");
+    expect(repoFilePrefix("walkthrough-note.md")).toBe("");
+  });
+  it("collapses whitespace and clips a long path", () => {
+    expect(repoFilePrefix("connector:repo:r1:src/a  b\tc.go")).toBe("File: a b c.go");
+    const long = repoFilePrefix(`connector:repo:r1:src/${"segment/".repeat(60)}x.go`);
+    expect(long.length).toBeLessThanOrEqual(200);
+    expect(long.startsWith("File: segment/")).toBe(true);
   });
 });
 
@@ -235,15 +268,24 @@ describe("contextPrefixesFor", () => {
     ]);
     expect(generator).not.toHaveBeenCalled();
   });
-  it("is all empty for a repository file", async () => {
-    expect(
-      await prefixes({
-        ...base,
-        mode: "headings",
-        filename: "connector:repo:r:src/x",
-      }),
-    ).toEqual(["", ""]);
-  });
+  it.each(["off", "headings", "model"] as const)(
+    "#2193 %s: a repository file's chunks carry its path, with no generator call",
+    async (mode) => {
+      const generator = vi.fn();
+      expect(
+        await contextPrefixesFor({
+          ...base,
+          mode,
+          generator,
+          filename: "connector:repo:r:src/internal/model/feed.go",
+        }),
+      ).toEqual([
+        { prefix: "File: internal/model/feed.go", context: null },
+        { prefix: "File: internal/model/feed.go", context: null },
+      ]);
+      expect(generator).not.toHaveBeenCalled();
+    },
+  );
   it("headings: summary and heading path, no generator call", async () => {
     const generator = vi.fn();
     expect(await prefixes({ ...base, mode: "headings", generator })).toEqual([

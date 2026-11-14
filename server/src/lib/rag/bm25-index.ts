@@ -232,7 +232,7 @@ export class BM25Index {
         id: r.id,
         documentId: r.documentId,
         position: r.position,
-        text: indexedTextOf(r.text, r.metadata),
+        text: indexedTextOf(r.text, r.metadata, filenames.get(r.documentId)),
         filename: filenames.get(r.documentId) ?? "",
       }));
       if (bulk.length > 0) state.index.addAll(bulk.map(toIndexedDoc));

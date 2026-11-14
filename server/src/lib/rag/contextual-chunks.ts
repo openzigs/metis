@@ -45,8 +45,20 @@
  * and asks only for the rest. One over the size cap is tagged `model-oversize`, which
  * counts as current: no re-ingest can change it.
  *
- * Repository source files are left alone in every mode: a code file has no heading
- * path and no lead sentence, and its path is already a boosted BM25 field.
+ * Repository source files get no contextual prefix in any mode: a code file has no
+ * heading path and no lead sentence. #2193 — each of their chunks is indexed behind
+ * one line naming the file instead (`File: internal/model/feed.go`,
+ * {@link repoFilePrefix}), in EVERY mode, `off` included. Only a file's first chunk
+ * carries its `# <path>` header, so before this a chunk from the middle of a file
+ * reached the embedder with nothing saying which file it was. Measured on the #706
+ * walkthrough's Miniflux v2.3.3 project (2,724 chunks, gte-modernbert-base), the
+ * ground-truth chunk for "how often are feeds refreshed" moved from 6th to 5th, and
+ * over the 30 Miniflux localization items expected files in the top 5 went from 13
+ * to 18 (k 10). The prefix does not depend on the mode, so it does not enter the
+ * chunker identity: a repository file still matches every mode
+ * ({@link import("./chunker.js").CHUNK_CONTEXT_NONE}). A row written before #2193
+ * has no stored prefix; {@link indexedTextOf} derives the same line for it, so a
+ * reindex (and the BM25 index, rebuilt at start) indexes it the new way too.
  */
 import { createHash, randomBytes } from "node:crypto";
 
@@ -113,6 +125,16 @@ export function resolveContextualChunksMode(
 /** Whether a document gets contextual prefixes at all: never a repository file. */
 export function isContextualDocument(filename: string): boolean {
   return repoDocumentPath(filename) === undefined;
+}
+
+/**
+ * #2193 — the prefix every chunk of a repository file is indexed behind, in every
+ * mode: `File: <repository path>`, whitespace collapsed and clipped like a summary
+ * line. `""` for any other document.
+ */
+export function repoFilePrefix(filename: string): string {
+  const repoPath = repoDocumentPath(filename);
+  return repoPath === undefined ? "" : clip(`File: ${repoPath}`, SUMMARY_LINE_MAX_CHARS);
 }
 
 /** Collapse whitespace and cut at a word boundary, marking the cut with an ellipsis. */
@@ -333,12 +355,20 @@ export function contextPrefixOf(
   return typeof prefix === "string" ? prefix : "";
 }
 
-/** The indexed text of a stored chunk: its display text behind its persisted prefix. */
+/**
+ * The indexed text of a stored chunk: its display text behind its persisted prefix.
+ * #2193 — a repository file's chunk with no persisted prefix (written before #2193)
+ * gets the one ingest writes now, derived from `filename`, so every reader that
+ * rebuilds an index from stored rows indexes old and new rows alike.
+ */
 export function indexedTextOf(
   text: string,
   metadata: string | Record<string, unknown> | null | undefined,
+  filename?: string,
 ): string {
-  return prefixedText(text, contextPrefixOf(metadata));
+  const stored = contextPrefixOf(metadata);
+  if (stored || filename === undefined) return prefixedText(text, stored);
+  return prefixedText(text, fittingPrefix(text, repoFilePrefix(filename)));
 }
 
 /** A model-written chunk context and the key it is saved under for reuse (#2268). */
@@ -767,7 +797,8 @@ export interface ContextualChunk {
  * The context prefix for every chunk of one document under `mode`, each already
  * fitted to the embedder's input ({@link fittingPrefix}), with the model context it
  * carries so the caller can save it for reuse (#2268). Every prefix is `""` when the
- * mode is off or the document is a repository file.
+ * mode is off. #2193 — a repository file's chunks get {@link repoFilePrefix} in every
+ * mode, and never a model call.
  */
 export async function contextPrefixesFor(input: {
   mode: ContextualChunksMode;
@@ -783,7 +814,14 @@ export async function contextPrefixesFor(input: {
   onStopped?: (reason: string) => void;
 }): Promise<ContextualChunk[]> {
   const { mode, filename, documentText, chunks } = input;
-  if (mode === "off" || !isContextualDocument(filename)) {
+  if (!isContextualDocument(filename)) {
+    const filePrefix = repoFilePrefix(filename);
+    return chunks.map((chunk) => ({
+      prefix: fittingPrefix(chunk.text, filePrefix),
+      context: null,
+    }));
+  }
+  if (mode === "off") {
     return chunks.map(() => ({ prefix: "", context: null }));
   }
   const summary = documentSummaryLine(documentText, filename);
