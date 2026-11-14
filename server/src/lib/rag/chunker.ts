@@ -362,6 +362,14 @@ const CONTEXT_SEGMENT = ";ctx=";
 export const CHUNK_CONTEXT_NONE = "none";
 
 /**
+ * #2355 — the context tag of a `model`-mode document whose model calls were stopped
+ * (the project's budget was spent) before every chunk had a context. It never
+ * matches the active `model` identity, so the document reads as needing a re-ingest
+ * instead of as current.
+ */
+export const CHUNK_CONTEXT_MODEL_PARTIAL = "model-partial";
+
+/**
  * The identity of the chunking a call with these options would produce:
  * producer, algorithm version and EFFECTIVE parameters — e.g. `doc:v2:2048/256`.
  *

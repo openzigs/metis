@@ -191,6 +191,21 @@ describe("cachedChunkContextGenerator", () => {
     });
   });
 
+  it("merges the recorded contexts with the caller's own saved ones (#2355)", async () => {
+    const cache = { [keyOf("a")]: "recorded a" };
+    const { sent, generator } = live();
+    const saved = new Map([[keyOf("b"), "saved b"]]);
+    const out = await cachedChunkContextGenerator(
+      generator,
+      cache,
+    )({
+      ...input(["a", "b"]),
+      saved,
+    });
+    expect(out.map((c) => c?.text)).toEqual(["recorded a", "saved b"]);
+    expect(sent).toEqual([]);
+  });
+
   it("reads a missing cache file as empty and a written one back", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "metis-2234-cache-"));
     try {

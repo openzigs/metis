@@ -133,12 +133,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       generator?: ChunkContextGenerator,
     ) {
       const bm25 = new BM25Index();
+      const store = new LocalVectorStore({ root: vectorRoot });
       return {
         embedder,
         bm25,
+        store,
         knowledge: new KnowledgeService({
           embedder: embedder as unknown as Embedder,
-          vectorStore: new LocalVectorStore({ root: vectorRoot }),
+          vectorStore: store,
           storage,
           bm25,
           chunkOptions: CHUNKING,
@@ -148,7 +150,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       };
     }
 
-    async function seedDocument(id: string, filename: string, text = DOC): Promise<void> {
+    async function seedDocument(
+      id: string,
+      filename: string,
+      text = DOC,
+      autoApproveTrusted = true,
+    ): Promise<void> {
       const storagePath = `mem://${id}`;
       blobs.set(storagePath, Buffer.from(text, "utf8"));
       await db.document.create({
@@ -162,7 +169,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           checksum: id,
           status: "pending",
           uploadedById: USER,
-          autoApproveTrusted: true,
+          autoApproveTrusted,
         },
       });
     }
@@ -300,7 +307,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
      * #2268 — the REAL `model` generator over a scripted provider, so the reuse key,
      * the stop check and the prompt are production code; only the reply is scripted.
      */
-    function scriptedModel(onCall: (call: number) => Promise<void> = async () => {}) {
+    function scriptedModel(
+      onCall: (call: number) => Promise<void> = async () => {},
+      budget: Pick<
+        Parameters<typeof modelChunkContextGenerator>[0],
+        "remainingTokens" | "onResponse"
+      > = {},
+    ) {
       let calls = 0;
       const provider = {
         key: "anthropic",
@@ -317,7 +330,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       } as unknown as AIProvider;
       return {
         calls: () => calls,
-        generator: modelChunkContextGenerator({ provider: () => provider, concurrency: 1 }),
+        generator: modelChunkContextGenerator({
+          provider: () => provider,
+          concurrency: 1,
+          ...budget,
+        }),
       };
     }
 
@@ -406,6 +423,133 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         for (const r of await storedChunks(id)) expect(r.chunkerIdentity).toBe("doc:v3:256/0");
       }
       expect((await off.coverageReport(PROJECT)).needsReingest).toBe(false);
+    });
+
+    /**
+     * #2355 — a re-ingest's old chunks answer searches until its new chunks commit,
+     * then leave every index. One service throughout, so the vector store and the
+     * warm BM25 index read here are the ones the ingest writes.
+     */
+    describe("#2355 — a re-ingest replaces the live chunks only when its own chunks commit", () => {
+      const QUERY = "payroll reconciliation mismatch";
+      const CHANGED = `${DOC}\nA new closing line.\n`;
+
+      async function liveIds(id: string): Promise<Set<string>> {
+        return new Set((await storedChunks(id)).map((r) => r.id));
+      }
+
+      it("model: every call of the re-ingest runs while the old chunks still answer", async () => {
+        await seedDocument("doc-gap", "leave-policy.md");
+        let watching = false;
+        const seenDuring: string[][] = [];
+        const box: { s?: ReturnType<typeof service> } = {};
+        const model = scriptedModel(async () => {
+          if (!watching) return;
+          const found = await box.s!.knowledge.search(PROJECT, QUERY, { k: 20 });
+          seenDuring.push(found.hits.map((h) => h.chunkId));
+        });
+        box.s = service("model", recordingEmbedder(), model.generator);
+        await box.s.knowledge.ingestDocument("doc-gap");
+        const before = await liveIds("doc-gap");
+        expect(before.size).toBe(expected.length);
+
+        blobs.set("mem://doc-gap", Buffer.from(CHANGED, "utf8"));
+        watching = true;
+        expect((await box.s.knowledge.ingestDocument("doc-gap")).status).toBe("ready");
+
+        expect(seenDuring).toHaveLength(chunkMarkdown(CHANGED, CHUNKING).length);
+        for (const hits of seenDuring) {
+          expect(hits.length).toBeGreaterThan(0);
+          for (const id of hits) expect(before.has(id)).toBe(true);
+        }
+        // Committed: the new generation alone is live, in SQL, the vectors and BM25.
+        const after = await liveIds("doc-gap");
+        expect([...after].some((id) => before.has(id))).toBe(false);
+        expect(await box.s.store.count(PROJECT)).toBe(after.size);
+        const warm = await box.s.bm25.search(PROJECT, "reconciliation", 50);
+        for (const h of warm) expect(before.has(h.chunkId)).toBe(false);
+        const found = await box.s.knowledge.search(PROJECT, QUERY, { k: 20 });
+        expect(found.hits.length).toBeGreaterThan(0);
+        for (const h of found.hits) expect(after.has(h.chunkId)).toBe(true);
+      });
+
+      it("a re-ingest that fails leaves no live chunks, as a failed ingest always has", async () => {
+        await seedDocument("doc-fail", "leave-policy.md");
+        const s = service("headings");
+        await s.knowledge.ingestDocument("doc-fail");
+        expect((await liveIds("doc-fail")).size).toBe(expected.length);
+
+        s.embedder.embed = async () => {
+          throw new Error("embedder down");
+        };
+        const result = await s.knowledge.ingestDocument("doc-fail");
+        expect(result.status).toBe("failed");
+        expect((await liveIds("doc-fail")).size).toBe(0);
+        expect(await s.store.count(PROJECT)).toBe(0);
+        expect(await s.bm25.search(PROJECT, "reconciliation", 50)).toEqual([]);
+      });
+
+      it("a re-ingest parked for review takes the old chunks out of search", async () => {
+        await seedDocument("doc-review", "leave-policy.md");
+        const s = service("headings");
+        await s.knowledge.ingestDocument("doc-review");
+        expect((await liveIds("doc-review")).size).toBe(expected.length);
+
+        await db.document.update({
+          where: { id: "doc-review" },
+          data: { autoApproveTrusted: false },
+        });
+        const result = await s.knowledge.ingestDocument("doc-review");
+        expect(result.status).toBe("ready");
+        const doc = await db.document.findUniqueOrThrow({ where: { id: "doc-review" } });
+        expect(doc.indexState).toBe("quarantined");
+        expect((await liveIds("doc-review")).size).toBe(0);
+        expect(await s.store.count(PROJECT)).toBe(0);
+        expect(
+          await db.quarantineChunk.count({ where: { documentId: "doc-review", ord: { gte: 0 } } }),
+        ).toBe(expected.length);
+      });
+
+      it("model: contexts saved on chunks still parked for review are reused", async () => {
+        await seedDocument("doc-parked", "leave-policy.md", DOC, false);
+        const model = scriptedModel();
+        const first = service("model", recordingEmbedder(), model.generator);
+        await first.knowledge.ingestDocument("doc-parked");
+        expect(model.calls()).toBe(expected.length);
+        // Nothing was approved: the contexts exist only on the quarantined rows.
+        expect(await storedChunks("doc-parked")).toEqual([]);
+
+        const again = scriptedModel();
+        const second = service("model", recordingEmbedder(), again.generator);
+        await second.knowledge.ingestDocument("doc-parked");
+        expect(again.calls()).toBe(0);
+      });
+
+      it("model: a budget stop tags the rows model-partial, so they read as needing a re-ingest", async () => {
+        await seedDocument("doc-budget", "leave-policy.md");
+        // One call's worth of budget: the first reply spends it.
+        const capped = scriptedModel(async () => {}, {
+          remainingTokens: async () => 1,
+          onResponse: async () => 1,
+        });
+        const s = service("model", recordingEmbedder(), capped.generator);
+        expect((await s.knowledge.ingestDocument("doc-budget")).status).toBe("ready");
+        expect(capped.calls()).toBe(1);
+        const identities = async () =>
+          new Set((await storedChunks("doc-budget")).map((r) => r.chunkerIdentity));
+        expect(await identities()).toEqual(new Set(["doc:v3:256/0;ctx=model-partial"]));
+        const partial = await s.knowledge.coverageReport(PROJECT);
+        expect(partial.currentChunkerIdentity).toBe("doc:v3:256/0;ctx=model");
+        expect(partial.needsReingest).toBe(true);
+
+        // Once the budget allows, a re-ingest asks only for what the stop left out.
+        const full = scriptedModel();
+        const t = service("model", recordingEmbedder(), full.generator);
+        await t.knowledge.ingestDocument("doc-budget");
+        expect(full.calls()).toBe(expected.length - 1);
+        expect(await identities()).toEqual(new Set(["doc:v3:256/0;ctx=model"]));
+        expect((await t.knowledge.coverageReport(PROJECT)).needsReingest).toBe(false);
+      });
     });
 
     afterEach(() => {

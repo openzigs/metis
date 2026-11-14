@@ -4,12 +4,15 @@
  * generator spends its calls. The ingest wiring is proven against a real database
  * in `tests/rag-contextual-chunks-2234.sqlite.test.ts`.
  */
+import { createHash } from "node:crypto";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../ai/types.js";
 import {
   buildContextPrefix,
   CHUNK_CONTEXT_AGENT_STEP,
+  CHUNK_CONTEXT_MAX_CHARS,
   chunkContextKey,
   chunkContextUsageRow,
   clip,
@@ -19,12 +22,14 @@ import {
   contextUserPrompt,
   documentSummaryLine,
   estimateEmbedTokens,
+  FENCE_NONCE_MAX_ATTEMPTS,
   fenceNonce,
   fittingPrefix,
   headingPathLine,
   indexedTextOf,
   isContextualDocument,
   MODEL_CONTEXT_FAILURE_LIMIT,
+  MODEL_CONTEXT_MAX_TOKENS,
   modelChunkContextGenerator,
   prefixedText,
   resolveContextualChunksMode,
@@ -349,6 +354,11 @@ describe("the prompt fence (#2268)", () => {
     expect(a).toMatch(/^[0-9a-f]{16}$/);
     expect(fenceNonce([])).not.toBe(a);
   });
+  it("gives up, rather than spinning, on a source that never yields a usable nonce (#2355)", () => {
+    const random = vi.fn(() => "abc");
+    expect(() => fenceNonce(["xx abc yy"], random)).toThrow(/no usable fence nonce/);
+    expect(random).toHaveBeenCalledTimes(FENCE_NONCE_MAX_ATTEMPTS);
+  });
 });
 
 describe("chunkContextKey (#2268)", () => {
@@ -374,6 +384,21 @@ describe("chunkContextKey (#2268)", () => {
     expect(chunkContextKey({ ...base, document: "Dx", title: "T" })).not.toBe(
       chunkContextKey({ ...base, document: "D", title: "xT" }),
     );
+  });
+  it("covers the reply's token cap and clip, not only the prompt's wording (#2355)", () => {
+    // Recomputed from its parts: a change to the cap or the clip must change every key.
+    const fingerprint = createHash("sha256")
+      .update(contextSystemPrompt("{document}", "{title}", "{nonce}"))
+      .update("\u0000")
+      .update(contextUserPrompt("{chunk}", "{nonce}"))
+      .update("\u0000")
+      .update(`maxTokens=${MODEL_CONTEXT_MAX_TOKENS};clip=${CHUNK_CONTEXT_MAX_CHARS}`)
+      .digest("hex");
+    const hash = createHash("sha256").update(fingerprint);
+    for (const part of [base.provider, base.model, base.document, base.title, base.chunk]) {
+      hash.update("\u0000").update(part);
+    }
+    expect(chunkContextKey(base)).toBe(hash.digest("hex"));
   });
 });
 
@@ -455,6 +480,8 @@ describe("modelChunkContextGenerator", () => {
     expect(String(s.calls[0].messages[0].content)).toContain(doc);
     expect(s.calls[0].messages[1].content).toContain("<excerpt-N>\nc0\n</excerpt-N>");
     expect(s.calls[0].opts?.promptCaching).toEqual({ system: true });
+    // #2355 — the cap the reuse key covers is the cap the call is made with.
+    expect(s.calls[0].opts?.maxTokens).toBe(MODEL_CONTEXT_MAX_TOKENS);
     // #2268 — its own telemetry bucket, not "grounding".
     expect(s.calls[0].opts?.callType).toBe("chunk-context");
     // Both calls share one byte-identical system prompt — the cache key.
@@ -645,28 +672,67 @@ describe("modelChunkContextGenerator", () => {
       expect(s.calls).toHaveLength(0);
     });
 
-    it("stops the remaining calls once the budget check refuses, without counting failures", async () => {
+    it("stops the remaining calls once the document's replies spend the budget, without counting failures (#2355)", async () => {
       const onUsage = vi.fn();
       const s = scriptedProvider(async () => response("ok"));
-      let allowed = 1;
-      const beforeCall = vi.fn(async () => {
-        if (allowed-- <= 0) throw new Error("monthly token budget exceeded");
-      });
+      const remainingTokens = vi.fn(async () => 25);
       const gen = modelChunkContextGenerator({
         provider: () => s.provider,
         concurrency: 1,
-        beforeCall,
+        remainingTokens,
+        onResponse: async () => 15,
         onUsage,
       });
-      const out = await gen({ ...input(["a", "b", "c"]), documentId: "d1" });
-      expect(texts(out)).toEqual(["ok", null, null]);
-      expect(s.calls).toHaveLength(1);
-      expect(beforeCall).toHaveBeenCalledWith({
-        projectId: "p1",
-        documentId: "d1",
+      const out = await gen({ ...input(["a", "b", "c", "d"]), documentId: "d1" });
+      // 0 < 25 and 15 < 25 admit two calls; 30 >= 25 refuses the third.
+      expect(texts(out)).toEqual(["ok", "ok", null, null]);
+      expect(s.calls).toHaveLength(2);
+      // The budget is read once for the document, not once per call.
+      expect(remainingTokens).toHaveBeenCalledTimes(1);
+      expect(remainingTokens).toHaveBeenCalledWith({ projectId: "p1", documentId: "d1" });
+      expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ calls: 2, failures: 0 }));
+    });
+
+    it("makes no call when the budget is already spent", async () => {
+      const s = scriptedProvider(async () => response("ok"));
+      const gen = modelChunkContextGenerator({
+        provider: () => s.provider,
+        remainingTokens: async () => {
+          throw new Error("monthly token budget exceeded");
+        },
       });
-      expect(beforeCall).toHaveBeenCalledTimes(2);
-      expect(onUsage).toHaveBeenCalledWith(expect.objectContaining({ calls: 1, failures: 0 }));
+      expect(await gen(input(["a", "b"]))).toEqual([null, null]);
+      expect(s.calls).toHaveLength(0);
+    });
+
+    it("an uncapped project is never stopped by the budget", async () => {
+      const s = scriptedProvider(async () => response("ok"));
+      const gen = modelChunkContextGenerator({
+        provider: () => s.provider,
+        concurrency: 1,
+        remainingTokens: async () => null,
+        onResponse: async () => 1_000_000,
+      });
+      expect(texts(await gen(input(["a", "b", "c"])))).toEqual(["ok", "ok", "ok"]);
+    });
+
+    it("tells the caller once when calls were stopped, and not when every chunk was asked (#2355)", async () => {
+      const s = scriptedProvider(async () => response("ok"));
+      const capped = modelChunkContextGenerator({
+        provider: () => s.provider,
+        concurrency: 1,
+        remainingTokens: async () => 1,
+        onResponse: async () => 1,
+      });
+      const onStopped = vi.fn();
+      await capped({ ...input(["a", "b", "c"]), onStopped });
+      expect(onStopped).toHaveBeenCalledTimes(1);
+      expect(onStopped).toHaveBeenCalledWith("the project's monthly token budget is spent");
+
+      const whole = modelChunkContextGenerator({ provider: () => s.provider });
+      const notStopped = vi.fn();
+      await whole({ ...input(["a", "b"]), onStopped: notStopped });
+      expect(notStopped).not.toHaveBeenCalled();
     });
   });
 
