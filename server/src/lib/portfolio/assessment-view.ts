@@ -107,7 +107,7 @@ export async function resolveReaderAccess(user: AuthPayload): Promise<ReaderAcce
 /**
  * #2447 — what of an assessment's source the reader cannot see: every word of
  * it (`all`, a single requirement resting on a source they cannot see), or the
- * titles of the change request's requirements that do. Their text is the
+ * titles of the change request's (#2301: or the chosen set's) requirements that do. Their text is the
  * statement, the criteria, the not-checked list, the model's restatement and
  * its prose.
  */
@@ -121,7 +121,10 @@ async function hiddenSource(
     ? { id: a.sourceRequirementId }
     : a.sourceAnalysisId
       ? { analysisId: a.sourceAnalysisId }
-      : null;
+      : // #2301 — a chosen set: those of its requirements resting on a hidden source.
+        (a.sourceRequirementIds?.length ?? 0) > 0
+        ? { id: { in: a.sourceRequirementIds } }
+        : null;
   if (!where) return none;
   const rows = await prisma.requirement.findMany({
     where,

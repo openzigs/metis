@@ -265,6 +265,14 @@ export const portfolioAssessmentInputSchema = z
     sourceAnalysisId: z.string().min(1).max(64).nullable().default(null),
     /** #2345 — a requirement checked was not approved when the check started. */
     preApproval: z.boolean().default(false),
+    /**
+     * #2301 — the stored requirements chosen to be checked, each one criterion,
+     * in the order chosen; empty for any other source. All in `sourceProjectId`.
+     */
+    sourceRequirementIds: z
+      .array(z.string().min(1).max(64))
+      .max(PORTFOLIO_MAX_REQUIREMENTS)
+      .default([]),
     scope: z.enum(PORTFOLIO_ASSESSMENT_SCOPES),
     productIds: z.array(z.string().min(1).max(64)).max(PORTFOLIO_ASSESSMENT_LIMITS.products),
     status: z.enum(PORTFOLIO_ASSESSMENT_STATUSES).default("pending"),
@@ -363,14 +371,16 @@ export interface PortfolioAssessment {
   sourceAnalysisId?: string | null;
   /** #2345 — a requirement checked was not approved when the check started. */
   preApproval?: boolean;
+  /** #2301 — the stored requirements chosen to be checked; empty for any other source. */
+  sourceRequirementIds?: string[];
 }
 
 // ─── #1625 — the HTTP contract ──────────────────────────────────────────────
 
 /**
  * `POST /api/portfolio-assessments`: exactly one of `statement`,
- * `requirementId` and (#2272) `documentId`, whose requirements are each
- * checked; a `product` scope names one or several chosen products, up to
+ * `requirementId`, (#2272) `documentId`, (#2345) `analysisId` and (#2301)
+ * `requirementIds`, the last three of whose requirements are each checked; a `product` scope names one or several chosen products, up to
  * {@link PORTFOLIO_ASSESSMENT_MAX_PRODUCTS} (#2272; exactly one before), and an
  * `all-accessible` scope names none (#1657).
  */
@@ -386,6 +396,17 @@ export const createPortfolioAssessmentSchema = z
      * are approved; such a check is labelled as run on unapproved requirements.
      */
     analysisId: z.string().min(1).max(64).optional(),
+    /**
+     * #2301 — a chosen set of stored requirements, all in one project the
+     * caller can read: each is one criterion of the check. More than
+     * {@link PORTFOLIO_MAX_REQUIREMENTS} is refused, never cut.
+     */
+    requirementIds: z
+      .array(z.string().min(1).max(64))
+      .min(1)
+      .max(PORTFOLIO_MAX_REQUIREMENTS)
+      .refine((ids) => new Set(ids).size === ids.length, "Name each requirement once")
+      .optional(),
     scope: z.enum(PORTFOLIO_ASSESSMENT_SCOPES),
     productIds: z
       .array(z.string().min(1).max(64))
@@ -401,10 +422,12 @@ export const createPortfolioAssessmentSchema = z
   .strict()
   .refine(
     (v) =>
-      [v.statement, v.requirementId, v.documentId, v.analysisId].filter((x) => x !== undefined)
-        .length === 1,
+      [v.statement, v.requirementId, v.documentId, v.analysisId, v.requirementIds].filter(
+        (x) => x !== undefined,
+      ).length === 1,
     {
-      message: "Give exactly one of statement, requirementId, documentId and analysisId",
+      message:
+        "Give exactly one of statement, requirementId, documentId, analysisId and requirementIds",
       path: ["statement"],
     },
   )

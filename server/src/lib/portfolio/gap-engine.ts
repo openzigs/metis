@@ -1458,6 +1458,60 @@ export async function loadReadableSourceRequirement(
   return source;
 }
 
+/**
+ * #2301 — a chosen set of stored requirements, in the order chosen, or 404:
+ * every id must name a live requirement in a project the caller can read,
+ * resting on no source they cannot see, as {@link loadReadableSourceRequirement}
+ * asks of one. Any that does not fails the whole set alike (no existence
+ * oracle). Only then, a set across projects is a 400: one check records one
+ * source project, and only its readers read it (`viewPortfolioAssessment`).
+ */
+export async function loadReadableSourceRequirements(
+  user: AuthPayload,
+  requirementIds: readonly string[],
+): Promise<{
+  projectId: string;
+  requirements: Array<{ id: string; title: string; body: string; reviewStatus: string | null }>;
+}> {
+  const rows = await prisma.requirement.findMany({
+    where: { id: { in: [...requirementIds] }, deletedAt: null },
+    select: {
+      id: true,
+      projectId: true,
+      title: true,
+      body: true,
+      reviewStatus: true,
+      analysisId: true,
+      sourceIds: true,
+    },
+  });
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const notFound = () => new AppError(404, "NOT_FOUND", "Requirement not found");
+  if (requirementIds.some((id) => !byId.has(id))) throw notFound();
+  for (const projectId of new Set(rows.map((r) => r.projectId))) {
+    if (!(await canAccessProjectDiscussions({ id: user.userId, role: user.role }, projectId))) {
+      throw notFound();
+    }
+  }
+  // #2447 — nor one resting on a source the starter cannot see.
+  if ((await restrictedIds(userSourceReader(user.userId), rows)).size > 0) throw notFound();
+  const projects = new Set(rows.map((r) => r.projectId));
+  if (projects.size > 1) {
+    throw new AppError(
+      400,
+      "REQUIREMENTS_SPAN_PROJECTS",
+      "Choose requirements of one project: a check reads the requirements of one project at a time.",
+    );
+  }
+  return {
+    projectId: rows[0].projectId,
+    requirements: requirementIds.map((id) => {
+      const r = byId.get(id)!;
+      return { id: r.id, title: r.title, body: r.body, reviewStatus: r.reviewStatus };
+    }),
+  };
+}
+
 /** Evaluate a requirement across the portfolio and persist the assessment (#1621). */
 export async function runPortfolioGapAnalysis(
   user: AuthPayload,
