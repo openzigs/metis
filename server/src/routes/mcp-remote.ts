@@ -33,7 +33,12 @@ export function mountRemoteMcpBodyLimit(app: Application, deps: RemoteMcpDeps = 
   app.use(REMOTE_MCP_PATH, createRemoteMcpBodyLimit(deps));
 }
 
-/** Mount the metadata documents and the endpoint, each behind `budget` (the app-wide limiter). */
+/**
+ * Mount the metadata documents behind `budget` (the app-wide limiter), and the
+ * endpoint behind its own budgets only (`http.ts`): the app-wide one cannot key
+ * an IdP-signed token to a user, so it would pool every remote caller into one
+ * bucket and, once spent, answer a valid token with a METIS 401.
+ */
 export function mountRemoteMcp(
   app: Application,
   budget: RequestHandler,
@@ -45,5 +50,5 @@ export function mountRemoteMcp(
     budget,
     createProtectedResourceMetadataHandler(deps),
   );
-  app.use(REMOTE_MCP_PATH, budget, createRemoteMcpRouter(deps));
+  app.use(REMOTE_MCP_PATH, createRemoteMcpRouter(deps));
 }

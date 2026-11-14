@@ -3,9 +3,10 @@
  * at the top level, and with its body bounded before the app's global 10 MiB parser.
  */
 import request from "supertest";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
 import { MAX_REMOTE_BODY_BYTES } from "../mcp/metis-index/remote/http.js";
+import { InvalidAccessTokenError } from "../mcp/metis-index/remote/token-verifier.js";
 import type { RemoteMcpConfig } from "../mcp/metis-index/remote/config.js";
 
 const enabled: RemoteMcpConfig = {
@@ -110,5 +111,34 @@ describe("createApp: remote MCP and CORS", () => {
   it("keeps CORS on a path that only starts with the letters mcp", async () => {
     const r = await preflight("/mcpx", ui);
     expect(r.headers["access-control-allow-origin"]).toBe(ui);
+  });
+});
+
+// The app-wide /api budget cannot key an IdP-signed token to a user, so on /mcp
+// it would pool every remote caller into one peer bucket and, once spent, answer
+// a JWT-shaped bearer with METIS's own 401 (no Bearer challenge). /mcp has its
+// own per-address and per-user budgets instead.
+describe("createApp: remote MCP and the app-wide /api budget", () => {
+  afterEach(() => {
+    delete process.env.API_RATE_LIMIT_PEER_MAX;
+  });
+
+  it("is not behind the /api peer bucket: every call reaches the OAuth check", async () => {
+    process.env.API_RATE_LIMIT_PEER_MAX = "1";
+    const verifyToken = vi.fn(async () => {
+      throw new InvalidAccessTokenError("signature");
+    });
+    const app = createApp({ remoteMcp: { readConfig: () => enabled, verifyToken } });
+    const b64 = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
+    const idpJwt = `${b64({ alg: "RS256", typ: "JWT" })}.${b64({ sub: "s", iss: "i" })}.c2ln`;
+    for (let i = 0; i < 3; i++) {
+      const r = await request(app)
+        .post("/mcp")
+        .set("authorization", `Bearer ${idpJwt}`)
+        .send({ jsonrpc: "2.0", id: 1, method: "ping" });
+      expect(r.status).toBe(401);
+      expect(r.headers["www-authenticate"]).toContain('error="invalid_token"');
+    }
+    expect(verifyToken).toHaveBeenCalledTimes(3);
   });
 });

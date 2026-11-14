@@ -13,6 +13,9 @@
  *   2. TLS: a resource configured as `https` refuses a plain-HTTP request (403).
  *      Plain HTTP is configurable only for a localhost resource;
  *   3. `Origin`: present and not an allowed origin → 403 (DNS rebinding);
+ *   3a. that client address's pre-authentication budget → 429. The endpoint is
+ *      not behind the app-wide `/api` budget, which cannot key an IdP-signed
+ *      token to a user and would pool every remote caller into one bucket;
  *   4. bearer token: none → 401 with `WWW-Authenticate` naming the RFC 9728
  *      metadata; one that fails signature, issuer, expiry or audience → 401
  *      `invalid_token`. A METIS API token or any static secret is not a JWT
@@ -34,7 +37,7 @@
  * with it. The only outbound call is the JWKS fetch, which carries no credential.
  */
 import { Router, type Request, type RequestHandler, type Response } from "express";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { audit as defaultAudit } from "../../../lib/audit/audit-service.js";
 import { createChildLogger } from "../../../lib/logger.js";
@@ -56,6 +59,12 @@ const log = createChildLogger("mcp-remote");
 /** The largest JSON-RPC request body accepted. Tool inputs are bounded far below this. */
 export const MAX_REMOTE_BODY_BYTES = 64 * 1024;
 const RATE_WINDOW_MS = 60_000;
+/**
+ * Before the token is checked, each client address may make this many times
+ * the per-user rate: enough for a team behind one egress address, while an
+ * anonymous flood of bad tokens stays bounded.
+ */
+export const REMOTE_PREAUTH_RATE_MULTIPLIER = 20;
 
 type AuditFn = typeof defaultAudit;
 
@@ -224,6 +233,22 @@ export function createRemoteMcpRouter(deps: RemoteMcpDeps = {}): Router {
     }
     next();
   });
+
+  // 3a. Per-client-address budget, before any token work. `req.ip` honours the
+  // app's `trust proxy` (TRUST_PROXY), so behind the ingress it is the client.
+  const preauthLimiter = rateLimit({
+    store: clusterRateLimitStore("mcp-remote-preauth"),
+    windowMs: RATE_WINDOW_MS,
+    limit: (_req, res) =>
+      locals(res).remoteMcp!.settings.rateLimitPerMinute * REMOTE_PREAUTH_RATE_MULTIPLIER,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req) => `mcp-remote:addr:${ipKeyGenerator(req.ip ?? "", 64)}`,
+    handler: (_req, res) => {
+      res.status(429).json({ error: "rate_limited" });
+    },
+  });
+  router.use(preauthLimiter as unknown as RequestHandler);
 
   // 4–6. Bearer token, user, scope.
   router.use(async (req, res, next) => {

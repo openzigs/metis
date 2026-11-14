@@ -22,8 +22,12 @@ vi.mock("../dispatcher.js", async (original) => ({
 const { mountRemoteMcp, mountRemoteMcpBodyLimit } = await import("../../../routes/mcp-remote.js");
 const { jsonBodyParser } = await import("../../../middleware/body-parsers.js");
 const { errorHandler } = await import("../../../middleware/error-handler.js");
-const { bearerChallenge, MAX_REMOTE_BODY_BYTES, protectedResourceMetadata } =
-  await import("./http.js");
+const {
+  bearerChallenge,
+  MAX_REMOTE_BODY_BYTES,
+  protectedResourceMetadata,
+  REMOTE_PREAUTH_RATE_MULTIPLIER,
+} = await import("./http.js");
 const { createAccessTokenVerifier, InvalidAccessTokenError } = await import("./token-verifier.js");
 type Deps = import("./http.js").RemoteMcpDeps;
 type CreateServer = typeof import("../server.js").createIndexMcpServer;
@@ -178,6 +182,26 @@ describe("off by default", () => {
     expect(r.status).toBe(404);
     expect(r.headers["www-authenticate"]).toBeUndefined();
     expect(verifyToken).not.toHaveBeenCalled();
+  });
+
+  it("reads the settings on every request: turning the endpoint off needs no restart", async () => {
+    let config: Config = { state: "enabled", settings: settings() };
+    const app = makeApp({ readConfig: () => config });
+    const meta = "/.well-known/oauth-protected-resource/mcp";
+    const form = () =>
+      request(app)
+        .post("/mcp")
+        .set({ ...RPC_HEADERS, "content-type": "application/x-www-form-urlencoded" })
+        .send("a=1");
+    expect((await rpc(app, listTools)).status).toBe(200);
+    expect((await request(app).get(meta)).status).toBe(200);
+    expect((await form()).status).toBe(415);
+    config = { state: "disabled" };
+    expect((await rpc(app, listTools)).status).toBe(404);
+    expect((await request(app).get(meta)).status).toBe(404);
+    expect((await form()).status).toBe(404);
+    config = { state: "enabled", settings: settings() };
+    expect((await rpc(app, listTools)).status).toBe(200);
   });
 
   it("answers 503 while misconfigured", async () => {
@@ -395,6 +419,26 @@ describe("transport hardening", () => {
     expect(limited.body).toEqual({ error: "rate_limited" });
     user = `${user}-other`;
     expect((await rpc(app, listTools)).status).toBe(200);
+  });
+
+  it("caps each client address before authentication, so tokenless floods cannot run unbounded", async () => {
+    const verifyToken = stubVerifier();
+    const app = makeApp({
+      config: { state: "enabled", settings: settings({ rateLimitPerMinute: 1 }) },
+      verifyToken,
+    });
+    const cap = REMOTE_PREAUTH_RATE_MULTIPLIER;
+    const from = (addr: string, auth?: string) =>
+      request(app)
+        .post("/mcp")
+        .set({ ...RPC_HEADERS, "x-forwarded-for": addr, ...(auth ? { authorization: auth } : {}) })
+        .send(listTools);
+    for (let i = 0; i < cap; i++) expect((await from("203.0.113.7")).status).toBe(401);
+    const limited = await from("203.0.113.7", "Bearer good-token");
+    expect(limited.status).toBe(429);
+    expect(limited.body).toEqual({ error: "rate_limited" });
+    expect(verifyToken).not.toHaveBeenCalled();
+    expect((await from("203.0.113.8")).status).toBe(401);
   });
 
   it("bounds the request body, by its declared length and as it streams", async () => {

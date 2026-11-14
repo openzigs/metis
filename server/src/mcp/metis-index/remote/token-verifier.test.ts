@@ -257,9 +257,10 @@ describe("createAccessTokenVerifier", () => {
   });
 
   it("refuses an oversized or malformed JWKS", async () => {
+    // A valid key set, so only the declared length can refuse it (unread).
     const huge = vi.fn(
       async () =>
-        new Response("{}", {
+        new Response(JSON.stringify({ keys: [jwk(signing.publicKey, "k1")] }), {
           status: 200,
           headers: { "content-length": String(JWKS_MAX_BYTES + 1) },
         }),

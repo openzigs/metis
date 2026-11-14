@@ -50,7 +50,7 @@ Set these under **Settings → Configuration** (admin, with an MFA sign-in), or 
 | `MCP_REMOTE_JWKS_URL`              | `https://idp.example.com/realms/metis/certs`  | Where the authorization server publishes its signing keys.                                                                                              |
 | `MCP_REMOTE_SCOPE`                 | `mcp:read` (default)                          | The one scope a token needs.                                                                                                                            |
 | `MCP_REMOTE_ALLOWED_ORIGINS`       | `https://agent.example.com`                   | Origins allowed to send an `Origin` header to `/mcp` (a DNS-rebinding guard; the endpoint sends no CORS headers, so browser pages cannot call it cross-origin). A request whose `Origin` is not listed gets 403. A request with no `Origin` header, as desktop agents send, is not refused. |
-| `MCP_REMOTE_RATE_LIMIT_PER_MINUTE` | `60` (default)                                | Requests one user may make per minute.                                                                                                                  |
+| `MCP_REMOTE_RATE_LIMIT_PER_MINUTE` | `60` (default)                                | Requests one user may make per minute. Before the token is checked, each client address may make 20 times this many. |
 | `MCP_REMOTE_ENABLED`               | `true`                                        | Turns the endpoint on. Set it last.                                                                                                                     |
 
 The settings are read on every request, so turning the endpoint off takes effect on the next
@@ -100,7 +100,7 @@ prefixes beside `/socket.io`. The proxy must send `X-Forwarded-Proto`. METIS rea
 | The token lacks the scope                                                                    | 403 `insufficient_scope`, with `scope="mcp:read"`          |
 | Plain HTTP to an `https` resource                                                            | 403 `tls_required`                                         |
 | An `Origin` that is not allowed                                                              | 403 `origin_not_allowed`                                   |
-| Over the per-user rate limit                                                                 | 429                                                        |
+| Over the per-user rate limit, or the per-address limit ahead of authentication              | 429                                                        |
 | A body over 64 KiB                                                                           | 413                                                        |
 | `GET` or `DELETE` (the endpoint is stateless: no stream, no session)                         | 405, `Allow: POST`                                         |
 
