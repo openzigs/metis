@@ -302,6 +302,8 @@ describe("#727 agentSelectableTools — the authoring picker offers the code too
       "get_file_outline",
       // #2329 — nameable whether or not CHAT_CODE_CONTEXT_TOOL offers it.
       "search_code_context",
+      // #2338 — nameable whether or not CHAT_CHANGE_HISTORY_TOOL offers it.
+      "get_change_history",
     ]);
     for (const t of listed.slice(1)) {
       expect(t.risk).toBe("low");

@@ -185,11 +185,27 @@ vi.mock("../src/lib/vault/vault-service.js", () => ({
   getVaultService: vi.fn(() => ({})),
 }));
 
+// #2338 — the history fetch itself runs real git in history-repo.test.ts; here
+// only what the service hands it is checked (no network).
+const historyFetch = vi.hoisted(() => ({
+  fetchHistoryRepository: vi.fn(async (_input: Record<string, unknown>) => ({
+    status: "ready" as const,
+    sizeBytes: 1,
+    windowStart: "2025-01-01T00:00:00.000Z",
+    prefetchedObjects: 0,
+  })),
+}));
+vi.mock("../src/lib/connectors/repo/history-repo.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/connectors/repo/history-repo.js")>()),
+  fetchHistoryRepository: historyFetch.fetchHistoryRepository,
+}));
+
 import {
   __setOctokitFactory,
   __setSimpleGitFactory,
   createRepoConnector,
   deleteRepoConnector,
+  fetchConnectorHistory,
   fetchRepoMetadata,
   getRepoConnector,
   listRepoConnectors,
@@ -1466,6 +1482,105 @@ describe("#714 — metadata reads the commit at the configured ref", () => {
     expect((await getRepoConnector("proj_1", c.id)).lastCommitSha).toBe(
       "c4d54f87a81b30aa173fddf05d7ff83ae7da5796",
     );
+  });
+});
+
+describe("#2338 — a connector's commit history", () => {
+  const SHA = "c4d54f87a81b30aa173fddf05d7ff83ae7da5796";
+  let dir: string;
+  const original = process.env.REPO_CLONE_DIR;
+
+  beforeEach(async () => {
+    dir = await fsp.mkdtemp(nodePath.join(os.tmpdir(), "metis-2338-svc-"));
+    process.env.REPO_CLONE_DIR = dir;
+    historyFetch.fetchHistoryRepository.mockClear();
+  });
+  afterEach(async () => {
+    if (original === undefined) delete process.env.REPO_CLONE_DIR;
+    else process.env.REPO_CLONE_DIR = original;
+    await fsp.rm(dir, { recursive: true, force: true });
+  });
+
+  async function seedHistory(id: string): Promise<void> {
+    await fsp.mkdir(nodePath.join(dir, `${id}.history.git`), { recursive: true });
+    await fsp.writeFile(nodePath.join(dir, `${id}.history.json`), "{}");
+  }
+  const present = (id: string) =>
+    fsp.access(nodePath.join(dir, `${id}.history.git`)).then(
+      () => true,
+      () => false,
+    );
+  const create = () =>
+    createRepoConnector(
+      "proj_1",
+      {
+        label: `h-${Math.random()}`,
+        provider: "github",
+        ownerOrOrg: "octocat",
+        repoName: "demo",
+        secretRef: "${vault:gh-pat}",
+      },
+      "user_1",
+    );
+
+  it("is deleted with the connector", async () => {
+    const c = await create();
+    await seedHistory(c.id);
+    await deleteRepoConnector("proj_1", c.id, "user_1");
+    expect(await present(c.id)).toBe(false);
+    await expect(fsp.access(nodePath.join(dir, `${c.id}.history.json`))).rejects.toThrow();
+  });
+
+  it("is deleted when the connector is pointed at another repository, and kept on a rename", async () => {
+    const c = await create();
+    await seedHistory(c.id);
+    await updateRepoConnector("proj_1", c.id, { label: `renamed-${c.id}` }, "user_1");
+    expect(await present(c.id)).toBe(true);
+    await updateRepoConnector("proj_1", c.id, { repoName: "other" }, "user_1");
+    expect(await present(c.id)).toBe(false);
+  });
+
+  it("is fetched from the clone URL with the token in the environment, never the URL", async () => {
+    const c = await create();
+    await fetchConnectorHistory("proj_1", c.id, SHA);
+    const input = historyFetch.fetchHistoryRepository.mock.calls[0]![0] as {
+      remoteUrl: string;
+      env: Record<string, string>;
+      commitSha: string;
+      windowDays: number;
+      maxBytes: number;
+      connectorId: string;
+    };
+    expect(input).toMatchObject({
+      connectorId: c.id,
+      remoteUrl: "https://github.com/octocat/demo.git",
+      commitSha: SHA,
+      windowDays: 365,
+      maxBytes: 2 * resolveRepoCloneMaxBytes(),
+    });
+    expect(input.env.GIT_CONFIG_VALUE_0).toBe(
+      `Authorization: Basic ${Buffer.from("x-access-token:pat_gh-pat").toString("base64")}`,
+    );
+    expect(input.remoteUrl).not.toContain("pat_");
+    // #2484 panel — the ingest's cancellation reaches the download.
+    const ingest = new AbortController();
+    await fetchConnectorHistory("proj_1", c.id, SHA, ingest.signal);
+    expect(
+      (historyFetch.fetchHistoryRepository.mock.calls.at(-1)![0] as { signal?: AbortSignal })
+        .signal,
+    ).toBe(ingest.signal);
+  });
+
+  it("is not fetched for a local or uploaded source", async () => {
+    rows.set("loc_1", {
+      ...rows.get((await create()).id)!,
+      id: "loc_1",
+      provider: "local",
+    });
+    await expect(fetchConnectorHistory("proj_1", "loc_1", SHA)).rejects.toMatchObject({
+      code: "NOT_GIT_PROVIDER",
+    });
+    expect(historyFetch.fetchHistoryRepository).not.toHaveBeenCalled();
   });
 });
 

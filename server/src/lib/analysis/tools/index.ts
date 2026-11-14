@@ -22,6 +22,8 @@ import { createSearchSymbolsTool, type SearchSymbolsDeps } from "./search-symbol
 import { createChatReadFileSliceTool } from "./chat-read-file-slice.js";
 import { indexStatusTool } from "./index-status.js";
 import { createChatGrepFilesTool, createChatListFilesTool } from "./chat-file-tools.js";
+import { createChangeHistoryTool } from "./change-history.js";
+import { CHANGE_HISTORY_FLAG } from "../../connectors/repo/history-repo.js";
 import { createFileOutlineTool } from "./file-outline.js";
 import { loadCodeVersions } from "../../code-graph/code-version.js";
 import { getConfigService } from "../../config/config-service.js";
@@ -40,6 +42,11 @@ export type ChatCodeToolDeps = Partial<SearchSymbolsDeps> & {
    * (off: measured in #2412, no gain beyond run-to-run spread).
    */
   codeContext?: boolean;
+  /**
+   * #2338 — offer `get_change_history`. Defaults to `CHAT_CHANGE_HISTORY_TOOL`
+   * (off until measured: it reads the history repository that flag fetches).
+   */
+  changeHistory?: boolean;
   /**
    * #2346 — offer `get_file_outline`. Defaults to `CHAT_FILE_OUTLINE_TOOL`
    * (off until measured).
@@ -68,7 +75,7 @@ export function getChatCodeTools(
   opts: { indexStatus?: boolean; primitives?: boolean } = {},
 ): AgentTool[] {
   const primitives = opts.primitives === true;
-  const { codeContext, fileOutline, ...searchDeps } = deps ?? {};
+  const { codeContext, changeHistory, fileOutline, ...searchDeps } = deps ?? {};
   // #2325 — chat's graph and symbol searches state the indexed commit of every
   // hit; the analysis surface's copies do not.
   const tools = [
@@ -103,6 +110,10 @@ export function getChatCodeTools(
         tokenBudget: cfg.getNumber("CHAT_CODE_CONTEXT_TOKEN_BUDGET", DEFAULT_TOKEN_BUDGET),
       }),
     );
+  }
+  // #2338 — commit history, read locally from the connector's history repository.
+  if (changeHistory ?? cfg.getBool(CHANGE_HISTORY_FLAG, false)) {
+    tools.push(createChangeHistoryTool());
   }
   return tools;
 }

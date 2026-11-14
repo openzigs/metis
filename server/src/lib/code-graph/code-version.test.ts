@@ -9,6 +9,7 @@ const { findMany } = vi.hoisted(() => ({ findMany: vi.fn() }));
 vi.mock("../prisma.js", () => ({ prisma: { codeGraph: { findMany } } }));
 
 import {
+  buildCommitPermalink,
   buildCodePermalink,
   codeCitationRef,
   codeVersionIndexOf,
@@ -21,6 +22,37 @@ import {
 const SHA = "0123456789abcdef0123456789abcdef01234567";
 const OTHER = "fedcba9876543210fedcba9876543210fedcba98";
 const github = { provider: "github", ownerOrOrg: "acme", repoName: "app", apiBaseUrl: null };
+
+describe("buildCommitPermalink (#2338) — a commit link per connector type", () => {
+  it("github and github_enterprise: /commit/<sha> on the web origin", () => {
+    expect(buildCommitPermalink(github, SHA)).toBe(`https://github.com/acme/app/commit/${SHA}`);
+    expect(
+      buildCommitPermalink(
+        { ...github, provider: "github_enterprise", apiBaseUrl: "https://ghe.acme.test/api/v3" },
+        SHA,
+      ),
+    ).toBe(`https://ghe.acme.test/acme/app/commit/${SHA}`);
+  });
+
+  it("gitlab: /-/commit/<sha>, on gitlab.com or the stored https origin without userinfo", () => {
+    const gl = { ...github, provider: "gitlab" };
+    expect(buildCommitPermalink(gl, SHA)).toBe(`https://gitlab.com/acme/app/-/commit/${SHA}`);
+    expect(
+      buildCommitPermalink({ ...gl, apiBaseUrl: "https://user:pw@gl.acme.test/api/v4" }, SHA),
+    ).toBe(`https://gl.acme.test/acme/app/-/commit/${SHA}`);
+    expect(buildCommitPermalink({ ...gl, apiBaseUrl: "http://gl.acme.test" }, SHA)).toBeNull();
+    expect(buildCommitPermalink({ ...gl, apiBaseUrl: "not a url" }, SHA)).toBeNull();
+  });
+
+  it("no link for another type, an unsafe coordinate or a non-SHA", () => {
+    expect(buildCommitPermalink({ ...github, provider: "local" }, SHA)).toBeNull();
+    expect(buildCommitPermalink({ ...github, ownerOrOrg: "a/b" }, SHA)).toBeNull();
+    expect(buildCommitPermalink({ ...github, repoName: null }, SHA)).toBeNull();
+    expect(buildCommitPermalink(github, "HEAD")).toBeNull();
+    expect(buildCommitPermalink(null, SHA)).toBeNull();
+    expect(buildCommitPermalink({ ...github, provider: "github_enterprise" }, SHA)).toBeNull();
+  });
+});
 
 describe("buildCodePermalink — one scheme per connector type", () => {
   it("github: a blob URL pinned to the commit, with the line range", () => {

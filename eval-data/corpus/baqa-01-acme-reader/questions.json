@@ -1,6 +1,6 @@
 {
   "id": "baqa-01-acme-reader",
-  "version": 2,
+  "version": 3,
   "issue": 2237,
   "description": "Phase 0 of #2228: business-analyst questions over the Acme Reader sample, two products (the Miniflux server and its Python client). Single-product rule questions and multi-product FRD impact questions carry the facts a correct answer states and the sources that support them; ambiguous questions expect a follow-up question and unanswerable ones expect 'the sources don't show this'. Multi-turn questions (#2269) carry the analyst's earlier turns in 'before': the last turn is scored, and 'refersBack' says whether it leans on those turns or is a self-contained control asked mid-conversation.",
   "license": "Questions, facts and frd-12.md: CC0-1.0 (written for METIS). Cited sources: miniflux/v2 (Apache-2.0) and miniflux/python-client (MIT) at the pinned commits.",
@@ -1091,6 +1091,87 @@
           "product": "python-client",
           "path": "miniflux.py",
           "lines": [171, 182]
+        }
+      ]
+    },
+    {
+      "id": "H1",
+      "category": "single-product",
+      "scope": ["miniflux"],
+      "text": "When did the Acme Reader server get the option to stop updating articles it has already stored, and why was it added?",
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "H1.a",
+          "text": "It was added in February 2026, as a per-feed option (ignore_entry_updates)."
+        },
+        {
+          "id": "H1.b",
+          "text": "With it on, scheduled polling does not update entries that already exist."
+        },
+        {
+          "id": "H1.c",
+          "text": "It was added so that changes other tools make to an article's content, such as AI summaries, survive later feed refreshes."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "internal/model/feed.go"
+        }
+      ]
+    },
+    {
+      "id": "H2",
+      "category": "single-product",
+      "scope": ["miniflux"],
+      "text": "Since when does the Acme Reader server record the language a feed or article declares, and how does it clean the value up?",
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "H2.a",
+          "text": "Since July 2026."
+        },
+        {
+          "id": "H2.b",
+          "text": "The language is read from RSS, Atom and JSON Feed feeds and stored for both feeds and entries."
+        },
+        {
+          "id": "H2.c",
+          "text": "The value is trimmed, lowercased and has underscores replaced with hyphens, but is not strictly validated as a BCP-47 tag."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "internal/model/feed.go"
+        }
+      ]
+    },
+    {
+      "id": "H3",
+      "category": "single-product",
+      "scope": ["miniflux"],
+      "text": "Why does the Acme Reader server's feed scheduling code hold its intervals as durations rather than as numbers of minutes, and when did that change?",
+      "expect": "answer",
+      "facts": [
+        {
+          "id": "H3.a",
+          "text": "The change was a refactor made in August 2025."
+        },
+        {
+          "id": "H3.b",
+          "text": "Go's time.Duration is the standard way to represent a span of time in Go."
+        },
+        {
+          "id": "H3.c",
+          "text": "Some functions returned bare integers without saying what unit they were in; durations make the unit explicit."
+        }
+      ],
+      "sources": [
+        {
+          "product": "miniflux",
+          "path": "internal/model/feed.go"
         }
       ]
     }

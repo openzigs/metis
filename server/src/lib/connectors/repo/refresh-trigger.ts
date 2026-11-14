@@ -36,6 +36,7 @@ import {
   type IngestTrigger,
   type QueuedIngestRerun,
 } from "../ingest-guard.js";
+import { stopConnectorHistoryRefreshes } from "./history-refresh.js";
 import { runRepoConnectorRefresh } from "./repo-refresh.js";
 import { runQueuedRepoConnectorSync } from "./repo-sync.js";
 
@@ -108,6 +109,8 @@ function startRefresh(lease: ConnectorIngestLease, run: QueuedIngestRerun): void
  */
 export async function stopRepoConnectorRefreshes(timeoutMs = 5_000): Promise<void> {
   shutdown.abort();
+  // #2338 — the history downloads ingests started beside themselves, too.
+  await stopConnectorHistoryRefreshes();
   if (inFlight.size === 0) return;
   let timer: NodeJS.Timeout | undefined;
   await Promise.race([
