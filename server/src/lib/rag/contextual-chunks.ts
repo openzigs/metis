@@ -39,8 +39,9 @@
  * ingest stops the remaining calls when the document is deleted or a newer ingest
  * supersedes it. The chunker identity records the mode (`chunkerIdentity`), so
  * `embeddings:migrate status` lists the documents a flag change leaves behind.
- * #2355 — a document whose calls the budget stopped is tagged `model-partial`, not
- * `model`, so it is listed there too: re-ingesting it once the budget allows reuses
+ * #2355 — a document whose calls were stopped (the budget, the failure limit, no
+ * provider, a document too large, a generator error) is tagged `model-partial`, not
+ * `model`, so it is listed there too: re-ingesting it once the cause is gone reuses
  * the contexts it got and asks only for the rest.
  *
  * Repository source files are left alone in every mode: a code file has no heading
@@ -362,9 +363,10 @@ export type ChunkContextGenerator = (input: {
    */
   shouldContinue?: () => Promise<boolean>;
   /**
-   * #2355 — told, once, when the calls were stopped (the budget was spent, or the
-   * ingest stopped being current) with chunks left unanswered, so the caller can
-   * record that this document's model contexts are incomplete.
+   * #2355 — told, once, when chunks were left without a model context for a reason
+   * other than one failed call (the budget was spent, the ingest stopped being
+   * current, the failure limit was reached, the document is too large, there is no
+   * provider), so the caller can record that its model contexts are incomplete.
    */
   onStopped?: (reason: string) => void;
 }) => Promise<(ChunkContext | null)[]>;
@@ -465,6 +467,16 @@ export function chunkContextKey(input: {
   return hash.digest("hex");
 }
 
+/**
+ * #2355 — the tokens chunk-context replies have been billed in this process, by
+ * project. Every document reads the project's allowance once; counting against this
+ * shared total, rather than a per-document one, keeps concurrent documents of one
+ * project (`INGEST_CONCURRENCY`, a connector's bulk sync) from each spending the
+ * whole remaining allowance.
+ */
+const billedByProject = new Map<string, number>();
+const billedSoFar = (projectId: string): number => billedByProject.get(projectId) ?? 0;
+
 /** Whom a chunk-context call is billed to (#2268). */
 export interface ChunkContextScope {
   projectId: string;
@@ -485,10 +497,18 @@ export interface ChunkContextScope {
  *
  * #2355 — the budget is read ONCE per document (`remainingTokens`: summing the
  * month's ledger is the expensive read), and each later call is checked against the
- * tokens this document's replies were billed since (`onResponse`'s result). Spend by
- * other work in the project during the document's calls is not seen until the next
- * document; the in-flight overshoot is at most {@link MODEL_CONTEXT_CONCURRENCY}
- * calls, as it was with a per-call read.
+ * tokens chunk-context replies of the same project were billed since, by any document
+ * in this process (`onResponse`'s result). So the overshoot past the allowance is at
+ * most the chunk-context calls already in flight for the project: up to
+ * {@link MODEL_CONTEXT_CONCURRENCY} per document being ingested at once. Two limits
+ * remain: spend by other work in the project (chat, another server process) during a
+ * document's calls is not seen until the next document reads the allowance; and a
+ * reply persisted between that read and its own count may be counted twice, which
+ * stops calls early, never late.
+ *
+ * #2355 — `onStopped` is told whenever chunks are left without a model context for a
+ * reason other than a single failed call: the budget, the ingest being superseded, the
+ * failure limit, a document over `maxDocumentChars`, or no provider.
  */
 export function modelChunkContextGenerator(deps: {
   provider: (projectId: string) => AIProvider | Promise<AIProvider>;
@@ -533,6 +553,7 @@ export function modelChunkContextGenerator(deps: {
         documentChars: document.length,
         maxChars,
       });
+      onStopped?.("the document is too large for model chunk context");
       return out;
     }
     const usage: ChunkContextUsage = {
@@ -551,6 +572,7 @@ export function modelChunkContextGenerator(deps: {
       log.warn("no provider for model chunk context; deterministic prefixes kept", {
         error: (err as Error).message,
       });
+      onStopped?.("no provider for model chunk context");
       return out;
     }
     const scope: ChunkContextScope = documentId ? { projectId, documentId } : { projectId };
@@ -579,18 +601,22 @@ export function modelChunkContextGenerator(deps: {
     const gaveUp = (): boolean =>
       stopped !== undefined ||
       (usage.failures >= MODEL_CONTEXT_FAILURE_LIMIT && usage.calls === usage.failures);
-    // #2355 — the allowance, read on the first call that is admitted; the tokens billed since.
+    // #2355 — the allowance, read on the first call that is admitted, and the project's
+    // billed total when it was read: what the project's replies were billed since counts.
     let allowance: Promise<number | null> | undefined;
-    let billed = 0;
+    let billedAtRead = 0;
     /** Whether this call may be made; records the first reason it may not. */
     const admitted = async (): Promise<boolean> => {
       try {
         if (shouldContinue && !(await shouldContinue())) {
           stopped ??= "the ingest is no longer current";
         } else if (deps.remainingTokens) {
-          allowance ??= deps.remainingTokens(scope);
+          if (!allowance) {
+            billedAtRead = billedSoFar(projectId);
+            allowance = deps.remainingTokens(scope);
+          }
           const remaining = await allowance;
-          if (remaining !== null && billed >= remaining) {
+          if (remaining !== null && billedSoFar(projectId) - billedAtRead >= remaining) {
             stopped ??= "the project's monthly token budget is spent";
           }
         }
@@ -622,7 +648,9 @@ export function modelChunkContextGenerator(deps: {
             error: (err as Error).message,
           });
         });
-        if (typeof charged === "number") billed += charged;
+        if (typeof charged === "number") {
+          billedByProject.set(projectId, billedSoFar(projectId) + charged);
+        }
         const context = clip(response.content ?? "", CHUNK_CONTEXT_MAX_CHARS);
         out[index] =
           context.length > 0 && !response.offline ? { text: context, key: keys[index] } : null;
@@ -647,6 +675,13 @@ export function modelChunkContextGenerator(deps: {
       await Promise.all(Array.from({ length: Math.min(concurrency, pending.length - 1) }, worker));
     }
     deps.onUsage?.(usage);
+    if (
+      !stopped &&
+      usage.failures >= MODEL_CONTEXT_FAILURE_LIMIT &&
+      usage.calls === usage.failures
+    ) {
+      stopped = `${usage.failures} model calls failed in a row`;
+    }
     if (stopped) {
       log.warn("model chunk context stopped; the remaining chunks keep deterministic prefixes", {
         projectId,
@@ -763,6 +798,8 @@ export async function contextPrefixesFor(input: {
         filename,
         error: (err as Error).message,
       });
+      // #2355 — no chunk got a model context: tagged like any other stop.
+      input.onStopped?.((err as Error).message);
     }
   }
   return chunks.map((chunk, i) => {

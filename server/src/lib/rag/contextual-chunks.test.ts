@@ -288,10 +288,23 @@ describe("contextPrefixesFor", () => {
     const generator = vi.fn(async () => {
       throw new Error("boom");
     });
-    expect(await prefixes({ ...base, mode: "model", generator })).toEqual([
+    const onStopped = vi.fn();
+    expect(await prefixes({ ...base, mode: "model", generator, onStopped })).toEqual([
       "Document: T: Lead here.\nSection: T",
       "Document: T: Lead here.\nSection: T > S",
     ]);
+    // #2355 — no chunk got a model context, so the caller is told, as for any stop.
+    expect(onStopped).toHaveBeenCalledExactlyOnceWith("boom");
+  });
+  it("model: a fence nonce that cannot be drawn is reported as a stop (#2355)", async () => {
+    const provider = { key: "anthropic", model: "m", chat: vi.fn() } as unknown as AIProvider;
+    const generator = modelChunkContextGenerator({ provider: () => provider, nonce: () => "" });
+    const onStopped = vi.fn();
+    await contextPrefixesFor({ ...base, mode: "model", generator, onStopped });
+    expect(onStopped).toHaveBeenCalledExactlyOnceWith(
+      expect.stringMatching(/no usable fence nonce/),
+    );
+    expect(provider.chat).not.toHaveBeenCalled();
   });
 });
 
@@ -733,6 +746,78 @@ describe("modelChunkContextGenerator", () => {
       const notStopped = vi.fn();
       await whole({ ...input(["a", "b"]), onStopped: notStopped });
       expect(notStopped).not.toHaveBeenCalled();
+    });
+
+    it("tells the caller when the failure limit gives up, but not for one failed call (#2355)", async () => {
+      const failing = scriptedProvider(async () => {
+        throw new Error("401");
+      });
+      const gaveUp = vi.fn();
+      await modelChunkContextGenerator({ provider: () => failing.provider, concurrency: 1 })({
+        ...input(Array.from({ length: 5 }, (_, i) => `c${i}`)),
+        onStopped: gaveUp,
+      });
+      expect(gaveUp).toHaveBeenCalledExactlyOnceWith(
+        `${MODEL_CONTEXT_FAILURE_LIMIT} model calls failed in a row`,
+      );
+
+      const once = scriptedProvider(async (_u, call) => {
+        if (call === 1) throw new Error("rate limited");
+        return response("fine");
+      });
+      const notStopped = vi.fn();
+      await modelChunkContextGenerator({ provider: () => once.provider, concurrency: 1 })({
+        ...input(["a", "b", "c"]),
+        onStopped: notStopped,
+      });
+      expect(notStopped).not.toHaveBeenCalled();
+    });
+
+    it("tells the caller when the document is too large or there is no provider (#2355)", async () => {
+      const s = scriptedProvider(async () => response("x"));
+      const tooLarge = vi.fn();
+      await modelChunkContextGenerator({ provider: () => s.provider, maxDocumentChars: 5 })({
+        ...input(["a"]),
+        onStopped: tooLarge,
+      });
+      expect(tooLarge).toHaveBeenCalledExactlyOnceWith(
+        "the document is too large for model chunk context",
+      );
+
+      const noProvider = vi.fn();
+      await modelChunkContextGenerator({
+        provider: () => {
+          throw new Error("no key");
+        },
+      })({ ...input(["a"]), onStopped: noProvider });
+      expect(noProvider).toHaveBeenCalledExactlyOnceWith("no provider for model chunk context");
+      expect(s.calls).toHaveLength(0);
+    });
+
+    it("documents of one project indexed at once share its allowance (#2355)", async () => {
+      // Both documents read the same allowance before either reply is billed.
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      const s = scriptedProvider(async () => {
+        await gate;
+        return response("ok");
+      });
+      const gen = modelChunkContextGenerator({
+        provider: () => s.provider,
+        concurrency: 1,
+        remainingTokens: async () => 2,
+        onResponse: async () => 1,
+      });
+      const shared = { projectId: "p-shared-2355", document: doc, title: "Policy" };
+      const a = gen({ ...shared, documentId: "a", chunks: ["a1", "a2", "a3", "a4"] });
+      const b = gen({ ...shared, documentId: "b", chunks: ["b1", "b2", "b3", "b4"] });
+      await tick();
+      release();
+      await Promise.all([a, b]);
+      // One call each was in flight when the allowance was read; their two tokens spend
+      // it, so neither document makes a second call. Counted per document, each would
+      // have spent the whole allowance: four calls.
+      expect(s.calls).toHaveLength(2);
     });
   });
 

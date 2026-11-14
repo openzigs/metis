@@ -544,6 +544,41 @@ describe("KnowledgeService.ingestDocument", () => {
     expect(await store.count("p1")).toBe(live.length);
   });
 
+  it("#2355 — a parked re-ingest superseded by a newer one leaves the old chunks to it", async () => {
+    await seedDocument("d-super", "p1", "para one\n\npara two");
+    await svc.ingestDocument("d-super");
+    const old = [...chunks.values()].filter((c) => c.documentId === "d-super").map((c) => c.id);
+    expect(old.length).toBeGreaterThan(0);
+    documents.set("d-super", { ...documents.get("d-super")!, autoApproveTrusted: false });
+
+    // After A parks its chunks and before it retires the old ones, ingest B starts,
+    // exactly as `runIngest`'s opening transaction does: A's generation marker is
+    // revoked, B's is written and the document is `pending` again.
+    vi.mocked(prisma.project.findFirst).mockImplementationOnce((async () => {
+      for (const [id, q] of quarantine) {
+        if (q.documentId === "d-super" && q.ord === -4) quarantine.set(id, { ...q, ord: -1 });
+      }
+      quarantine.set("gen-b", {
+        id: "gen-b",
+        documentId: "d-super",
+        projectId: "p1",
+        ord: -4,
+        text: "",
+        embedding: "[]",
+        metadata: JSON.stringify({ approvalChunkIds: [] }),
+      });
+      documents.set("d-super", { ...documents.get("d-super")!, indexState: "pending" });
+      return { id: "p1", autoApproveTrustedSources: false };
+    }) as unknown as typeof prisma.project.findFirst);
+    await svc.ingestDocument("d-super");
+
+    // B is still running: the chunks it keeps answering are untouched.
+    expect([...chunks.values()].filter((c) => c.documentId === "d-super").map((c) => c.id)).toEqual(
+      old,
+    );
+    expect(await store.count("p1")).toBe(old.length);
+  });
+
   it("#2355 — a re-ingest whose bytes no longer parse retires the old chunks", async () => {
     await seedDocument("d-unparsed", "p1", "para one\n\npara two");
     await svc.ingestDocument("d-unparsed");
