@@ -162,6 +162,27 @@ describe("renderAnchorContext", () => {
     expect(text).toContain("Requirements: 3\n- A\n- B\n(1 more not shown)");
   });
 
+  // #2491 — a restricted requirement reaches the reply as its existence only.
+  it("says an anchored requirement is restricted, and nothing of it", () => {
+    const text = renderAnchorContext({ kind: "restrictedRequirement" });
+    expect(text).toContain("a requirement whose sources are restricted");
+    expect(text).not.toContain("Requirement:");
+  });
+
+  it("counts an analysis's restricted requirements apart from the overflow", () => {
+    const text = renderAnchorContext({
+      kind: "analysis",
+      status: "completed",
+      completedAt: null,
+      requirementCount: 4,
+      requirementTitles: ["A", "B"],
+      restrictedCount: 1,
+    });
+    expect(text).toContain(
+      "Requirements: 4\n- A\n- B\n(1 more not shown)\n(1 not shown: their sources are restricted)",
+    );
+  });
+
   it("an analysis with no requirements lists none", () => {
     const text = renderAnchorContext({
       kind: "analysis",

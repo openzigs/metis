@@ -11,6 +11,13 @@
  * touch a real DB) so this runs hermetically in clean CI.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+// #2491 — the source filter is pinned over a real database in
+// tests/source-redaction-2491.sqlite.test.ts; here nothing is restricted.
+vi.mock("../analysis/source-redaction.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../analysis/source-redaction.js")>()),
+  restrictedIds: async () => new Set<string>(),
+  restrictedRequirementIds: async () => new Set<string>(),
+}));
 import type { AIProvider, ChatChunk } from "../ai/index.js";
 import type { ResponderChunk } from "./ai-responder.js";
 

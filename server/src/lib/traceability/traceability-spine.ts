@@ -31,6 +31,11 @@ import { classifyTestSymbol } from "../code-graph/test-conventions.js";
 import { uniqueCurrentCodeLinks } from "./code-link-key.js";
 import { resolveTestedByForTargets, type TestedByPrisma } from "./tested-by.js";
 import { hideSupersededBorrowedLinks } from "./borrow-citations.js";
+import {
+  restrictedRequirementIds,
+  sharedSourceReader,
+  type SourceReader,
+} from "../analysis/source-redaction.js";
 
 type SpinePrisma = Pick<
   PrismaClient,
@@ -44,6 +49,12 @@ type SpinePrisma = Pick<
 
 export interface TraceabilityDeps {
   prisma?: SpinePrisma;
+  /**
+   * #2491 — who reads the chain: a borrowed link's origin requirement resting
+   * on a source they cannot see is not named by its title. Defaults to the
+   * shared audience, which sees no restricted source (fail closed).
+   */
+  reader?: SourceReader;
 }
 
 function pickPrisma(deps?: TraceabilityDeps): SpinePrisma {
@@ -104,11 +115,14 @@ function toDirectCodeNode(
  * #1840 — how each borrowed link's origin requirement is named ("Borrowed from
  * REQ-12"): its key, else its title. Read within the project, so an origin id
  * of another project names nothing; a deleted origin names nothing either.
+ * #2491 — nor does the title of an origin resting on a source `reader` cannot
+ * see: it is named by its key alone, or not at all.
  */
 async function borrowedOriginLabels(
   prisma: SpinePrisma,
   projectId: string,
   rows: ReadonlyArray<{ originRequirementId: string | null }>,
+  reader: SourceReader,
 ): Promise<Map<string, string>> {
   const ids = [
     ...new Set(rows.flatMap((r) => (r.originRequirementId ? [r.originRequirementId] : []))),
@@ -118,7 +132,17 @@ async function borrowedOriginLabels(
     where: { projectId, id: { in: ids }, deletedAt: null },
     select: { id: true, title: true, promotedStructuredId: true, externalId: true },
   });
-  return new Map(origins.map((o) => [o.id, o.promotedStructuredId ?? o.externalId ?? o.title]));
+  const hidden = await restrictedRequirementIds(
+    reader,
+    origins.map((o) => o.id),
+  );
+  return new Map(
+    origins.flatMap((o) => {
+      const key = o.promotedStructuredId ?? o.externalId;
+      if (hidden.has(o.id)) return key ? [[o.id, key] as const] : [];
+      return [[o.id, key ?? o.title] as const];
+    }),
+  );
 }
 
 /**
@@ -211,7 +235,12 @@ export async function getRequirementChain(
   // current (freshness tier), then the surer: an out-of-date citation at a higher
   // confidence no longer hides the current link to the same code.
   const directRows = uniqueCurrentCodeLinks(hideSupersededBorrowedLinks(storedDirectRows));
-  const originLabels = await borrowedOriginLabels(prisma, projectId, directRows);
+  const originLabels = await borrowedOriginLabels(
+    prisma,
+    projectId,
+    directRows,
+    deps?.reader ?? sharedSourceReader(),
+  );
 
   // #814 — the tests that cover this requirement, resolved from the code rows
   // just read (the resolver issues only its code-graph queries). #1902 — not

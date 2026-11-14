@@ -3,6 +3,13 @@
  * selects (always within the project), and the document built from them.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// #2491 — the source filter is pinned over a real database in
+// tests/source-redaction-2491.sqlite.test.ts; here nothing is restricted.
+vi.mock("../analysis/source-redaction.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../analysis/source-redaction.js")>()),
+  restrictedIds: async () => new Set<string>(),
+  restrictedRequirementIds: async () => new Set<string>(),
+}));
 
 const { findMany, count, analysisFindFirst, reviewFindFirst, itemFindMany, versionFindMany } =
   vi.hoisted(() => ({

@@ -105,17 +105,29 @@ export async function resolveReaderAccess(user: AuthPayload): Promise<ReaderAcce
  * product row yet (`pending`, `running`, `failed`) is its starter's alone.
  */
 /**
- * #2447 — what of an assessment's source the reader cannot see: every word of
- * it (`all`, a single requirement resting on a source they cannot see), or the
- * titles of the change request's requirements that do. Their text is the
- * statement, the criteria, the not-checked list, the model's restatement and
- * its prose.
+ * #2447 — what of an assessment's source the reader cannot see. `all`: every
+ * word of it (a single requirement resting on a source they cannot see).
+ * Otherwise `hides(text)` says whether one stored text (a criterion, a
+ * not-checked entry) may have been drawn from a change-request row they cannot
+ * see, and `any` whether any stored text was, which withholds the model's
+ * restatement and its prose.
+ *
+ * #2491 — fail closed. The check read its rows when it ran; a row may since
+ * have been rejected, deferred, soft-deleted or renamed, so what a row is
+ * *now* never clears a stored text. A text is shown only when it is the opening of
+ * what a row the reader can see says now (`title: body`, how the check wrote
+ * its criteria): then it tells the reader nothing they cannot read. A row
+ * left out at the start (its starter could not see it) wrote no text, so a
+ * check that read only visible rows withholds nothing; a visible row edited
+ * since only over-blocks. Known gap, as before #2491 (#2498): a restricted row
+ * hard-deleted since (a withheld replacement, a re-synthesis) leaves no row to
+ * be hidden by, so with nothing else hidden the stored text stands.
  */
 async function hiddenSource(
   access: ReaderAccess,
   a: PortfolioAssessment,
-): Promise<{ all: boolean; titles: string[] }> {
-  const none = { all: false, titles: [] as string[] };
+): Promise<{ all: boolean; any: boolean; hides: (text: string) => boolean }> {
+  const none = { all: false, any: false, hides: () => false };
   if (access.admin) return none;
   const where = a.sourceRequirementId
     ? { id: a.sourceRequirementId }
@@ -125,14 +137,53 @@ async function hiddenSource(
   if (!where) return none;
   const rows = await prisma.requirement.findMany({
     where,
-    select: { id: true, analysisId: true, sourceIds: true, title: true },
+    select: { id: true, analysisId: true, sourceIds: true, title: true, body: true },
   });
   const hidden = await restrictedIds(userSourceReader(access.user.userId), rows);
   if (hidden.size === 0) return none;
-  return {
-    all: a.sourceRequirementId !== null && a.sourceRequirementId !== undefined,
-    titles: rows.filter((r) => hidden.has(r.id)).map((r) => r.title.trim()),
+  if (a.sourceRequirementId) return { all: true, any: true, hides: () => true };
+  const visible = rows
+    .filter((r) => !hidden.has(r.id))
+    .map((r) => normalized(`${r.title}: ${r.body}`));
+  const hides = (text: string) => {
+    const t = normalized(text).replace(/…$/u, "").trimEnd();
+    return t.length === 0 || !visible.some((v) => v.startsWith(t));
   };
+  // With no stored criterion to tell by (a check that never got that far),
+  // every hidden row counts.
+  const criteria = storedCriteria(a);
+  const any =
+    criteria.length === 0 ||
+    [...criteria, ...a.notChecked.filter(carriesText).map((n) => n.text)].some(hides);
+  return { all: false, any, hides };
+}
+
+/** Whitespace collapsed, as a not-checked entry's opening is written (`oneLine`). */
+function normalized(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Whether a not-checked entry may quote a requirement. Only a count entry
+ * (its starter could not see N rows; N more past the limit) is known not to:
+ * any other reason is treated as text, so a new one fails closed.
+ */
+function carriesText(n: PortfolioAssessment["notChecked"][number]): boolean {
+  if (n.reason === "restricted-source") return false;
+  return !(n.reason === "over-limit" && n.count !== null);
+}
+
+/** The criteria a check stored on its products, trimmed. */
+function storedCriteria(a: PortfolioAssessment): string[] {
+  return a.products.flatMap((p) => {
+    const list = (p.technicalDetail as { criteria?: unknown } | null)?.criteria;
+    return Array.isArray(list)
+      ? list.flatMap((c: unknown) => {
+          const criterion = (c as { criterion?: unknown } | null)?.criterion;
+          return typeof criterion === "string" ? [criterion.trim()] : [];
+        })
+      : [];
+  });
 }
 
 async function mayRead(access: ReaderAccess, a: PortfolioAssessment): Promise<boolean> {
@@ -431,9 +482,8 @@ export async function viewPortfolioAssessment(
   if (!a || !(await mayRead(access, a))) return null;
   // #2447 — a source requirement the reader cannot see: its text goes.
   const hidden = await hiddenSource(access, a);
-  const sourceHidden = hidden.all || hidden.titles.length > 0;
-  const fromHidden = (text: string) =>
-    hidden.all || hidden.titles.some((t) => t.length > 0 && text.trim().startsWith(t));
+  const sourceHidden = hidden.all || hidden.any;
+  const fromHidden = (text: string) => hidden.all || (sourceHidden && hidden.hides(text));
 
   const connections = access.admin
     ? null
@@ -603,7 +653,9 @@ export async function viewPortfolioAssessment(
     ...a,
     statement: hidden.all ? RESTRICTED_SOURCE_TITLE : a.statement,
     notChecked: a.notChecked.map((n) =>
-      fromHidden(n.text) ? { ...n, text: RESTRICTED_SOURCE_TITLE } : n,
+      hidden.all || (carriesText(n) && fromHidden(n.text))
+        ? { ...n, text: RESTRICTED_SOURCE_TITLE }
+        : n,
     ),
     hostProductId,
     products: sourceHidden ? products.map((p) => withoutHiddenCriteria(p, fromHidden)) : products,
