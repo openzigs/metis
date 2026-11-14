@@ -2420,7 +2420,11 @@ async function redactSnapshotFor(
   row: {
     id: string;
     agentResults: Array<{ findings: Array<{ id: string; sourceIds: string | null }> }>;
-    requirements: Array<{ id: string; sourceIds: string | null }>;
+    requirements: Array<{
+      id: string;
+      sourceIds: string | null;
+      promotedStructuredId: string | null;
+    }>;
   },
   snapshot: AnalysisSnapshot,
 ): Promise<AnalysisSnapshot> {
@@ -2435,6 +2439,9 @@ async function redactSnapshotFor(
       row.agentResults.flatMap((a) => a.findings.map((f) => [f.id, f.sourceIds] as const)),
     ),
     requirements: new Map(row.requirements.map((r) => [r.id, r.sourceIds] as const)),
+    promotedStructuredIds: new Map(
+      row.requirements.map((r) => [r.id, r.promotedStructuredId] as const),
+    ),
     crossDocFindings: new Map(crossDocRows.map((r) => [r.id, r.sourceIds] as const)),
   };
   const guard = await loadSourceGuard(reader, [

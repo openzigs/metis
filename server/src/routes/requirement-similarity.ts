@@ -36,6 +36,8 @@ import {
   markNotDuplicate,
 } from "../lib/requirements/similar-requirements.js";
 import { resolveSimilarityVerifier } from "../lib/requirements/similarity-verifier-resolver.js";
+import { assertRequirementAccessible } from "../lib/requirements/requirement-authz.js";
+import { userSourceReader } from "../lib/analysis/source-redaction.js";
 import { borrowCitations } from "../lib/traceability/borrow-citations.js";
 
 function ok<T>(data: T): ApiResponse<T> {
@@ -64,7 +66,11 @@ export function requirementSimilarityRouter(): Router {
     const items = await findSimilarRequirements(
       projectId,
       { text: parsed.data.text, acceptanceCriteria: parsed.data.acceptanceCriteria ?? [] },
-      { limit: parsed.data.limit, verifier: await resolveSimilarityVerifier(projectId) },
+      {
+        limit: parsed.data.limit,
+        verifier: await resolveSimilarityVerifier(projectId),
+        reader: userSourceReader(req.user!.userId),
+      },
     );
     res.json(ok<SimilarRequirementsResponse>({ items }));
   });
@@ -77,10 +83,16 @@ export function requirementSimilarityRouter(): Router {
       const limit = similarRequirementsLimitSchema.safeParse(req.query.limit ?? undefined);
       if (!limit.success) throw validationError(limit.error.flatten());
       const projectId = projectIdOf(req);
+      // #2447 — a requirement the caller cannot open has no neighbours to ask for.
+      await assertRequirementAccessible(req.user, String(req.params.requirementId));
       const items = await findSimilarRequirements(
         projectId,
         { requirementId: String(req.params.requirementId) },
-        { limit: limit.data, verifier: await resolveSimilarityVerifier(projectId) },
+        {
+          limit: limit.data,
+          verifier: await resolveSimilarityVerifier(projectId),
+          reader: userSourceReader(req.user!.userId),
+        },
       );
       res.json(ok<SimilarRequirementsResponse>({ items }));
     },
@@ -94,6 +106,8 @@ export function requirementSimilarityRouter(): Router {
     requirePermission("project.update"),
     async (req, res) => {
       if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+      await assertRequirementAccessible(req.user, String(req.params.requirementId));
+      await assertRequirementAccessible(req.user, String(req.params.otherRequirementId));
       await markNotDuplicate(
         projectIdOf(req),
         String(req.params.requirementId),
@@ -114,6 +128,9 @@ export function requirementSimilarityRouter(): Router {
     async (req, res) => {
       const parsed = borrowCitationsSchema.safeParse(req.body ?? {});
       if (!parsed.success) throw validationError(parsed.error.flatten());
+      // #2447 — a write to, or a copy from, a requirement the caller cannot open.
+      await assertRequirementAccessible(req.user, String(req.params.requirementId));
+      await assertRequirementAccessible(req.user, parsed.data.fromRequirementId);
       const result = await borrowCitations(
         projectIdOf(req),
         String(req.params.requirementId),

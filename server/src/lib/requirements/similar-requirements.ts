@@ -48,6 +48,7 @@ import type { SimilarityVerifier, VerifierLabel } from "./similarity-verifier.js
 import { resolveRequirementReviewStatus } from "../analysis/analysis-service.js";
 import { parseRequirementLabels } from "../analysis/requirement-labels.js";
 import { uniqueCurrentCodeLinks } from "../traceability/code-link-key.js";
+import { restrictedIds, type SourceReader } from "../analysis/source-redaction.js";
 
 const log = createChildLogger("similar-requirements");
 
@@ -69,6 +70,13 @@ export interface SimilarRequirementsOptions extends Omit<RequirementEmbeddingDep
   thresholds?: RequirementSimilarityThresholds;
   /** The verifier to run; `null` or absent runs none. */
   verifier?: SimilarityVerifier | null;
+  /**
+   * #2447 — who asks. A requirement resting on a source this reader cannot see
+   * is taken out of every channel (the vector and BM25 candidates alike), so
+   * neither its title nor its neighbours nor the fact it matched can be
+   * recovered. Absent: nothing is taken out.
+   */
+  reader?: SourceReader;
 }
 
 export type SimilarityQuery =
@@ -131,18 +139,28 @@ export async function findSimilarRequirements(
     });
   }
 
-  const vectorHits = await findNearestRequirements(projectId, queryText, {
+  const allRows = await db.requirement.findMany({
+    where: { projectId, deletedAt: null, id: { notIn: exclude } },
+    select: {
+      id: true,
+      analysisId: true,
+      sourceIds: true,
+      title: true,
+      body: true,
+      acceptanceCriteria: true,
+    },
+  });
+  const hidden = opts.reader ? await restrictedIds(opts.reader, allRows) : new Set<string>();
+  const rows = allRows.filter((r) => !hidden.has(r.id));
+
+  const vectorHitsAll = await findNearestRequirements(projectId, queryText, {
     ...opts,
     embedService,
     db,
     limit: SIMILAR_CANDIDATE_POOL,
     excludeIds: exclude,
   });
-
-  const rows = await db.requirement.findMany({
-    where: { projectId, deletedAt: null, id: { notIn: exclude } },
-    select: { id: true, title: true, body: true, acceptanceCriteria: true },
-  });
+  const vectorHits = vectorHitsAll.filter((h) => !hidden.has(h.requirementId));
   const textOf = new Map(rows.map((r) => [r.id, formatRequirementForEmbedding(r)]));
   const bm25Hits = bm25Search(rows, queryText, SIMILAR_CANDIDATE_POOL);
 

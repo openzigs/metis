@@ -54,6 +54,29 @@ vi.mock("../src/lib/audit/audit-service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/audit/audit-service.js")>()),
   audit: vi.fn(),
 }));
+// Every requirement is the nearest to anything and embeds to one vector, so which
+// ones a reader is told of is decided by the redaction alone.
+vi.mock("../src/lib/requirements/requirement-embeddings.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../src/lib/requirements/requirement-embeddings.js")>();
+  return {
+    ...actual,
+    findNearestRequirements: async (projectId: string) =>
+      (
+        await (state.db as PrismaClient).requirement.findMany({
+          where: { projectId, deletedAt: null },
+          select: { id: true },
+        })
+      ).map((r) => ({ requirementId: r.id, score: 0.99 })),
+  };
+});
+vi.mock("../src/lib/rag/embedder.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/rag/embedder.js")>()),
+  getEmbedder: () => ({
+    model: "stub",
+    embed: async (t: string[]) => ({ vectors: t.map(() => [1, 0]) }),
+  }),
+}));
 vi.mock("../src/lib/socket/registry.js", () => ({ getSocketServer: () => null }));
 const triggerSpy = vi.hoisted(() => vi.fn());
 vi.mock("../src/lib/impact-analysis/impact-analysis-engine.js", async () => {
@@ -66,6 +89,7 @@ vi.mock("../src/lib/impact-analysis/impact-analysis-engine.js", async () => {
 const { initAnalysisRouter } = await import("../src/routes/analysis.js");
 const { requirementsCollaborationRouter } = await import("../src/routes/requirements.js");
 const { projectRequirementsRouter } = await import("../src/routes/project-requirements.js");
+const { requirementSimilarityRouter } = await import("../src/routes/requirement-similarity.js");
 const { impactAnalysisRouter } = await import("../src/routes/impact-analysis.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
@@ -112,6 +136,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       a.use(express.json());
       const analysis = initAnalysisRouter();
       a.use("/api/projects/:projectId/analyses", analysis.projectScoped);
+      a.use("/api/projects/:projectId/requirements", requirementSimilarityRouter());
       a.use("/api/projects/:projectId/requirements", projectRequirementsRouter());
       a.use("/api/analyses", analysis.topLevel);
       a.use("/api/requirements", requirementsCollaborationRouter());
@@ -232,6 +257,43 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
       await requirement("req-2447-open", CR, "Customers can pay", sources(["d-open"]));
       await requirement("req-2447-secret", CR, SECRET, sources(["d-secret"]));
+      // The reviewed list the approvals panel renders and promotion copies the
+      // text from: the same title and description as the rows it became.
+      const entry = (id: string, title: string) => ({
+        id,
+        title,
+        description: `${title} — description`,
+        type: "functional",
+        stakeholders: [],
+        priority: "must",
+        ambiguities: [],
+        evidenceNeeds: [],
+        rawSource: `${title} — raw`,
+      });
+      await db.requirement.update({
+        where: { id: "req-2447-open" },
+        data: { promotedStructuredId: "s-open" },
+      });
+      await db.requirement.update({
+        where: { id: "req-2447-secret" },
+        data: { promotedStructuredId: "s-secret" },
+      });
+      await db.analysis.update({
+        where: { id: CR },
+        data: {
+          metadata: JSON.stringify({
+            structuredRequirements: {
+              requirements: [
+                entry("s-open", "Customers can pay"),
+                entry("s-secret", SECRET),
+                entry("s-new", "Not yet promoted"),
+              ],
+              totalAmbiguities: 0,
+              totalEvidenceNeeds: 0,
+            },
+          }),
+        },
+      });
       await requirement("req-2447-run", CR, "Checkout is fast", null);
       await requirement("req-2447-legacy", LEGACY, `${SECRET} (legacy)`, sources(["d-secret"]));
       await db.crossDocFinding.createMany({
@@ -277,6 +339,58 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         .map((f) => f.id),
     });
 
+    describe("similar requirements (a search that would probe a hidden requirement)", () => {
+      const base = `/api/projects/${P}/requirements`;
+      const titles = (res: { body: { data: { items: Array<{ title: string }> } } }) =>
+        res.body.data.items.map((i) => i.title);
+      const post = (who: Who, path: string, body: object) =>
+        request(app()).post(path).set("Authorization", bearer(who)).send(body);
+
+      it("never finds the restricted requirement for Bob, by its title or its body", async () => {
+        for (const text of ["Payroll export for the CFO", "works"]) {
+          const res = await post("bob", `${base}/similar`, { text });
+          expect(res.status).toBe(200);
+          // (The pre-#2446 run's row keeps the shared-audience rule, by design.)
+          expect(titles(res)).not.toContain(SECRET);
+          expect(JSON.stringify(res.body)).not.toContain("req-2447-secret");
+          expect(res.body.data.items.length).toBeGreaterThan(0);
+        }
+      });
+
+      it("still finds it for Alice (on the list) and the admin", async () => {
+        for (const who of ["alice", "root"] as const) {
+          const res = await post(who, `${base}/similar`, { text: "Payroll export", limit: 20 });
+          expect(titles(res)).toContain(SECRET);
+        }
+      });
+
+      it("gives Bob no neighbours of a restricted id, and Alice hers", async () => {
+        const bob = await get("bob", `${base}/req-2447-secret/similar`);
+        expect(bob.status).toBe(404);
+        const alice = await get("alice", `${base}/req-2447-secret/similar`);
+        expect(alice.status).toBe(200);
+        // Bob asking about a requirement he can open is not told of it.
+        const open = await get("bob", `${base}/req-2447-open/similar?limit=20`);
+        expect(open.status).toBe(200);
+        expect(JSON.stringify(open.body)).not.toContain("req-2447-secret");
+      });
+
+      it("refuses Bob a write to, or a borrow from, a restricted requirement", async () => {
+        const borrowInto = await post("bob", `${base}/req-2447-secret/borrow-citations`, {
+          fromRequirementId: "req-2447-open",
+        });
+        const borrowFrom = await post("bob", `${base}/req-2447-open/borrow-citations`, {
+          fromRequirementId: "req-2447-secret",
+        });
+        const dismiss = await post(
+          "bob",
+          `${base}/req-2447-open/similar/req-2447-secret/not-duplicate`,
+          {},
+        );
+        expect([borrowInto.status, borrowFrom.status, dismiss.status]).toEqual([404, 404, 404]);
+      });
+    });
+
     describe("the result page and change request (GET /api/analyses/:id)", () => {
       it("redacts, for Bob, exactly the rows resting on the restricted document", async () => {
         const res = await get("bob", `/api/analyses/${CR}`);
@@ -297,6 +411,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const secret = snapshot.requirements.find((r) => r.id === "req-2447-secret")!;
         expect(secret).toMatchObject({ title: RESTRICTED_SOURCE_TITLE, acceptanceCriteria: [] });
         expect(JSON.stringify(res.body)).not.toContain("Payroll");
+        // The reviewed list in `metadata` is redacted with the row it became.
+        const listed = (
+          snapshot.metadata!.structuredRequirements as {
+            requirements: Array<{ id: string; title: string; restricted?: boolean }>;
+          }
+        ).requirements;
+        expect(listed.map((r) => [r.id, r.title, r.restricted ?? false])).toEqual([
+          ["s-open", "Customers can pay", false],
+          ["s-secret", RESTRICTED_SOURCE_TITLE, true],
+          ["s-new", "Not yet promoted", false],
+        ]);
         // The run's narrative rests on the shared audience Bob is part of.
         expect(snapshot.agents[0]!.summary).toBe("Read the documents");
       });

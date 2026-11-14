@@ -283,6 +283,48 @@ export interface SnapshotSourceRows {
   findings: ReadonlyMap<string, string | null>;
   requirements: ReadonlyMap<string, string | null>;
   crossDocFindings: ReadonlyMap<string, string | null>;
+  /**
+   * Each requirement's `promotedStructuredId`: the entry of the run's reviewed
+   * list (`metadata.structuredRequirements`) it was promoted from, whose
+   * title and description are the same text.
+   */
+  promotedStructuredIds?: ReadonlyMap<string, string | null>;
+}
+
+/**
+ * The run's reviewed list (`metadata.structuredRequirements`, which the
+ * approvals panel renders and promotion copies each requirement's text from)
+ * as its reader may see it. An entry promoted into a requirement they cannot
+ * see is hidden with it; one not yet promoted has no record of its own, so it
+ * rests on the run as a whole. A hidden entry keeps its id, type and priority.
+ */
+function redactStructuredList(
+  metadata: AnalysisSnapshot["metadata"],
+  hiddenStructuredIds: ReadonlySet<string>,
+  seesRun: boolean,
+  promotedIds: ReadonlySet<string>,
+): AnalysisSnapshot["metadata"] {
+  const list = metadata?.structuredRequirements as
+    { requirements?: Array<Record<string, unknown>> } | undefined;
+  if (!metadata || !list || !Array.isArray(list.requirements)) return metadata;
+  const requirements = list.requirements.map((r) => {
+    const id = typeof r.id === "string" ? r.id : "";
+    const hidden = hiddenStructuredIds.has(id) || (!promotedIds.has(id) && !seesRun);
+    if (!hidden) return r;
+    return {
+      id: r.id,
+      type: r.type,
+      priority: r.priority,
+      title: RESTRICTED_SOURCE_TITLE,
+      description: RESTRICTED_SOURCE_BODY,
+      stakeholders: [],
+      ambiguities: [],
+      evidenceNeeds: [],
+      rawSource: "",
+      restricted: true,
+    };
+  });
+  return { ...metadata, structuredRequirements: { ...list, requirements } };
 }
 
 /**
@@ -300,8 +342,18 @@ export function redactAnalysisSnapshot<T extends AnalysisSnapshot>(
   const sees = (stored: ReadonlyMap<string, string | null>, id: string) =>
     guard.canSee({ analysisId, sourceIds: stored.get(id) ?? null });
   const seesRun = guard.canSeeRun(analysisId);
+  const structuredIdOf = sources.promotedStructuredIds ?? new Map<string, string | null>();
+  const hiddenStructuredIds = new Set<string>();
+  const promotedIds = new Set<string>();
+  for (const r of snapshot.requirements) {
+    const structuredId = structuredIdOf.get(r.id);
+    if (!structuredId) continue;
+    promotedIds.add(structuredId);
+    if (!sees(sources.requirements, r.id)) hiddenStructuredIds.add(structuredId);
+  }
   return {
     ...snapshot,
+    metadata: redactStructuredList(snapshot.metadata, hiddenStructuredIds, seesRun, promotedIds),
     agents: snapshot.agents.map((a) => ({
       ...a,
       ...(seesRun ? {} : { summary: null, notes: [] }),
