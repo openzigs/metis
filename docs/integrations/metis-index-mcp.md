@@ -36,8 +36,9 @@ the truncation note and the instructions.
 The server runs **in process against a METIS installation's own database, vector store and
 repository clones**. Launch it on a host that runs the METIS server, with the server's
 environment (`DATABASE_URL`, the LanceDB path, the clone root and the embedder settings). That
-is typically a developer machine running METIS locally. A remote endpoint for agents on other
-machines is a separate piece of work (#2344).
+is typically a developer machine running METIS locally. For agents on other machines, an
+administrator can turn on the remote endpoint, which authorizes each call with an OAuth 2.1
+access token instead of an API token: [metis-index-mcp-remote.md](metis-index-mcp-remote.md) (#2344).
 
 **The trust boundary is the agent, not the operator.** Whoever launches the server holds the
 METIS server's `DATABASE_URL` and clone root, so they can already read every project and every
