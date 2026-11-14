@@ -6263,7 +6263,9 @@ On the **Analysis** page for a project, you'll see an **Enhancement Options** se
 - **Enable Web Research** — When checked, METIS searches the web for supporting evidence (standards, regulations, best practices) related to your requirements. Results include domain trust badges (🟢 High / 🟡 Medium / 🔴 Low) so you can quickly assess source quality.
 - **Enable Clarification** — When checked, METIS identifies ambiguities in the extracted requirements and asks clarifying questions before generating tickets. You can answer up to 3 rounds of questions.
 
-Web research starts **off** and clarifying questions start **on** (#95): questions grounded in your documents appear without you asking for them, and you can untick the toggle to skip them for a run.
+Web research starts **off** and clarifying questions start **on** (#95): the gaps grounded in your documents are listed on the Questions tab without you asking for them, and you can untick the toggle to skip them for a run.
+
+**Opening a tab never runs the model (#2509).** The Questions tab lists the gaps the run found and offers **Ask these questions**. Pressing it turns them into questions for you to answer; that runs the model, and its cost is added to the run's. Before #2509 the questions were prepared the moment the tab was first opened, so opening the tab of a finished run raised its cost (by $0.04 in one walkthrough). Rounds 2 and 3 are still prepared once you submit the answers to the round before, without a second press.
 
 A **pipeline status indicator** shows progress through the enhancement steps: Extraction → Web Research → Clarification → Approval → Complete.
 

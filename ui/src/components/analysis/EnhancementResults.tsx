@@ -26,6 +26,7 @@ import {
   type EvidenceDigest,
   type StructuredRequirementsPayload,
 } from "@/lib/analysis-api";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { ClarificationDialogPanel } from "@/components/analysis/ClarificationDialog";
 
@@ -500,9 +501,13 @@ function ClarificationSection({
   // resolve `null` while the analysis was still running (`totalAmbiguities` is 0
   // until it finishes). With a run-status-free `queryKey`, `retry: false` and no
   // invalidation on completion, that `null` was cached for the life of the mount
-  // and the read-only preview rendered forever. Only a reload recovered it. The
-  // start is now an explicit one-shot effect that fires when ambiguities appear,
-  // so a mid-run render no longer decides anything permanent.
+  // and the read-only preview rendered forever. Only a reload recovered it.
+  //
+  // #2509 — the FIRST start is the user's click, never an effect. It ran the
+  // model (question generation, then a grounding call per question) the moment
+  // the panel mounted, so opening the Questions tab of a completed run charged
+  // that run again: 16 calls, $0.04, in the #2509 walkthrough. Browsing must not
+  // spend. The preview offers "Ask these questions" instead.
   const dialog = useQuery({
     queryKey: ["analyses", analysisId, "clarify"],
     queryFn: async () => {
@@ -530,29 +535,11 @@ function ClarificationSection({
   });
   const startInFlight = useIsMutating({ mutationKey: startKey }) > 0;
 
-  // One start per analysis per mount. Tracked by id rather than a bare boolean
-  // so a run switch in the same mount is not silently skipped — and so a
-  // re-render storm from the detail poll cannot fire a second (billable) round.
-  const startedFor = useRef<string | null>(null);
   const startMutate = startDialog.mutate;
-  useEffect(() => {
-    if (!mayStart || !hasAmbiguities) return;
-    // Wait for the read: only start when the server confirms there is no dialog.
-    if (!dialog.isSuccess || dialog.data) return;
-    if (startedFor.current === analysisId) return;
-    // Issue #937 — a start from an earlier mount is still generating.
-    if (startInFlight) return;
-    startedFor.current = analysisId;
-    startMutate();
-  }, [
-    mayStart,
-    hasAmbiguities,
-    dialog.isSuccess,
-    dialog.data,
-    analysisId,
-    startInFlight,
-    startMutate,
-  ]);
+  // #2509 — whether the user may ask the questions now: only once the read
+  // confirms there is no dialog yet, and (#937) no start from an earlier mount
+  // is still generating.
+  const canAsk = mayStart && hasAmbiguities && dialog.isSuccess && !dialog.data && !startInFlight;
 
   // #2068 — a COMPLETED dialog with rounds left is started once per mount
   // too. The server re-opens it only for a governing question: a Needs BA
@@ -657,6 +644,7 @@ function ClarificationSection({
         startFailed={startDialog.isError}
         startUnreadable={isUnreadableReply(startDialog.error)}
         onRetryStart={() => startMutate()}
+        onAsk={canAsk && !startDialog.isError ? () => startMutate() : undefined}
       />
     );
   }
@@ -669,7 +657,38 @@ function ClarificationSection({
     );
   }
 
+  // #2509 — gaps counted but none itemised: still the user's click to ask.
+  if (canAsk) {
+    return (
+      <Card id={QUESTIONS_ANCHOR} className="space-y-2 p-4">
+        <p className="text-sm text-muted-foreground">
+          {startDialog.isError
+            ? "Could not prepare the clarifying questions."
+            : "This analysis found gaps to clarify."}
+        </p>
+        <AskQuestionsButton onAsk={() => startMutate()} />
+      </Card>
+    );
+  }
+
   return null;
+}
+
+/**
+ * #2509 — the user's start of the clarifying questions. Asking runs the model,
+ * and its cost is added to this run's, so it is never done just by opening the tab.
+ */
+function AskQuestionsButton({ onAsk }: { onAsk: () => void }): React.ReactElement {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button size="sm" onClick={onAsk} data-testid="clarify-ask">
+        Ask these questions
+      </Button>
+      <span className="text-xs text-muted-foreground">
+        Runs the model; its cost is added to this analysis.
+      </span>
+    </div>
+  );
 }
 
 /**
@@ -686,6 +705,7 @@ function GapsPreviewPanel({
   startFailed = false,
   startUnreadable = false,
   onRetryStart,
+  onAsk,
 }: {
   structured: StructuredRequirementsPayload;
   loading: boolean;
@@ -694,18 +714,23 @@ function GapsPreviewPanel({
   /** #1081 — it failed because the model's questions could not be read. */
   startUnreadable?: boolean;
   onRetryStart?: () => void;
+  /** #2509 — set while the user may start the session; it is never started for them. */
+  onAsk?: () => void;
 }): React.ReactElement {
   const requirementsWithGaps = structured.requirements.filter((r) => ambiguitiesOf(r).length > 0);
 
   return (
     <Card id={QUESTIONS_ANCHOR} className="space-y-4 p-4" data-testid="gaps-preview">
-      <div>
+      <div className="space-y-2">
         <h3 className="text-lg font-semibold">Clarifying Questions</h3>
         <p className="text-sm text-muted-foreground">
           {loading
             ? "Preparing an interactive clarification session for these doc-grounded gaps…"
-            : "These doc-grounded gaps will be turned into an interactive clarification session."}
+            : onAsk
+              ? "Ask these doc-grounded gaps as questions to answer them here."
+              : "These doc-grounded gaps will be turned into an interactive clarification session."}
         </p>
+        {onAsk && !loading ? <AskQuestionsButton onAsk={onAsk} /> : null}
         {startFailed && !loading && (
           <p
             role="alert"

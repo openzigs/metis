@@ -622,6 +622,47 @@ describe("seedRequirementCodeLinksFromFindings", () => {
   const projectId = "proj-1";
   beforeEach(() => noteRequirementCodeLinksChanged.mockReset());
 
+  it("#2509 — links no code a finding cites while saying it could not verify the requirement", async () => {
+    // The walkthrough's shape: one finding could not verify the Python client
+    // and cited the Go client's model as "not the Python client"; another, with
+    // no such verdict, cited server code. Only the second grounds it.
+    const couldNotVerify = JSON.stringify({
+      citations: [{ filePath: "src/a.ts", startLine: 279, endLine: 279 }],
+      tags: [],
+      requirementId: "AC-3b",
+      verdict: "could-not-verify",
+    });
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1", "f2"]) }],
+      findings: [
+        { id: "f1", evidence: couldNotVerify, confidence: 0.7 },
+        { id: "f2", evidence: evidence(["src/b.ts"]), confidence: 0.45 },
+      ],
+    });
+    const summary = await seedRequirementCodeLinksFromFindings(
+      { analysisId: "an-1", projectId, requirementIds: ["req-1"] },
+      { prisma },
+    );
+    expect(created.map((m) => m.filePath)).toEqual(["src/b.ts"]);
+    expect(summary.linksCreated).toBe(1);
+  });
+
+  it("#2509 — still links what a finding with a confirmed verdict cites", async () => {
+    const implemented = JSON.stringify({
+      citations: [{ filePath: "src/a.ts", startLine: 3, endLine: 4 }],
+      verdict: "implemented",
+    });
+    const { prisma, created } = makeFakePrisma({
+      requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],
+      findings: [{ id: "f1", evidence: implemented, confidence: 0.9 }],
+    });
+    await seedRequirementCodeLinksFromFindings(
+      { analysisId: "an-1", projectId, requirementIds: ["req-1"] },
+      { prisma },
+    );
+    expect(created.map((m) => m.filePath)).toEqual(["src/a.ts"]);
+  });
+
   it("creates a RequirementCodeMapping from a finding whose citation has a filename", async () => {
     const { prisma, created } = makeFakePrisma({
       requirements: [{ id: "req-1", projectId, labels: labels(["f1"]) }],

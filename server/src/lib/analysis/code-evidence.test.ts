@@ -72,6 +72,15 @@ describe("#1568 — requirements that would be promoted with no code link", () =
     expect([...out]).toEqual([]);
   });
 
+  it("#2509 — marks one whose only code is cited by a finding that could not verify it", () => {
+    const out = requirementsWithoutCodeEvidence({
+      structured: [READ_AT],
+      synthesized: SYNTHESIS,
+      findings: [{}, { citations: [repoDocCitation], verdict: "could-not-verify" }],
+    });
+    expect([...out]).toEqual(["REQ-2"]);
+  });
+
   it("marks every requirement when synthesis cited no finding at all", () => {
     const out = requirementsWithoutCodeEvidence({
       structured: [MARK_OLDER, READ_AT],

@@ -13,7 +13,7 @@
  * and carry on as instructions.
  */
 import { z } from "zod";
-import { FINDING_VERDICTS } from "@metis/shared";
+import { DEFAULT_RAG_CHUNK_SIZE, FINDING_VERDICTS } from "@metis/shared";
 import {
   scrubGapFenceLookalikes,
   scrubRequirementFenceLookalikes,
@@ -26,8 +26,15 @@ export function fenced(text: string): string {
   return scrubGapFenceLookalikes(scrubRequirementFenceLookalikes(text, REDACTED), REDACTED);
 }
 
-/** Characters of one retrieved chunk shown to the model. */
-export const HIT_TEXT_CHARS = 1_500;
+/**
+ * Characters of one retrieved chunk shown to the model: a whole chunk at the
+ * default chunk size. #2509 — at 1,500 the last quarter of every 2,048-character
+ * repository chunk was cut off. In the walkthrough's miniflux/v2 index the
+ * `reading_time` field of `internal/model/entry.go` sits at character 1,514 of
+ * its chunk, so the model was never shown the field it was asked about and
+ * answered `could-not-verify` for a product that has it.
+ */
+export const HIT_TEXT_CHARS = DEFAULT_RAG_CHUNK_SIZE;
 
 export const DECOMPOSE_SYSTEM_PROMPT = [
   "You split a software requirement into acceptance criteria that can each be checked",

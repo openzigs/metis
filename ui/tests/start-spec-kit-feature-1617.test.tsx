@@ -217,6 +217,19 @@ describe("StartSpecKitFeatureAction — Spec Kit off (#1749)", () => {
     renderAction([APPROVED_A]);
     await waitFor(() => expect(getEnabled).toHaveBeenCalled());
     expect(button()).toBeEnabled();
+    // #2509 — but says so, with the way to check, rather than reading as "on".
+    const unread = await screen.findByTestId("start-spec-kit-unread");
+    expect(unread).toHaveTextContent("Could not check whether Spec Kit is on");
+    expect(
+      within(unread).getByRole("link", { name: "Check on the Spec Kit page" }),
+    ).toHaveAttribute("href", "/projects/p1/spec-kit");
+  });
+
+  it("#2509 — says nothing about the read when it succeeds", async () => {
+    renderAction([APPROVED_A]);
+    await waitFor(() => expect(getEnabled).toHaveBeenCalled());
+    await waitFor(() => expect(button()).toBeEnabled());
+    expect(screen.queryByTestId("start-spec-kit-unread")).not.toBeInTheDocument();
   });
 
   it("keeps the write hint first for a viewer who cannot write", async () => {

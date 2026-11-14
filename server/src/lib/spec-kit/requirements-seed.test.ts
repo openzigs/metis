@@ -8,6 +8,7 @@ import {
   MODEL_SPEC_RESERVE_CHARS,
   SOURCE_REQUIREMENTS_MAX_CHARS,
   SPEC_ARTIFACT_MAX_CHARS,
+  SPEC_OWN_CRITERION_IDS_NOTE,
   SpecKitRequirementSeedError,
   buildRequirementsSeed,
   fenceSourceRequirementsInSpec,
@@ -16,7 +17,12 @@ import {
   renderSourceRequirementsSection,
   type SeedRequirement,
 } from "./requirements-seed.js";
-import { extractHeadings, extractSectionBody, validateSpecContract } from "./artifact-contract.js";
+import {
+  extractAcIds,
+  extractHeadings,
+  extractSectionBody,
+  validateSpecContract,
+} from "./artifact-contract.js";
 import { assertFeatureArtifactWritable } from "./feature-artifacts.js";
 import { DEFAULT_SPEC_KIT_MAX_OUTPUT_TOKENS } from "./output-budget.js";
 
@@ -66,6 +72,15 @@ describe("renderSourceRequirementsSection", () => {
     expect(extractHeadings(spec).filter((h) => h === "acceptance criteria")).toHaveLength(1);
     // A spec missing its Stakeholders section is still reported missing.
     expect(validateSpecContract(spec).missingSections).toContain("stakeholders");
+  });
+
+  it("#2509 — says the spec's criterion ids are its own, without naming an id itself", () => {
+    const section = renderSourceRequirementsSection([req("a"), req("b")]);
+    expect(section).toContain(SPEC_OWN_CRITERION_IDS_NOTE);
+    expect(section.indexOf(SPEC_OWN_CRITERION_IDS_NOTE)).toBeLessThan(
+      section.indexOf("### Source requirement 1"),
+    );
+    expect(extractAcIds(SPEC_OWN_CRITERION_IDS_NOTE)).toEqual([]);
   });
 
   it("says so when a requirement has no acceptance criteria, rather than inventing any", () => {

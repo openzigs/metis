@@ -155,7 +155,9 @@ function SummaryTable({
             <th className="py-2 pr-4 font-medium">Project</th>
             <th className="py-2 pr-4 font-medium">Analysed requirements</th>
             <th className="py-2 pr-4 font-medium">Cross-project links</th>
-            <th className="py-2 pr-4 font-medium">Spec coverage</th>
+            {/* #2509 — it counts generated spec documents only (`requirement_spec_mappings`):
+                "Spec coverage" read 0% beside a Spec Kit feature started from the requirements. */}
+            <th className="py-2 pr-4 font-medium">In a generated spec</th>
             <th className="py-2 pr-4 font-medium">Code coverage</th>
             <th className="py-2 font-medium">Tested</th>
           </tr>
@@ -190,7 +192,9 @@ function SummaryTable({
         </tbody>
       </table>
       <p className="text-xs text-muted-foreground" data-testid="rollup-denominator-note">
-        Spec and code coverage are out of the analysed requirements.
+        &ldquo;In a generated spec&rdquo; and code coverage are out of the analysed requirements. A
+        requirement is in a generated spec when a generated spec document maps it; a Spec Kit
+        feature is not counted.
         {anyImported
           ? " Items imported from a tracker that no analysis has mapped are counted apart and left out of the percentages."
           : ""}{" "}
