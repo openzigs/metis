@@ -7,12 +7,14 @@
  * an upsert whose `where` names the table's unique key AND a non-unique
  * column (`projectId`), so that another project's caller cannot overwrite a
  * row. That shape is Prisma's extended `where` on the unique input, and how
- * the miss surfaces (a create that meets the unique key) is the engine's, so
- * it is proved here on the engine production runs:
+ * the miss surfaces is the engine's (Prisma 7 resolves null and writes
+ * nothing; it does not throw), so it is proved here on the engine production
+ * runs:
  *
  *   - a whole reading is saved and the next read reuses it with no reader call;
- *   - a save of the same key under another project fails on the key, the row
- *     keeps its project and reading, and the read still reaches the caller;
+ *   - a save of the same key under another project resolves null and writes
+ *     nothing, the row keeps its project and reading, no later read of that
+ *     project returns it, and the read still reaches the caller;
  *   - a save deletes the document's readings of an earlier file, and of an
  *     earlier reader of the same file, and keeps another model's.
  *
@@ -161,6 +163,48 @@ describe.skipIf(!enabled)("#2319 — saved document readings (Postgres)", () => 
     expect(saved).toHaveLength(1);
     expect(saved[0]!.projectId).toBe(PA);
     expect(JSON.parse(saved[0]!.reading).outputTokenCap).toBe(1111);
+
+    // The mechanism, on the real client: the same upsert shape under another
+    // project resolves null (it does not throw) and leaves the row as it was.
+    const row = saved[0]!;
+    const theirs = await db.savedDocumentReading.upsert({
+      where: {
+        documentId_checksum_readerVersion_model_textHash: {
+          documentId: row.documentId,
+          checksum: row.checksum,
+          readerVersion: row.readerVersion,
+          model: row.model,
+          textHash: row.textHash,
+        },
+        projectId: PB,
+      },
+      create: {
+        projectId: PB,
+        documentId: row.documentId,
+        checksum: row.checksum,
+        readerVersion: row.readerVersion,
+        model: row.model,
+        textHash: row.textHash,
+        reading: "{}",
+        usage: "{}",
+      },
+      update: { reading: "{}" },
+    });
+    expect(theirs).toBeNull();
+    const after = await rows();
+    expect(after).toHaveLength(1);
+    expect(after[0]).toMatchObject({ projectId: PA, reading: row.reading });
+
+    // And project B never gets A's reading back: with no reread, B's read still
+    // calls the reader.
+    const read = vi.fn(async () => reading(3333));
+    const b = await readDocumentOnce(
+      { title: "FRD", text: TEXT, provider, document: { ...doc, projectId: PB } },
+      { db, read },
+    );
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(b.reused).toBeUndefined();
+    expect(b.outputTokenCap).toBe(3333);
   });
 
   it("a save deletes an earlier file's and an earlier reader's readings, and keeps another model's", async () => {

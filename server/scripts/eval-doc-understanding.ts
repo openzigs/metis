@@ -117,6 +117,12 @@ async function main(): Promise<void> {
   const items = await loadDocUnderstandingCorpus(names);
 
   const { buildProvider, loadAIConfig } = await import("../src/lib/ai/index.js");
+  if (argv.includes("--saved-readings") && (!armIds.includes("R") || runs < 2)) {
+    console.warn(
+      "warning: --saved-readings reuses arm R's first reading in a later run; " +
+        "it does nothing without arm R in --arms or with --runs 1",
+    );
+  }
   const live = buildProvider({ config: loadAIConfig() });
   if (live.offline) {
     throw new Error(

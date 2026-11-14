@@ -1311,8 +1311,9 @@ jobs:
 
       # Issue #2319 — a saved document reading's upsert names the unique key AND
       # `projectId`, so another project's save cannot overwrite the row. Prove that
-      # shape on real Postgres: a reuse calls no reader, another project's save fails
-      # on the key and leaves the row, and a save prunes an earlier file and reader.
+      # shape on real Postgres: a reuse calls no reader, another project's save
+      # resolves null and writes nothing (the row and its reading stay), and a save
+      # prunes an earlier file and reader.
       - name: Prove saved document readings stay in their project and prune old ones on real Postgres
         working-directory: server
         run: pnpm test:integration document-reading-cache-2319-postgres

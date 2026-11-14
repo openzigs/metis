@@ -280,6 +280,11 @@ $1.2151 to $0. The judge still grades each run, so its spend ($0.5699 in all) is
 The judge also counted repeats differently on two identical readings (03: 2 and 1; 04: 7 and
 8), which shows how much of the repeat count is the judge's own noise.
 
+In the report's aggregate rows, $ / doc, tokens and s / doc average the readings really made
+(run 1), and a footnote says how many were reused: with reused runs averaged in, the cost and
+time would read about half what one reading costs, and would look like a reader change next to
+the #2407 and #2374 readings. The quality columns count every reading.
+
 Spend: $1.79 metered ($1.22 reader, $0.57 judge), within the $20 pre-approval.
 
 ## The Phase 0 answer (#2229)

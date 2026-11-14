@@ -68,7 +68,12 @@ export interface ArmSummary {
   metrics: Record<SummaryMetric, MetricSummary>;
   extractedPerDocument: number | null;
   questionsPerDocument: number | null;
-  /** The arm's mean spend per document; null when any reading was unpriced. */
+  /**
+   * The arm's mean spend per document; null when any reading was unpriced.
+   * #2319 — this and the token and seconds means below cover the readings that
+   * were really made: a reading reused from the store costs nothing and would
+   * halve them.
+   */
   usdPerDocument: number | null;
   inputTokensPerDocument: number | null;
   completionTokensPerDocument: number | null;
@@ -76,6 +81,8 @@ export interface ArmSummary {
   failures: number;
   /** Readings attempted, failed ones included. */
   readings: number;
+  /** #2319 — how many of `readings` came from the saved-reading store, not a model. */
+  reusedReadings: number;
 }
 
 export interface DocArmReport {
@@ -156,17 +163,20 @@ export function summariseRecords(records: readonly ReadingRecord[]): ArmSummary 
   ) as Record<SummaryMetric, MetricSummary>;
   const mean = (xs: number[]): number | null =>
     xs.length === 0 ? null : xs.reduce((a, b) => a + b, 0) / xs.length;
-  const priced = records.every((r) => r.costUsd !== null);
+  // #2319 — cost, tokens and time are the reader's: a reused reading made no call.
+  const made = records.filter((r) => r.diagnostics.reused !== 1);
+  const priced = made.every((r) => r.costUsd !== null);
   return {
     metrics,
     extractedPerDocument: mean(ok.map((r) => r.score!.extracted)),
     questionsPerDocument: mean(ok.map((r) => r.score!.questions)),
-    usdPerDocument: priced ? mean(records.map((r) => r.costUsd!)) : null,
-    inputTokensPerDocument: mean(records.map((r) => r.inputTokens)),
-    completionTokensPerDocument: mean(records.map((r) => r.completionTokens)),
-    secondsPerDocument: mean(records.map((r) => r.seconds)),
+    usdPerDocument: priced ? mean(made.map((r) => r.costUsd!)) : null,
+    inputTokensPerDocument: mean(made.map((r) => r.inputTokens)),
+    completionTokensPerDocument: mean(made.map((r) => r.completionTokens)),
+    secondsPerDocument: mean(made.map((r) => r.seconds)),
     failures: records.length - ok.length,
     readings: records.length,
+    reusedReadings: records.length - made.length,
   };
 }
 
@@ -446,6 +456,15 @@ export function toMarkdownReport(report: DocUnderstandingReport): string {
   lines.push("");
   lines.push(METRIC_HEADER);
   for (const a of report.arms) lines.push(metricRow(a.id, a.summary));
+  for (const a of report.arms) {
+    if (a.summary.reusedReadings > 0) {
+      lines.push("");
+      lines.push(
+        `${a.summary.reusedReadings} of ${a.summary.readings} readings of ${a.id} were reused from the saved-reading store (no model call): ` +
+          `their cost, tokens and seconds are not counted in the $ / doc, tokens and s / doc columns above, which average the readings really made. The quality columns count every reading.`,
+      );
+    }
+  }
   lines.push("");
   lines.push(
     "Requirement recall and precision, section coverage and ambiguity recall are computed in code from the judge's matching of each extracted requirement to a labelled one and each question to a labelled ambiguity. Question precision is the judge's verdict of \"worth asking\". Quote accuracy is deterministic: requirement quotes found verbatim (whitespace aside) in the converted document; arm A gives no quotes. The cost per document is the reader's alone; the judge's spend is reported apart.",

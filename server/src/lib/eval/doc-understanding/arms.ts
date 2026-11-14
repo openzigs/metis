@@ -493,7 +493,8 @@ export function createArmR(model: string, opts: ArmROptions = {}): DocArm {
   const lastRead = new Map<string, string>();
   return {
     id: "R",
-    label: "R — the document reader (readDocument): whole document, statements by section batch",
+    label:
+      "R — the document reader (readDocumentOnce): whole document, statements by section batch",
     configuration: {
       conversion: "parseDocument (docxToMarkdown)",
       reader:
@@ -517,6 +518,9 @@ export function createArmR(model: string, opts: ArmROptions = {}): DocArm {
         },
         { db: store.db },
       );
+      // readDocumentOnce swallows a failed lookup and reads again; a stand-in
+      // that no longer matches the cache must stop the run, not look like a miss.
+      if (store.problems().length > 0) throw new Error(store.problems().join("; "));
       const fingerprint = readingFingerprint(reading);
       const reused = reading.reused !== undefined;
       if (!reused) lastRead.set(documentId, fingerprint);

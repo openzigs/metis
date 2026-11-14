@@ -5378,12 +5378,13 @@
         },
         "extractedPerDocument": 115.5,
         "questionsPerDocument": 0,
-        "usdPerDocument": 0.151899475,
-        "inputTokensPerDocument": 50690.125,
-        "completionTokensPerDocument": 11795,
-        "secondsPerDocument": 62.010999999999996,
+        "usdPerDocument": 0.30379895,
+        "inputTokensPerDocument": 101380.25,
+        "completionTokensPerDocument": 23590,
+        "secondsPerDocument": 124.021,
         "failures": 0,
-        "readings": 8
+        "readings": 8,
+        "reusedReadings": 4
       },
       "byItem": [
         {
@@ -5429,12 +5430,13 @@
             },
             "extractedPerDocument": 61,
             "questionsPerDocument": 0,
-            "usdPerDocument": 0.09779435000000002,
-            "inputTokensPerDocument": 17665,
-            "completionTokensPerDocument": 7725,
-            "secondsPerDocument": 39.3605,
+            "usdPerDocument": 0.19558870000000003,
+            "inputTokensPerDocument": 35330,
+            "completionTokensPerDocument": 15450,
+            "secondsPerDocument": 78.721,
             "failures": 0,
-            "readings": 2
+            "readings": 2,
+            "reusedReadings": 1
           }
         },
         {
@@ -5480,12 +5482,13 @@
             },
             "extractedPerDocument": 63,
             "questionsPerDocument": 0,
-            "usdPerDocument": 0.1051664,
-            "inputTokensPerDocument": 24759,
-            "completionTokensPerDocument": 8287,
-            "secondsPerDocument": 44.022000000000006,
+            "usdPerDocument": 0.2103328,
+            "inputTokensPerDocument": 49518,
+            "completionTokensPerDocument": 16574,
+            "secondsPerDocument": 88.043,
             "failures": 0,
-            "readings": 2
+            "readings": 2,
+            "reusedReadings": 1
           }
         },
         {
@@ -5531,12 +5534,13 @@
             },
             "extractedPerDocument": 109,
             "questionsPerDocument": 0,
-            "usdPerDocument": 0.1462624,
-            "inputTokensPerDocument": 41466,
-            "completionTokensPerDocument": 11424.5,
-            "secondsPerDocument": 61.549499999999995,
+            "usdPerDocument": 0.2925248,
+            "inputTokensPerDocument": 82932,
+            "completionTokensPerDocument": 22849,
+            "secondsPerDocument": 123.097,
             "failures": 0,
-            "readings": 2
+            "readings": 2,
+            "reusedReadings": 1
           }
         },
         {
@@ -5582,12 +5586,13 @@
             },
             "extractedPerDocument": 229,
             "questionsPerDocument": 0,
-            "usdPerDocument": 0.25837475,
-            "inputTokensPerDocument": 118870.5,
-            "completionTokensPerDocument": 19743.5,
-            "secondsPerDocument": 103.11200000000001,
+            "usdPerDocument": 0.5167495,
+            "inputTokensPerDocument": 237741,
+            "completionTokensPerDocument": 39487,
+            "secondsPerDocument": 206.223,
             "failures": 0,
-            "readings": 2
+            "readings": 2,
+            "reusedReadings": 1
           }
         }
       ]

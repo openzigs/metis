@@ -9,6 +9,7 @@ import {
   combineReports,
   runDocUnderstandingEval,
   summarise,
+  summariseRecords,
   toJsonReport,
   toMarkdownReport,
   type DocUnderstandingReport,
@@ -406,6 +407,36 @@ describe("combineReports and rendering", () => {
     expect(toMarkdownReport(report)).toContain("identical to the reading saved: no.");
     rec.diagnostics = { calls: 2, reused: 0 };
     expect(toMarkdownReport(report)).not.toContain("Reused the saved reading");
+  });
+
+  it("#2319 — a reused reading is not averaged into cost, tokens or seconds, and the report says so", async () => {
+    const report = await run(["d1"], [fakeArm("A")]);
+    const real = report.arms[0]!.records[0]!;
+    real.diagnostics = { calls: 2, reused: 0 };
+    real.costUsd = 0.3;
+    real.inputTokens = 1000;
+    real.completionTokens = 200;
+    real.seconds = 60;
+    const again = {
+      ...real,
+      run: 2,
+      diagnostics: { calls: 0, reused: 1, identicalToSaved: 1 },
+      costUsd: 0,
+      inputTokens: 0,
+      completionTokens: 0,
+      seconds: 0,
+    };
+    const s = summariseRecords([real, again]);
+    expect(s.usdPerDocument).toBeCloseTo(0.3);
+    expect(s.inputTokensPerDocument).toBe(1000);
+    expect(s.completionTokensPerDocument).toBe(200);
+    expect(s.secondsPerDocument).toBe(60);
+    expect(s.reusedReadings).toBe(1);
+    // Quality metrics and the readings count still include both.
+    expect(s.readings).toBe(2);
+    report.arms[0]!.records = [real, again];
+    report.arms[0]!.summary = s;
+    expect(toMarkdownReport(report)).toMatch(/1 of 2 readings of A were reused.*not counted/);
   });
 
   it("says when a run stopped early", async () => {

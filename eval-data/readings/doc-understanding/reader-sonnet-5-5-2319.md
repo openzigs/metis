@@ -8,7 +8,9 @@ Commit: 6b9a67824ca28d38661e1ece390024703945a3fd
 
 | Arm | Requirement recall | Requirement precision | Section coverage | Question precision | Ambiguity recall | Quote accuracy | Requirements / doc | Questions / doc | $ / doc | Tokens in / out per doc | s / doc | Failures |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| R | 0.99 [0.98–1.00] | 0.96 [0.93–0.98] | 1.00 | n/a | 0.00 | 1.00 | 115.5 | 0.0 | $0.1519 | 50690 / 11795 | 62.0 | 0 |
+| R | 0.99 [0.98–1.00] | 0.96 [0.93–0.98] | 1.00 | n/a | 0.00 | 1.00 | 115.5 | 0.0 | $0.3038 | 101380 / 23590 | 124.0 | 0 |
+
+4 of 8 readings of R were reused from the saved-reading store (no model call): their cost, tokens and seconds are not counted in the $ / doc, tokens and s / doc columns above, which average the readings really made. The quality columns count every reading.
 
 Requirement recall and precision, section coverage and ambiguity recall are computed in code from the judge's matching of each extracted requirement to a labelled one and each question to a labelled ambiguity. Question precision is the judge's verdict of "worth asking". Quote accuracy is deterministic: requirement quotes found verbatim (whitespace aside) in the converted document; arm A gives no quotes. The cost per document is the reader's alone; the judge's spend is reported apart.
 
@@ -20,7 +22,7 @@ Requirement recall and precision, section coverage and ambiguity recall are comp
 
 | Arm | Requirement recall | Requirement precision | Section coverage | Question precision | Ambiguity recall | Quote accuracy | Requirements / doc | Questions / doc | $ / doc | Tokens in / out per doc | s / doc | Failures |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| R | 1.00 | 0.97 | 1.00 | n/a | 0.00 | 1.00 | 61.0 | 0.0 | $0.0978 | 17665 / 7725 | 39.4 | 0 |
+| R | 1.00 | 0.97 | 1.00 | n/a | 0.00 | 1.00 | 61.0 | 0.0 | $0.1956 | 35330 / 15450 | 78.7 | 0 |
 
 - R run 1: missed requirements none; missed sections 0; ambiguities not raised A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12; repeats 0; judge invalid 0, ungraded 0.
 
@@ -32,7 +34,7 @@ Requirement recall and precision, section coverage and ambiguity recall are comp
 
 | Arm | Requirement recall | Requirement precision | Section coverage | Question precision | Ambiguity recall | Quote accuracy | Requirements / doc | Questions / doc | $ / doc | Tokens in / out per doc | s / doc | Failures |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| R | 0.98 | 0.98 | 1.00 | n/a | 0.00 | 1.00 | 63.0 | 0.0 | $0.1052 | 24759 / 8287 | 44.0 | 0 |
+| R | 0.98 | 0.98 | 1.00 | n/a | 0.00 | 1.00 | 63.0 | 0.0 | $0.2103 | 49518 / 16574 | 88.0 | 0 |
 
 - R run 1: missed requirements R62; missed sections 0; ambiguities not raised A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15, A16, A17, A18; repeats 0; judge invalid 0, ungraded 0.
 
@@ -44,7 +46,7 @@ Requirement recall and precision, section coverage and ambiguity recall are comp
 
 | Arm | Requirement recall | Requirement precision | Section coverage | Question precision | Ambiguity recall | Quote accuracy | Requirements / doc | Questions / doc | $ / doc | Tokens in / out per doc | s / doc | Failures |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| R | 0.99 | 0.96 | 1.00 | n/a | 0.00 | 1.00 | 109.0 | 0.0 | $0.1463 | 41466 / 11425 | 61.5 | 0 |
+| R | 0.99 | 0.96 | 1.00 | n/a | 0.00 | 1.00 | 109.0 | 0.0 | $0.2925 | 82932 / 22849 | 123.1 | 0 |
 
 - R run 1: missed requirements R105; missed sections 0; ambiguities not raised A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15, A16, A17; repeats 2; judge invalid 0, ungraded 0.
 
@@ -56,7 +58,7 @@ Requirement recall and precision, section coverage and ambiguity recall are comp
 
 | Arm | Requirement recall | Requirement precision | Section coverage | Question precision | Ambiguity recall | Quote accuracy | Requirements / doc | Questions / doc | $ / doc | Tokens in / out per doc | s / doc | Failures |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
-| R | 0.99 | 0.93 | 1.00 | n/a | 0.00 | 1.00 | 229.0 | 0.0 | $0.2584 | 118871 / 19744 | 103.1 | 0 |
+| R | 0.99 | 0.93 | 1.00 | n/a | 0.00 | 1.00 | 229.0 | 0.0 | $0.5167 | 237741 / 39487 | 206.2 | 0 |
 
 - R run 1: missed requirements R37, R216; missed sections 0; ambiguities not raised A1, A2, A3, A4, A5, A6, A7, A8, A9, A10, A11, A12, A13, A14, A15, A16, A17, A18, A19, A20, A21, A22, A23, A24, A25, A26, A27, A28, A29, A30; repeats 7; judge invalid 0, ungraded 0.
 

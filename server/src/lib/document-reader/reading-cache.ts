@@ -38,7 +38,9 @@
  *
  *   - it overwrites only a row of the same project (the upsert's `where` names
  *     `projectId`), so a caller that passes another project cannot replace
- *     that project's reading: its create fails on the key and is logged;
+ *     that project's reading: the upsert resolves null (Prisma 7) and writes
+ *     nothing, the liveness tidy then finds the document is not that project's,
+ *     and the caller still gets its own reading;
  *   - it deletes the document's readings of an earlier file (`checksum`) or
  *     reader (`READER_VERSION`), which no later lookup can match. Readings by
  *     another model or of another text stay: switching the model back, or the
