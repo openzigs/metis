@@ -177,6 +177,53 @@ describe("POST /api/admin/embeddings/projects/:projectId/reindex", () => {
     expect(typeof res.body.data.jobId).toBe("string");
   });
 
+  // #2499 — `z.coerce.boolean()` read the string "false" as true, so an API
+  // client sending `{ fresh: "false" }` discarded a surviving shadow.
+  describe("fresh", () => {
+    const post = (body: unknown) =>
+      request(makeApp())
+        .post("/api/admin/embeddings/projects/p1/reindex")
+        .send(body as object);
+
+    it.each([
+      [true, true],
+      ["true", true],
+      ["TRUE", true],
+      ["1", true],
+      [false, false],
+      ["false", false],
+      ["False", false],
+      ["0", false],
+    ])("reads fresh %j as %s and passes it to the reindex", async (sent, expected) => {
+      reindexProject.mockReset();
+      reindexProject.mockReturnValue(new Promise(() => {}));
+      const res = await post({ fresh: sent });
+      expect(res.status).toBe(202);
+      await vi.waitFor(() => expect(reindexProject).toHaveBeenCalledTimes(1));
+      expect(reindexProject.mock.calls[0]?.[1]).toMatchObject({ fresh: expected });
+    });
+
+    it("leaves fresh unset when the body omits it (resume is the default)", async () => {
+      reindexProject.mockReset();
+      reindexProject.mockReturnValue(new Promise(() => {}));
+      const res = await post({});
+      expect(res.status).toBe(202);
+      await vi.waitFor(() => expect(reindexProject).toHaveBeenCalledTimes(1));
+      expect(reindexProject.mock.calls[0]?.[1]).not.toHaveProperty("fresh");
+    });
+
+    it.each(["maybe", "", "  ", null, 2])(
+      "refuses fresh %j with 400 INVALID_BODY and starts nothing",
+      async (sent) => {
+        reindexProject.mockReset();
+        const res = await post({ fresh: sent });
+        expect(res.status).toBe(400);
+        expect(res.body.error.code).toBe("INVALID_BODY");
+        expect(reindexProject).not.toHaveBeenCalled();
+      },
+    );
+  });
+
   it("still returns 202 for a concurrent reindex — the conflict surfaces as a failed job event, not an HTTP error", async () => {
     // The background worker catches ReindexConflictError and broadcasts a generic
     // `failed` lifecycle event; the enqueue response itself is always 202.
