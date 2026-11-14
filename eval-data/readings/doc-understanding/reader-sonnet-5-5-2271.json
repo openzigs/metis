@@ -1,0 +1,443 @@
+{
+  "generatedAt": "2026-11-14T23:06:19.854Z",
+  "model": "anthropic/claude-sonnet-5-5",
+  "judgeModel": "anthropic/claude-sonnet-5-5",
+  "runsRequested": 1,
+  "budgetUsd": 13,
+  "spentUsd": 2.8310318,
+  "judgeSpentUsd": 0,
+  "unpricedCalls": 0,
+  "outputTokenCap": 16384,
+  "stopped": null,
+  "provenance": {
+    "commit": "a7ad8202f93dfb9e4a9937ba85ff301abc1098b0",
+    "dirty": false
+  },
+  "corpus": [
+    {
+      "id": "docunderstanding-01-clinic-booking",
+      "title": "Riverside Community Clinics: Online Appointment Booking, Functional Requirements Document",
+      "docxBytes": 17991,
+      "chars": 22129,
+      "sections": 26,
+      "chunks": 26,
+      "requirements": 59,
+      "labelledSections": 13,
+      "ambiguities": 12
+    },
+    {
+      "id": "docunderstanding-02-freight-claims",
+      "title": "Northgate Freight: Cargo Loss and Damage Claims Handling, Business Requirements Document",
+      "docxBytes": 17918,
+      "chars": 23478,
+      "sections": 36,
+      "chunks": 36,
+      "requirements": 63,
+      "labelledSections": 17,
+      "ambiguities": 18
+    },
+    {
+      "id": "docunderstanding-03-community-grants",
+      "title": "Harbour City Council: Community Grants Management System, Functional Requirements Document",
+      "docxBytes": 21643,
+      "chars": 35075,
+      "sections": 53,
+      "chunks": 54,
+      "requirements": 106,
+      "labelledSections": 31,
+      "ambiguities": 17
+    },
+    {
+      "id": "docunderstanding-04-library-lending",
+      "title": "Kestrel Vale Libraries: Membership and Lending Platform, Functional Requirements Document",
+      "docxBytes": 31269,
+      "chars": 60624,
+      "sections": 81,
+      "chunks": 82,
+      "requirements": 216,
+      "labelledSections": 45,
+      "ambiguities": 30
+    }
+  ],
+  "arms": [
+    {
+      "id": "R",
+      "label": "R — the document reader (readDocumentOnce): whole document, statements by section batch",
+      "configuration": {
+        "conversion": "parseDocument (docxToMarkdown)",
+        "reader": "readDocumentOnce (document-reader/reading-cache.ts) over readDocument (document-reader/reader.ts), mode chosen by the model's window",
+        "savedReadings": "read again every run, then saved (reread)",
+        "requirements": "statements labelled requirement, constraint or business-rule",
+        "extraction": "RequirementsExtractor in source mode over those statements (GtWR R7/R8/R9 and TBD rules on their paragraphs)",
+        "questions": "the dialog's first round: generateClarifyingQuestions in source mode, then selectQuestionsToAsk (unanswerable and same-outcome set aside, ranked, at most 8 asked); the open ambiguities as written when none is worth asking",
+        "questionModel": "the provider's Haiku tier where it serves one, else its model (tierModelFor, as the dialog's round 1)",
+        "model": "anthropic/claude-sonnet-5-5"
+      },
+      "records": [
+        {
+          "itemId": "docunderstanding-01-clinic-booking",
+          "armId": "R",
+          "run": 1,
+          "output": null,
+          "diagnostics": {},
+          "score": null,
+          "judge": null,
+          "error": "reader: Structured requirements extraction failed (unparseable): Expected ',' or ']' after array element in JSON at position 39710 (line 37 column 979)",
+          "costUsd": 0.5640087,
+          "judgeCostUsd": 0,
+          "unpricedCalls": 0,
+          "inputTokens": 56930,
+          "completionTokens": 47972,
+          "seconds": 281.03
+        },
+        {
+          "itemId": "docunderstanding-02-freight-claims",
+          "armId": "R",
+          "run": 1,
+          "output": null,
+          "diagnostics": {},
+          "score": null,
+          "judge": null,
+          "error": "reader: Structured requirements extraction failed (unparseable): Expected ',' or ']' after array element in JSON at position 44674 (line 52 column 1095)",
+          "costUsd": 0.5800567999999999,
+          "judgeCostUsd": 0,
+          "unpricedCalls": 0,
+          "inputTokens": 73775,
+          "completionTokens": 48695,
+          "seconds": 277.534
+        },
+        {
+          "itemId": "docunderstanding-03-community-grants",
+          "armId": "R",
+          "run": 1,
+          "output": null,
+          "diagnostics": {},
+          "score": null,
+          "judge": null,
+          "error": "reader: Structured requirements extraction failed (unparseable): Unexpected token ''', ...\"cription\":'Whether \"\"... is not valid JSON",
+          "costUsd": 0.6800488,
+          "judgeCostUsd": 0,
+          "unpricedCalls": 0,
+          "inputTokens": 120694,
+          "completionTokens": 54049,
+          "seconds": 324.444
+        },
+        {
+          "itemId": "docunderstanding-04-library-lending",
+          "armId": "R",
+          "run": 1,
+          "output": null,
+          "diagnostics": {},
+          "score": null,
+          "judge": null,
+          "error": "reader: Structured requirements extraction failed (unparseable): Expected ',' or ']' after array element in JSON at position 38141 (line 63 column 549)",
+          "costUsd": 1.0069175,
+          "judgeCostUsd": 0,
+          "unpricedCalls": 0,
+          "inputTokens": 316865,
+          "completionTokens": 72679,
+          "seconds": 408.015
+        }
+      ],
+      "summary": {
+        "metrics": {
+          "requirementRecall": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "requirementPrecision": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "sectionCoverage": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "questionPrecision": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "ambiguityRecall": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          },
+          "quoteAccuracy": {
+            "mean": null,
+            "min": null,
+            "max": null,
+            "n": 0
+          }
+        },
+        "extractedPerDocument": null,
+        "questionsPerDocument": null,
+        "usdPerDocument": 0.70775795,
+        "inputTokensPerDocument": 142066,
+        "completionTokensPerDocument": 55848.75,
+        "secondsPerDocument": 322.75575000000003,
+        "failures": 4,
+        "readings": 4,
+        "reusedReadings": 0,
+        "questionTally": {
+          "asked": 0,
+          "ambiguitiesFound": 0,
+          "ambiguitiesLabelled": 0,
+          "setAsideUnanswerable": null,
+          "setAsideSameOutcome": null,
+          "overCap": null
+        }
+      },
+      "byItem": [
+        {
+          "itemId": "docunderstanding-01-clinic-booking",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "requirementPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "sectionCoverage": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "questionPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "ambiguityRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": null,
+            "questionsPerDocument": null,
+            "usdPerDocument": 0.5640087,
+            "inputTokensPerDocument": 56930,
+            "completionTokensPerDocument": 47972,
+            "secondsPerDocument": 281.03,
+            "failures": 1,
+            "readings": 1,
+            "reusedReadings": 0,
+            "questionTally": {
+              "asked": 0,
+              "ambiguitiesFound": 0,
+              "ambiguitiesLabelled": 0,
+              "setAsideUnanswerable": null,
+              "setAsideSameOutcome": null,
+              "overCap": null
+            }
+          }
+        },
+        {
+          "itemId": "docunderstanding-02-freight-claims",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "requirementPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "sectionCoverage": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "questionPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "ambiguityRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": null,
+            "questionsPerDocument": null,
+            "usdPerDocument": 0.5800567999999999,
+            "inputTokensPerDocument": 73775,
+            "completionTokensPerDocument": 48695,
+            "secondsPerDocument": 277.534,
+            "failures": 1,
+            "readings": 1,
+            "reusedReadings": 0,
+            "questionTally": {
+              "asked": 0,
+              "ambiguitiesFound": 0,
+              "ambiguitiesLabelled": 0,
+              "setAsideUnanswerable": null,
+              "setAsideSameOutcome": null,
+              "overCap": null
+            }
+          }
+        },
+        {
+          "itemId": "docunderstanding-03-community-grants",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "requirementPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "sectionCoverage": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "questionPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "ambiguityRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": null,
+            "questionsPerDocument": null,
+            "usdPerDocument": 0.6800488,
+            "inputTokensPerDocument": 120694,
+            "completionTokensPerDocument": 54049,
+            "secondsPerDocument": 324.444,
+            "failures": 1,
+            "readings": 1,
+            "reusedReadings": 0,
+            "questionTally": {
+              "asked": 0,
+              "ambiguitiesFound": 0,
+              "ambiguitiesLabelled": 0,
+              "setAsideUnanswerable": null,
+              "setAsideSameOutcome": null,
+              "overCap": null
+            }
+          }
+        },
+        {
+          "itemId": "docunderstanding-04-library-lending",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "requirementPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "sectionCoverage": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "questionPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "ambiguityRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": null,
+            "questionsPerDocument": null,
+            "usdPerDocument": 1.0069175,
+            "inputTokensPerDocument": 316865,
+            "completionTokensPerDocument": 72679,
+            "secondsPerDocument": 408.015,
+            "failures": 1,
+            "readings": 1,
+            "reusedReadings": 0,
+            "questionTally": {
+              "asked": 0,
+              "ambiguitiesFound": 0,
+              "ambiguitiesLabelled": 0,
+              "setAsideUnanswerable": null,
+              "setAsideSameOutcome": null,
+              "overCap": null
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
