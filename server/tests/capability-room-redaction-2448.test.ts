@@ -114,10 +114,26 @@ describe("#2448 — the live capability broadcast", () => {
       keptCount: 50,
       leftOutTitles: ["Key in vault.ts"],
     } as never);
+    // #2506 — what a starter run's document reader read, by name and heading.
+    (tracker as unknown as { documentReading: unknown }).documentReading = {
+      documents: [
+        {
+          documentId: "doc-memo-2506",
+          filename: "vault-merger.md",
+          status: "read",
+          sections: ["Vault merger terms"],
+          statements: 2,
+        },
+      ],
+    };
     orch.emitCapability("an-2", tracker);
     expect(events).toHaveLength(1);
     expect(events[0]!.event).toBe("analysis:capability");
-    expect(JSON.stringify(events[0]!.payload)).not.toContain("vault");
+    expect(JSON.stringify(events[0]!.payload)).not.toMatch(/vault/i);
+    expect(
+      (events[0]!.payload as { capability: AnalysisCapability }).capability.documentReading!
+        .documents[0],
+    ).toMatchObject({ documentId: "doc-memo-2506", status: "read", sections: [] });
     expect(
       (events[0]!.payload as { capability: AnalysisCapability }).capability.findingsLeftOut,
     ).toEqual([{ agentKey: "code", producedCount: 52, keptCount: 50, leftOutTitles: [] }]);

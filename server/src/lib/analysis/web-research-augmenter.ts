@@ -455,12 +455,15 @@ export const NO_WEB_SEARCH_PROVIDER_NOTICE =
   "Web research was skipped: no web search provider is configured, so no web sources were searched. To search the web for evidence, set WEB_SEARCH_PROVIDER (tavily, brave or google) and that provider's API key, then turn on web research when you start an analysis; its sources appear under Evidence Review.";
 
 /**
- * #2506 — stated when a run a person started may rest on a document only some
- * of the project can read: its requirements would become search queries sent
- * to an outside service, so web research does not run at all (fail closed).
+ * #2506 — stated when a run a person started may rest on a file or document
+ * only some of the project can read: its requirements would become search
+ * queries sent to an outside service, so web research does not run at all.
+ * The whole run's reads decide, not only the document pass's: a later pass's
+ * findings can seed the list, and each rests on what the passes before it
+ * read (fail closed).
  */
 export const RESTRICTED_READ_WEB_RESEARCH_NOTICE =
-  "Web research was skipped: this analysis read documents that are not shared with the whole project, and requirements drawn from them are never sent to an outside search service. Run the analysis as shared with the project to research the web for evidence.";
+  "Web research was skipped: this analysis read restricted files or documents with the access of the person who ran it, and nothing drawn from them is sent to an outside search service.";
 
 /**
  * #864 — whether a real web search backend is configured. The stub is what

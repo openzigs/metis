@@ -515,6 +515,70 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(JSON.stringify(alice.snapshot.metadata)).toContain("MERGER_2506");
     });
 
+    it("a replaced pass whose read set is unknown leaves the run resting on an unknown read (fail closed)", async () => {
+      const id = await startRun("alice");
+      const path = paths["grounded retrieval"]!;
+      await path.run(prepare(path).orch, id, "alice");
+      const run = await db.analysis.findUniqueOrThrow({ where: { id } });
+      await db.analysis.update({
+        where: { id },
+        data: {
+          metadata: JSON.stringify({
+            ...JSON.parse(run.metadata ?? "{}"),
+            webResearch: { digests: [{ id: "d1", summary: SECRET_TEXT }] },
+          }),
+        },
+      });
+      // Alice's pass recorded no read set (a pass that could not tell).
+      await db.agentResult.updateMany({
+        where: { analysisId: id, agentKey: "document" },
+        data: { readSourceIds: null },
+      });
+
+      // Bob replaces it, reading nothing restricted.
+      const { orch, prompts } = prepare(path);
+      await path.run(orch, id, "bob");
+      expect(prompts()).not.toContain("MERGER_2506");
+      expect(await db.agentResult.count({ where: { analysisId: id } })).toBe(1);
+      expect((await stored(id, "document")).read).toBe(nothing);
+      const kept = JSON.parse(
+        (await db.analysis.findUniqueOrThrow({ where: { id } })).metadata ?? "{}",
+      ) as Record<string, unknown>;
+      expect(kept).toHaveProperty("replacedReadSourceIds", null);
+      expect(await mayRestOnRestrictedRead(id, db)).toBe(true);
+      // The unknown replaced read widens the run's corpus to every document:
+      // Bob, who cannot read the memo, does not see the run as a whole.
+      const bob = await snapshotAs("bob", id, "document");
+      expect(JSON.stringify(bob.snapshot)).not.toContain("MERGER_2506");
+      expect(bob.agent.findings.some((f) => f.title === FINDING_TITLE)).toBe(true);
+      const alice = await snapshotAs("alice", id, "document");
+      expect(JSON.stringify(alice.snapshot.metadata)).toContain("MERGER_2506");
+    });
+
+    it("a supersede write keeps the replaced pass's reads on the run, inside its transaction", async () => {
+      const { persistAgentResult } = await import("../src/lib/analysis/analysis-service.js");
+      const id = await startRun("alice");
+      const path = paths["grounded retrieval"]!;
+      await path.run(prepare(path).orch, id, "alice");
+      expect((await stored(id, "document")).read).toBe(memoOnly);
+      const now = new Date();
+      await persistAgentResult({
+        analysisId: id,
+        agentKey: "document",
+        status: "completed",
+        output: JSON.parse(answer("document")),
+        startedAt: now,
+        completedAt: now,
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        mode: "supersede",
+      });
+      expect(await db.agentResult.count({ where: { analysisId: id } })).toBe(1);
+      const kept = JSON.parse(
+        (await db.analysis.findUniqueOrThrow({ where: { id } })).metadata ?? "{}",
+      ) as Record<string, unknown>;
+      expect(kept.replacedReadSourceIds).toEqual([MEMO]);
+    });
+
     it("the affected-code links of a starter run still name no restricted file, and count nothing left out", async () => {
       const secretFile = "doc-repo-secret-2506";
       await db.document.create({
