@@ -22,6 +22,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-client";
+import { projectsApi } from "@/lib/projects-api";
 import {
   projectSwitcherQuery,
   readStoredActiveProjectId,
@@ -142,14 +143,23 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
   const { data: workspaces = [], isSuccess: workspacesLoaded } = useQuery(workspaceListQuery);
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId) ?? null;
   // #2351 — "This project" is the top bar's, and "Whole workspace" says how
-  // many projects it searches: the top bar's own list of that workspace.
+  // many projects it searches.
   const switcher = useQuery(projectSwitcherQuery(activeWorkspaceId));
   const switcherItems = Array.isArray(switcher.data?.items) ? switcher.data.items : [];
   const activeId = resolveActiveProjectId(readStoredActiveProjectId(), switcherItems);
   const current = projects.find((p) => p.id === activeId) ?? null;
+  // #2424 — counted as a workspace chat searches: the workspace's own projects.
+  // The top bar's list also carries every project in no workspace, which the
+  // count included (17 for a workspace of 2 in a shared stack).
+  const ownProjects = useQuery({
+    queryKey: ["projects", "workspace-own", activeWorkspace?.id ?? null],
+    queryFn: () =>
+      projectsApi.list({ workspaceId: activeWorkspace!.id, onlyWorkspace: true, limit: 1 }),
+    enabled: activeWorkspace !== null,
+  });
   const workspaceCount =
-    activeWorkspace && switcher.isSuccess && typeof switcher.data?.total === "number"
-      ? switcher.data.total
+    activeWorkspace && ownProjects.isSuccess && typeof ownProjects.data?.total === "number"
+      ? ownProjects.data.total
       : null;
 
   // Self-heal a stale persisted scope: once the accessible-projects list has

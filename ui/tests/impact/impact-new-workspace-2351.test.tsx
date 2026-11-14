@@ -83,7 +83,13 @@ describe("impact analysis — Whole workspace (#2351)", () => {
     expect(screen.getByTestId("impact-scope-selector")).toHaveTextContent(
       "Whole workspace: Payments (4 products)",
     );
-    expect(listProjects).toHaveBeenCalledWith({ workspaceId: "w-1", limit: 100 });
+    // #2424 — the workspace's own projects: not those in no workspace, which the
+    // top bar's list carries too (they made it 17, not 2, in a shared stack).
+    expect(listProjects).toHaveBeenCalledWith({
+      workspaceId: "w-1",
+      onlyWorkspace: true,
+      limit: 100,
+    });
   });
 
   it("refuses a workspace bigger than one run takes, and says so, instead of keeping the first 50", async () => {

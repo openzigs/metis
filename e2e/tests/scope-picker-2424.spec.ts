@@ -17,6 +17,13 @@
  *     project Beta <run>   ── repo ──  product Beta <run>
  *   Workspace "Scope private <run>"  (the member is not)
  *     project Gamma <run>  ── repo ──  product Gamma <run>
+ *   No workspace
+ *     project Delta <run>  (open to every user, but in no workspace)
+ *
+ * Delta is readable, so chat and impact list it, but it is not in the shared
+ * workspace: "Whole workspace" must count and send Alpha and Beta only. A
+ * shared CI stack is full of such projects, and before #2424 chat counted
+ * them and impact analysis sent them (17 for a workspace of 2).
  *
  * Each product holds its project's one repo, so it lives in that project's
  * workspace (#1527) and a member of the workspace can read it; projects and
@@ -51,6 +58,7 @@ const NAMES = {
   alpha: `Alpha ${RUN}`,
   beta: `Beta ${RUN}`,
   gamma: `Gamma ${RUN}`,
+  delta: `Delta ${RUN}`,
 } as const;
 
 interface Envelope<T> {
@@ -155,6 +163,18 @@ async function seed(): Promise<Seeded> {
     const alpha = await projectWithProduct(NAMES.alpha, shared);
     const beta = await projectWithProduct(NAMES.beta, shared);
     const gamma = await projectWithProduct(NAMES.gamma, priv);
+    // A project in no workspace: readable by the member, and in no workspace's scope.
+    const delta = await created<{ id: string }>(
+      await admin.post("/api/projects", {
+        data: {
+          name: NAMES.delta,
+          slug: `delta-${RUN}`,
+          description: "E2E #2424: a project in no workspace",
+        },
+      }),
+      "project Delta",
+    );
+    made.projects.push(delta.id);
     return {
       workspace: shared,
       privateWorkspace: priv,
@@ -266,6 +286,8 @@ test.describe
       await expect(picker.thisProject).toHaveText(`This project: ${NAMES.alpha}`);
       await expect(picker.wholeWorkspace).toHaveText(WORKSPACE_LABEL, { timeout: 30_000 });
       await expectOffersReadableOnly(picker);
+      // Readable, so offered to tick, but not counted in the workspace.
+      await expect(picker.item(NAMES.delta)).toBeVisible();
       await shot(page, testInfo, "01-chat-picker-options");
 
       await picker.wholeWorkspace.click();
@@ -285,10 +307,13 @@ test.describe
       await shot(page, testInfo, "02-chat-whole-workspace-sent");
     });
 
-    // What chat's workspace scope searches: the workspace's projects the member reads.
+    // What chat's workspace scope searches, and counts: the workspace's own
+    // projects the member reads, never Delta (in no workspace).
     const member = await signIn(MEMBER.username, MEMBER.password);
     try {
-      const res = await member.get(`/api/projects?workspaceId=${seeded.workspace}&limit=100`);
+      const res = await member.get(
+        `/api/projects?workspaceId=${seeded.workspace}&onlyWorkspace=true&limit=100`,
+      );
       expect(res.status(), await res.text()).toBe(200);
       const { items } = ((await res.json()) as Envelope<{ items: Array<{ id: string }> }>).data;
       expect(sorted(items.map((p) => p.id))).toEqual(
@@ -312,6 +337,7 @@ test.describe
       );
       await expect(picker.wholeWorkspace).toHaveText(WORKSPACE_LABEL, { timeout: 30_000 });
       await expectOffersReadableOnly(picker);
+      await expect(picker.item(NAMES.delta)).toBeVisible();
       await shot(page, testInfo, "03-impact-picker-options");
 
       await picker.wholeWorkspace.click();

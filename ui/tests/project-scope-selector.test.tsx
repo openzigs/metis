@@ -525,6 +525,51 @@ describe("ProjectScopeSelector — workspace scope (#2238)", () => {
   });
 });
 
+// #2424 — in a shared stack the e2e read "Whole workspace: … (17 products)" for
+// a workspace of 2: the count was the top bar's list, which also carries every
+// project in no workspace. A workspace chat searches only the workspace's own.
+describe("ProjectScopeSelector — the workspace's count (#2424)", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    localStorage.setItem("metis.activeWorkspaceId", "w-1");
+    vi.mocked(apiFetch).mockReset();
+    vi.mocked(apiFetch).mockImplementation(async (path: string, opts?: unknown) => {
+      const params = (opts as { params?: Record<string, unknown> } | undefined)?.params ?? {};
+      if (path === "/workspaces") {
+        return [
+          { id: "w-1", name: "Payments", slug: "payments", logoUrl: null, role: "member" },
+        ] as never;
+      }
+      if (path === "/projects") {
+        // The workspace's own two, or those plus three in no workspace.
+        return (
+          params.onlyWorkspace === true
+            ? { items: [{ id: "p-1", name: "Alpha" }], total: 2 }
+            : { items: [{ id: "p-1", name: "Alpha" }], total: 5 }
+        ) as never;
+      }
+      return [{ id: "p-1", name: "Alpha" }] as never;
+    });
+  });
+
+  it("counts the workspace's own projects, as a workspace chat searches them", async () => {
+    const user = userEvent.setup();
+    render(<ProjectScopeSelector value={{ mode: "all", projectIds: [] }} onChange={vi.fn()} />, {
+      wrapper: makeWrapper(),
+    });
+    await waitFor(() => expect(screen.getByTestId("project-scope-selector")).toBeEnabled());
+    await user.click(screen.getByTestId("project-scope-selector"));
+    await waitFor(() =>
+      expect(screen.getByTestId("project-scope-workspace")).toHaveTextContent(
+        "Whole workspace: Payments (2 products)",
+      ),
+    );
+    expect(apiFetch).toHaveBeenCalledWith("/projects", {
+      params: { workspaceId: "w-1", onlyWorkspace: true, limit: 1 },
+    });
+  });
+});
+
 // #2424 — the e2e that picks the same scope in all three consumers found that,
 // in chat, ticking the top bar's own project left it shown unticked and named
 // "This project", and the next tick dropped it: Alpha then Beta sent only Beta.
