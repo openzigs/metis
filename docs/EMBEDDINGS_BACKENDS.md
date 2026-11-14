@@ -837,6 +837,65 @@ Projects needing re-ingest: 1/2 (chunker drift — a reindex does NOT fix this)
   [ADR 0006](decisions/0006-chunker-drift-serve-degraded-but-observable.md) for why
   excluding would be strictly worse than the gaps.
 
+## Contextual chunks — measured, ships `off` (#2234, #2473)
+
+`RAG_CONTEXTUAL_CHUNKS` defaults to `off` because neither mode has shown an
+established retrieval gain. The `model` arm was re-measured in #2473, after the
+#2268 and #2355 changes to its prompt (nonce fence) and its reuse key, and before any
+decision to turn it on.
+
+Measured 2026-11-14 with `eval:doc-retrieval --contextual headings,model
+--context-cache <file>`. The setup was the production hybrid search (dense + BM25 +
+RRF), `Alibaba-NLP/gte-modernbert-base`, and 2048/256 chunking in every arm, so only
+the indexed text differs. Each arm is paired against the `off` control with a
+bootstrap 95% CI and a sign test. The decision rule is the pre-registered one from
+`chunk-sweep.ts`: ship only when the CI excludes zero, the sign test rejects at
+p < 0.05 and the CI's lower bound clears +0.04. Model contexts were written by
+**`anthropic` `claude-sonnet-5-5`**.
+
+| corpus | arm | nDCG@10 | recall@10 | MRR | Δ nDCG@10 | 95% CI | sign p | W/L/T | verdict |
+|---|---|---:|---:|---:|---:|---|---:|---|---|
+| `docretrieval-01-metis-docs` (9 docs, 43 q, 428 chunks) | `off` (control) | 0.807 | 0.953 | 0.760 | | | | | |
+| | `headings` | 0.799 | 0.930 | 0.754 | −0.008 | [−0.077, +0.060] | 1.000 | 9/9/25 | NOT-ESTABLISHED |
+| | `model` | 0.862 | 0.953 | 0.833 | +0.055 | [+0.006, +0.109] | 0.092 | 10/3/30 | NOT-ESTABLISHED |
+| `docretrieval-02-metis-docs-wide` (22 docs, 168 q, 805 chunks) | `off` (control) | 0.811 | 0.970 | 0.758 | | | | | |
+| | `headings` | 0.827 | 0.958 | 0.784 | +0.017 | [−0.014, +0.048] | 0.678 | 28/24/116 | NOT-ESTABLISHED |
+| | `model` | 0.807 | 0.964 | 0.756 | −0.004 | [−0.038, +0.031] | 0.801 | 30/33/105 | NOT-ESTABLISHED |
+
+**Reading.** On the default corpus `model` scored +0.055 nDCG@10, and its CI just
+excludes zero. Its sign test does not reject (10 wins, 3 losses, p = 0.092), and the
+CI's lower bound (+0.006) is far inside the +0.04 floor. The wide corpus holds all 43
+of the default corpus's queries plus 125 more, over the same nine documents and
+thirteen others. There `model` is flat (−0.004, CI [−0.038, +0.031]), and recall@10
+falls slightly, 0.970 to 0.964. So the default corpus's gain does not hold up on the
+better-powered corpus. **`model` is not worth turning on with this evidence, and the
+flag stays `off`.** `headings` reproduces the #2259 post-fix numbers exactly, as does
+the `off` control, so the instrument has not drifted between the two readings.
+
+**Change since the #2259 reading.** That run, also on Sonnet 5.5 but before the
+#2268 prompt changes, gave `model` +0.005 on the default corpus and +0.000 on the wide
+one. The default corpus moved from +0.005 to +0.055 and the wide one did not move.
+
+**Cost**, at Sonnet 5.5 list prices: 805 calls across both corpora, $3.48 in total.
+The default corpus was 428 calls and $1.86: 171.5K uncached input tokens, 7.58M
+cache-read, 144K cache-write and 40.0K output. The wide corpus replayed the 428
+recorded contexts for its nine shared documents and paid only for its 377 new chunks
+($1.62). That is about $4.30 per 1,000 chunks. In every document the first call
+wrote the cache and each later call read exactly that many tokens back, with zero
+failures. 45 of the 805 contexts (5.6%) reached the 300-character
+`CHUNK_CONTEXT_MAX_CHARS` clip. Some replies reached the 120-token output cap, which
+the clip shortens further anyway. The Anthropic provider logs that this model refuses
+thinking `disabled` and sends `between_tools` instead; the capped replies reported 0
+thinking tokens.
+
+**Re-scoring is free.** The recorded `--context-cache` file holds all 805 contexts
+under the production reuse key (prompt wording, provider, model, document, title,
+chunk, reply cap and clip). Replaying the default corpus from it made **0** model
+calls and reproduced the table above to the third decimal. The file is eval output
+and is not committed (ADR 0015: nothing under `eval-results/` is tracked on `main`).
+A change to the prompt, the model, the reply cap or the clip invalidates it by
+design, and a re-run pays again.
+
 ---
 
 ## Runbook — migrating a deployment to a new embedding model (#787)
