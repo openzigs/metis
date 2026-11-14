@@ -12,10 +12,11 @@
  *   - One the synthesis already states ("p95 latency < 300 ms") is one row.
  *   - Elicitation that yields nothing leaves the set exactly as it was.
  *   - Its body is stored as data; the traceability prompt fences it (#1351).
- *   - On a checkpoint-approved set the NFR rows stay drafts and are never
- *     recorded as the checkpoint's decision.
  *   - #2449 — a gate-blocked run's NFRs are listed at the checkpoint, marked,
  *     and promotion writes exactly the approved list: no NFR nobody saw.
+ *   - #2427 — so are the NFRs of a run whose checkpoint was already approved
+ *     (during the run, or before a re-run): never drafts beside the approved
+ *     set, and never one the checkpoint rejected.
  */
 import express from "express";
 import request from "supertest";
@@ -418,7 +419,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       );
     });
 
-    it("keeps NFR rows draft on a checkpoint-approved set and out of the checkpoint's decision", async () => {
+    it("offers a re-run's NFRs at the checkpoint of an approved set, never writing them as unlisted drafts (#2427)", async () => {
       const structured = {
         id: "REQ-1",
         title: "List feeds",
@@ -463,17 +464,84 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         status: "promoted",
       });
 
+      // #2427 — a re-run's NFRs used to be written here as drafts beside the
+      // approved set, never listed at its checkpoint ("awaiting review without
+      // the checkpoint", #2330). They are offered there instead, and the set
+      // the checkpoint approved is left as it was until they are decided.
       const rows = await run(id, "nfrs", reviewedSynthesis);
-      const approved = rows.filter((r) => r.reviewStatus === "approved");
-      expect(approved.map((r) => r.title)).toEqual(["List feeds"]);
-      const nfrRows = elicitedRows(rows);
-      expect(nfrRows.length).toBeGreaterThan(0);
-      expect(nfrRows.every((r) => r.reviewStatus === "draft")).toBe(true);
+      expect(rows.map((r) => [r.title, r.reviewStatus])).toEqual([["List feeds", "approved"]]);
+      expect((await metadataOf(id)).promotionStatus).toBe("blocked");
+      const listed = await listedOf(id);
+      const offered = listed.filter((r) => r.elicitedNfr !== undefined).map((r) => r.title);
+      expect(offered).toEqual([
+        "P95 latency < 300ms",
+        "Encrypt API tokens at rest",
+        "99.9% monthly uptime",
+      ]);
+      const pending = (await approvalsOf(id)).filter((a) => a.status === "pending");
+      expect(pending.map((a) => a.itemId).sort()).toEqual(
+        listed
+          .filter((r) => r.elicitedNfr !== undefined)
+          .map((r) => r.id)
+          .sort(),
+      );
 
-      const meta = JSON.parse(
-        (await db.analysis.findUniqueOrThrow({ where: { id } })).metadata ?? "{}",
-      ) as Record<string, unknown>;
-      expect(meta[CHECKPOINT_APPROVED_IDS_KEY]).toEqual(approved.map((r) => r.id));
+      // Approving them saves them approved, as the checkpoint's decision.
+      await approveAll(id);
+      await promoteApprovedRequirements(id, { asApproved: true });
+      const after = await readBack(id);
+      expect(after.map((r) => r.title)).toEqual(listed.map((r) => r.title));
+      expect(after.every((r) => r.reviewStatus === "approved")).toBe(true);
+      expect((await metadataOf(id))[CHECKPOINT_APPROVED_IDS_KEY]).toEqual(after.map((r) => r.id));
+    });
+
+    // #2427 — the analyst can approve the whole checkpoint while the run is
+    // still going (the approvals exist from extraction on). Synthesis then
+    // found the gate open and wrote the run's elicited NFRs as drafts beside
+    // the approved set: requirements awaiting review that the checkpoint never
+    // listed. They now reopen the checkpoint, as on a gate-blocked run.
+    it("offers the NFRs of a run whose checkpoint was approved while it ran, writing none unlisted (#2427)", async () => {
+      const { id, synthesis } = await gateBlockedAnalysis(["List feeds"]);
+      await approveAll(id);
+
+      expect(await run(id, "nfrs", synthesis)).toEqual([]);
+      const meta = await metadataOf(id);
+      expect(meta.promotionStatus).toBe("blocked");
+      const listed = await listedOf(id);
+      expect(listed.map((r) => [r.title, r.elicitedNfr !== undefined])).toEqual([
+        ["List feeds", false],
+        ["P95 latency < 300ms", true],
+        ["Encrypt API tokens at rest", true],
+        ["99.9% monthly uptime", true],
+      ]);
+      expect(meta.promotionBlocked).toMatchObject({ awaitingRequirementCount: 4 });
+      expect((await approvalsOf(id)).filter((a) => a.status === "pending")).toHaveLength(3);
+
+      await approveAll(id);
+      await promoteApprovedRequirements(id, { asApproved: true });
+      const rows = await readBack(id);
+      expect(rows.map((r) => r.title)).toEqual(listed.map((r) => r.title));
+      expect(rows.every((r) => r.reviewStatus === "approved")).toBe(true);
+    });
+
+    it("never writes an NFR the checkpoint rejected when the run runs again with the gate open (#2427)", async () => {
+      const { id, synthesis } = await gateBlockedAnalysis(["List feeds"]);
+      await run(id, "nfrs", synthesis);
+      const uptime = (await listedOf(id)).find((r) => r.title === "99.9% monthly uptime")!;
+      await approveAll(id);
+      await db.approvalRequest.updateMany({
+        where: { analysisId: id, itemId: uptime.id },
+        data: { status: "rejected" },
+      });
+      await promoteApprovedRequirements(id, { asApproved: true });
+      const kept = ["List feeds", "P95 latency < 300ms", "Encrypt API tokens at rest"];
+      expect((await readBack(id)).map((r) => r.title)).toEqual(kept);
+
+      // The same NFRs again: every one is listed, so nothing is offered and the
+      // gate is open. The rejected one must not come back as a draft.
+      const rows = await run(id, "nfrs", synthesis);
+      expect((await metadataOf(id)).promotionStatus).toBe("allowed");
+      expect(rows.map((r) => [r.title, r.reviewStatus])).toEqual(kept.map((t) => [t, "approved"]));
     });
 
     // #1705 — a run whose promotion the approval gate blocked returned before
