@@ -27,17 +27,23 @@ vi.mock("react-diff-viewer-continued", () => {
     default: ({
       leftTitle,
       rightTitle,
+      oldValue,
       newValue,
+      styles,
     }: {
       leftTitle: string;
       rightTitle: string;
+      oldValue?: string;
       newValue?: string;
+      styles?: unknown;
     }) => (
       <>
         <div data-testid="diff">
           {leftTitle} vs {rightTitle}
         </div>
+        <pre data-testid="diff-old">{oldValue}</pre>
         <pre data-testid="diff-new">{newValue}</pre>
+        <pre data-testid="diff-styles">{JSON.stringify(styles ?? null)}</pre>
       </>
     ),
   };
@@ -180,7 +186,7 @@ describe("RequirementHistoryTab", () => {
     fireEvent.click(screen.getByRole("button", { name: /Version 1/ }));
 
     expect(await screen.findByTestId("diff-new")).toHaveTextContent(
-      'acceptanceCriteria: ["Edited criterion"]',
+      "Acceptance criteria: • Edited criterion",
     );
   });
 
@@ -198,8 +204,8 @@ describe("RequirementHistoryTab", () => {
     fireEvent.click(screen.getByRole("button", { name: /Version 1/ }));
 
     const newer = await screen.findByTestId("diff-new");
-    expect(newer).toHaveTextContent("kind: non-functional");
-    expect(newer).toHaveTextContent("nfrCategory: security");
+    expect(newer).toHaveTextContent("Kind: non-functional");
+    expect(newer).toHaveTextContent("Non-functional category: security");
   });
 
   it("#1162 — the compared text has no review status line, which is not versioned", async () => {
@@ -212,7 +218,7 @@ describe("RequirementHistoryTab", () => {
     fireEvent.click(screen.getByRole("button", { name: /Version 1/ }));
 
     const compared = await screen.findByTestId("diff-new");
-    expect(compared).toHaveTextContent("title: T2");
+    expect(compared).toHaveTextContent("Title: T2");
     expect(compared).not.toHaveTextContent("reviewStatus");
   });
 
@@ -263,6 +269,67 @@ describe("RequirementHistoryTab", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
     await waitFor(() => expect(list).toHaveBeenLastCalledWith("req-1", { page: 2, pageSize: 20 }));
+  });
+
+  it("#2220 — after a single edit, the version before it can be selected and compared", async () => {
+    list.mockResolvedValue({
+      ...page([
+        entry(1, {
+          changedFields: { acceptanceCriteria: { from: '["Old"]', to: '["New"]' } },
+          snapshot: { title: "T", acceptanceCriteria: '["New"]', labels: '["finding:cmwb1"]' },
+        }),
+      ]),
+      original: {
+        version: 0,
+        snapshot: { title: "T", acceptanceCriteria: '["Old"]', labels: '["finding:cmwb1"]' },
+        source: "reversed",
+      },
+    });
+    render(<RequirementHistoryTab requirementId="req-1" />);
+    const v1 = await screen.findByRole("button", { name: /Version 1/ });
+    expect(v1).toHaveTextContent("Changed: Acceptance criteria");
+
+    fireEvent.click(v1);
+    fireEvent.click(screen.getByTestId("history-original-version"));
+    expect(await screen.findByTestId("diff")).toHaveTextContent("Version 0 vs Version 1");
+    expect(screen.getByTestId("diff-old")).toHaveTextContent("Acceptance criteria: • Old");
+    expect(screen.getByTestId("diff-new")).toHaveTextContent("Acceptance criteria: • New");
+    // The hidden traceability labels are no reader's business.
+    expect(screen.getByTestId("diff-new")).not.toHaveTextContent("finding:");
+    // The viewer fits its card instead of a fixed 1000 px minimum (clipped column).
+    expect(JSON.parse(screen.getByTestId("diff-styles").textContent!)).toEqual({
+      diffContainer: { minWidth: "unset" },
+    });
+  });
+
+  it("#2220 — offers no earlier version when no edit was recorded, or it is listed already", async () => {
+    list.mockResolvedValueOnce({
+      ...page([entry(1)]),
+      original: { version: 1, snapshot: { title: "T" }, source: "current" },
+    });
+    const { unmount } = render(<RequirementHistoryTab requirementId="req-1" />);
+    await screen.findByRole("button", { name: /Version 1/ });
+    expect(screen.queryByTestId("history-original-version")).toBeNull();
+    unmount();
+
+    // Only the source decides here: version 0 is not listed, but with no edit
+    // recorded the "original" is the current text, not an earlier version.
+    list.mockResolvedValueOnce({
+      ...page([entry(1)]),
+      original: { version: 0, snapshot: { title: "T" }, source: "current" },
+    });
+    const second = render(<RequirementHistoryTab requirementId="req-1" />);
+    await screen.findByRole("button", { name: /Version 1/ });
+    expect(screen.queryByTestId("history-original-version")).toBeNull();
+    second.unmount();
+
+    list.mockResolvedValueOnce({
+      ...page([entry(2), entry(1)]),
+      original: { version: 1, snapshot: { title: "T" }, source: "reversed" },
+    });
+    render(<RequirementHistoryTab requirementId="req-1" />);
+    await screen.findByRole("button", { name: /Version 2/ });
+    expect(screen.queryByTestId("history-original-version")).toBeNull();
   });
 
   it("toggling a selected version off removes it", async () => {

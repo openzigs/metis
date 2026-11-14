@@ -377,7 +377,11 @@ function requirementsReview(base: string, f: PipelineFacts): PipelineStage {
   if (f.awaitingReview > 0) {
     waiting.push({
       status: `${plural(f.awaitingReview, "requirement")} awaiting review`,
-      action: { label: `Review ${plural(f.awaitingReview, "requirement")}`, href: run },
+      // #2220 — onto the Requirements tab, where they are listed, not the Summary.
+      action: {
+        label: `Review ${plural(f.awaitingReview, "requirement")}`,
+        href: `${run}&tab=requirements`,
+      },
     });
   }
   if (typeof f.pendingApprovals === "number" && f.pendingApprovals > 0) {

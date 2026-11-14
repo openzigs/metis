@@ -144,7 +144,9 @@ vi.mock("@/lib/socket-client", () => ({
   useSocket: vi.fn().mockReturnValue(null),
 }));
 
-vi.mock("@/lib/notifications", () => ({
+vi.mock("@/lib/notifications", async () => ({
+  // #2220 — the drawer's label and time helpers are the real ones.
+  ...(await vi.importActual<typeof import("@/lib/notifications")>("@/lib/notifications")),
   mentionEventToNotification: vi.fn(),
   slaEventToNotification: vi.fn(),
   getNotificationStore: vi.fn(() => ({

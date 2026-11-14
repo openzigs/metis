@@ -211,7 +211,7 @@ export function DiscussionMessageItem({
           ) : message.isError ? (
             <span className="whitespace-pre-wrap">{`⚠ ${message.body}`}</span>
           ) : message.body ? (
-            <ChatMarkdown content={message.body} streaming={message.streaming} />
+            <ChatMarkdown content={message.body} streaming={message.streaming} mentions />
           ) : (
             <span className="whitespace-pre-wrap text-muted-foreground">
               {message.streaming ? "…" : ""}

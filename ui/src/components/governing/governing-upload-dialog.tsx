@@ -36,6 +36,47 @@ interface Props {
   onClose: () => void;
 }
 
+/**
+ * #2220 — what the form still needs before Upload is enabled, in form order.
+ * Upload stayed disabled with no hint, and nothing marked the revision label
+ * and effective date as required.
+ */
+export function missingUploadFields(form: {
+  file: File | null;
+  fileError: string | null;
+  title: string;
+  revisionLabel: string;
+  effectiveDate: string;
+  isRevision: boolean;
+}): string[] {
+  const missing: string[] = [];
+  if (form.file === null || form.fileError !== null) missing.push("a file");
+  if (!form.isRevision && form.title.trim() === "") missing.push("a title");
+  if (form.revisionLabel.trim() === "") missing.push("a revision label");
+  if (form.effectiveDate === "") missing.push("an effective date");
+  return missing;
+}
+
+/** "a, b and c". */
+function listText(items: readonly string[]): string {
+  return items.length <= 1
+    ? (items[0] ?? "")
+    : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+/**
+ * The marker on a required field's label. Hidden from assistive technology:
+ * the input's `required` already says so, and the label stays the field's name.
+ */
+function Required() {
+  return (
+    <span aria-hidden="true" className="text-muted-foreground">
+      {" "}
+      (required)
+    </span>
+  );
+}
+
 export function GoverningUploadDialog({ workspaceId, target, onClose }: Props) {
   return (
     <Dialog open={target !== null} onOpenChange={(open) => (open ? undefined : onClose())}>
@@ -94,12 +135,15 @@ function UploadForm({
   });
 
   const isRevision = target.kind === "revision";
-  const ready =
-    file !== null &&
-    fileError === null &&
-    revisionLabel.trim() !== "" &&
-    effectiveDate !== "" &&
-    (isRevision || title.trim() !== "");
+  const missing = missingUploadFields({
+    file,
+    fileError,
+    title,
+    revisionLabel,
+    effectiveDate,
+    isRevision,
+  });
+  const ready = missing.length === 0;
 
   function submit(e: FormEvent) {
     e.preventDefault();
@@ -119,7 +163,10 @@ function UploadForm({
       </DialogHeader>
 
       <div className="space-y-2">
-        <Label htmlFor="governing-file">File</Label>
+        <Label htmlFor="governing-file">
+          File
+          <Required />
+        </Label>
         <Input
           id="governing-file"
           type="file"
@@ -142,7 +189,10 @@ function UploadForm({
       {isRevision ? null : (
         <>
           <div className="space-y-2">
-            <Label htmlFor="governing-title">Title</Label>
+            <Label htmlFor="governing-title">
+              Title
+              <Required />
+            </Label>
             <Input
               id="governing-title"
               required
@@ -166,7 +216,10 @@ function UploadForm({
 
       <div className="flex gap-3">
         <div className="flex-1 space-y-2">
-          <Label htmlFor="governing-revision-label">Revision label</Label>
+          <Label htmlFor="governing-revision-label">
+            Revision label
+            <Required />
+          </Label>
           <Input
             id="governing-revision-label"
             required
@@ -177,7 +230,10 @@ function UploadForm({
           />
         </div>
         <div className="flex-1 space-y-2">
-          <Label htmlFor="governing-effective-date">Effective date</Label>
+          <Label htmlFor="governing-effective-date">
+            Effective date
+            <Required />
+          </Label>
           <Input
             id="governing-effective-date"
             type="date"
@@ -194,11 +250,25 @@ function UploadForm({
         </p>
       ) : null}
 
+      {ready ? null : (
+        <p
+          id="governing-upload-missing"
+          className="text-xs text-muted-foreground"
+          data-testid="governing-upload-missing"
+        >
+          To upload, add {listText(missing)}.
+        </p>
+      )}
+
       <DialogFooter>
         <Button type="button" variant="outline" onClick={onClose}>
           Cancel
         </Button>
-        <Button type="submit" disabled={!ready || upload.isPending}>
+        <Button
+          type="submit"
+          disabled={!ready || upload.isPending}
+          aria-describedby={ready ? undefined : "governing-upload-missing"}
+        >
           {upload.isPending ? "Uploading…" : "Upload"}
         </Button>
       </DialogFooter>

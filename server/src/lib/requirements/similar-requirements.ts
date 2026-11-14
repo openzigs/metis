@@ -88,6 +88,24 @@ const LABEL_ORDER: Record<SimilarRequirementLabel, number> = {
   related: 2,
 };
 
+/** A UUID: the id an elicited requirement gets (`assumption-risk-elicitor.ts`), not a key. */
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * #2220 — the key a similar requirement is listed under. The structured id it
+ * was promoted from is `REQ-003` for an extracted requirement but a UUID for an
+ * elicited one, which the list printed before the title. A UUID is no key: the
+ * imported item's id, or none.
+ */
+export function similarRequirementKey(row: {
+  promotedStructuredId: string | null;
+  externalId: string | null;
+}): string | null {
+  const structured = row.promotedStructuredId?.trim();
+  if (structured && !UUID.test(structured)) return structured;
+  return row.externalId ?? null;
+}
+
 function freshnessOf(row: object): SimilarCodeLinkFreshness {
   // #1830 adds `freshness` to the mapping row; read it when the column exists.
   const value = (row as { freshness?: unknown }).freshness;
@@ -360,7 +378,7 @@ async function hydrate(
       {
         requirementId: r.id,
         analysisId: r.analysisId,
-        key: r.promotedStructuredId ?? r.externalId ?? null,
+        key: similarRequirementKey(r),
         title: r.title,
         status: resolveRequirementReviewStatus(r.reviewStatus, parseRequirementLabels(r.labels)),
         score: Math.round(c.score * 1000) / 1000,

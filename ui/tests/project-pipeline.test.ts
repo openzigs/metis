@@ -341,13 +341,13 @@ describe("review stage", () => {
     expect(s.action.href).toBe(`${B}/requirements`);
   });
 
-  it("names the number awaiting review and deep-links to that analysis", () => {
+  it("names the number awaiting review and deep-links to its Requirements tab (#2220)", () => {
     const s = stage(facts({ analyses: [completed], awaitingReview: 12 }), "review");
     expect(s.state).toBe("attention");
     expect(s.status).toBe("12 requirements awaiting review");
     expect(s.action).toEqual({
       label: "Review 12 requirements",
-      href: `${B}/analysis?analysisId=a1`,
+      href: `${B}/analysis?analysisId=a1&tab=requirements`,
     });
   });
 
@@ -367,7 +367,7 @@ describe("review stage", () => {
       }),
       "review",
     );
-    expect(s.action.href).toBe(`${B}/analysis?analysisId=a1`);
+    expect(s.action.href).toBe(`${B}/analysis?analysisId=a1&tab=requirements`);
   });
 
   it("is done when nothing is awaiting review", () => {
@@ -445,7 +445,7 @@ describe("review stage", () => {
       "review",
     );
     expect(s.status).toBe("2 requirements awaiting review · 1 checkpoint pending");
-    expect(s.action.href).toBe(`${B}/analysis?analysisId=a1`);
+    expect(s.action.href).toBe(`${B}/analysis?analysisId=a1&tab=requirements`);
   });
 
   it("says it is checking, not done, while the approvals are unknown", () => {
@@ -605,7 +605,7 @@ describe("quarantined documents (#66)", () => {
     expect(s.status).toBe(
       "2 requirements awaiting review · at least 1 document awaiting review in quarantine",
     );
-    expect(s.action.href).toBe(`${B}/analysis?analysisId=a1`);
+    expect(s.action.href).toBe(`${B}/analysis?analysisId=a1&tab=requirements`);
     expect(s.secondaryAction).toEqual({
       label: "Review 1 quarantined document",
       href: `${B}/settings#quarantine`,

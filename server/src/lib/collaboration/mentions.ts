@@ -10,7 +10,7 @@
  * Fan-out is fire-and-forget (non-blocking). Failures are logged but never
  * propagate to the caller.
  */
-import { userRoom, type CommentMentionEvent } from "@metis/shared";
+import { findMentions, userRoom, type CommentMentionEvent } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { createChildLogger } from "../logger.js";
 import { getSocketServer } from "../socket/registry.js";
@@ -20,18 +20,17 @@ import { isUniqueViolation } from "../db/prisma-errors.js";
 
 const log = createChildLogger("collaboration:mentions");
 
-/** Regex to extract every @username token from free text. */
-const MENTION_RE = /@([A-Za-z0-9_.-]+)/g;
-
 /**
  * Parse all `@username` tokens from a comment body.
  * Returns a deduplicated list of lowercase usernames.
+ *
+ * #2220 — the handles are the ones the UI shows as mention chips
+ * (`findMentions` in `@metis/shared`): "Thanks @priya." notifies `priya`, not a
+ * nonexistent `priya.`, and `ana@example.com` mentions nobody.
  */
 export function parseMentions(body: string): string[] {
   const usernames = new Set<string>();
-  for (const m of body.matchAll(MENTION_RE)) {
-    if (m[1]) usernames.add(m[1].toLowerCase());
-  }
+  for (const { handle } of findMentions(body)) usernames.add(handle.toLowerCase());
   return [...usernames];
 }
 

@@ -23,9 +23,11 @@ import type {
 } from "@metis/shared";
 import {
   discussionMentionEventToNotification,
+  formatNotificationTime,
   getNotificationStore,
   jobEventToNotification,
   mentionEventToNotification,
+  notificationKindLabel,
   reviewEventToNotification,
   slaEventToNotification,
   type MentionEventPayload,
@@ -201,9 +203,11 @@ export function NotificationsDrawer() {
                   data-testid={`notification-${n.id}`}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <strong className="text-xs uppercase">{n.source ?? n.level}</strong>
-                    <time className="text-[10px] text-muted-foreground">
-                      {new Date(n.createdAt).toLocaleTimeString()}
+                    <strong className="text-xs" data-testid="notification-kind">
+                      {notificationKindLabel(n.source, n.level)}
+                    </strong>
+                    <time dateTime={n.createdAt} className="text-[10px] text-muted-foreground">
+                      {formatNotificationTime(n.createdAt)}
                     </time>
                   </div>
                   <p className="mt-1 font-medium">{n.title}</p>

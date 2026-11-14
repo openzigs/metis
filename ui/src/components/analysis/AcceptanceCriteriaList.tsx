@@ -1,3 +1,5 @@
+import { renderInlineCode } from "@/lib/inline-code-text";
+
 /**
  * Issue #1096 — a requirement's acceptance criteria, as derived by the analysis.
  *
@@ -27,7 +29,8 @@ export function AcceptanceCriteriaList({
         <ul className="mt-1 list-disc space-y-0.5 pl-5 text-sm text-foreground">
           {criteria.map((c, i) => (
             <li key={`${i}-${c.slice(0, 24)}`}>
-              {c}
+              {/* #2220 — `backticked` identifiers render as code, not raw backticks. */}
+              {renderInlineCode(c)}
               {shared?.has(c.trim()) ? (
                 <span className="ml-1 text-xs text-muted-foreground">(shared)</span>
               ) : null}

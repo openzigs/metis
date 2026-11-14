@@ -47,6 +47,7 @@ import {
   type GoverningFindingRevision,
 } from "@/lib/governing-findings-api";
 import { useAppMutation } from "@/lib/use-app-mutation";
+import { ControlId } from "@/components/governing/control-id";
 
 /** How often the findings are read again while a BA answer's re-check is running (#2017). */
 export const GOVERNING_REFRESH_POLL_MS = 3000;
@@ -544,7 +545,7 @@ function GoverningFindingItem({
             Stale
           </Badge>
         ) : null}
-        <span className="font-mono text-xs text-foreground">{finding.controlId}</span>
+        <ControlId controlId={finding.controlId} className="text-xs text-foreground" />
         {finding.clauseRef ? (
           <span className="text-xs text-muted-foreground">{finding.clauseRef}</span>
         ) : null}

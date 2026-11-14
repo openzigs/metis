@@ -132,6 +132,8 @@ export function TraceabilityMatrix({
           No requirements to trace yet. Complete an analysis to populate the matrix.
         </p>
       ) : (
+        // #2220 — file paths and test names break anywhere (`break-all`): an
+        // unbroken path widened its column until the Tests column was cut off.
         <Card className="overflow-x-auto p-0">
           <table className="w-full min-w-[720px] border-collapse text-left text-xs">
             <thead>
@@ -199,7 +201,7 @@ export function TraceabilityMatrix({
                         {row.codeLocations.map((loc) => (
                           <li
                             key={`${loc.source}:${loc.filePath}:${loc.startLine}`}
-                            className="font-mono text-foreground"
+                            className="break-all font-mono text-foreground"
                             title={loc.source}
                           >
                             {codeLocationLabel(loc)}
@@ -226,8 +228,8 @@ export function TraceabilityMatrix({
                               className="text-foreground"
                               title={relation && meaning ? `${relation}: ${meaning}` : undefined}
                             >
-                              {name ? <span className="font-mono">{name}</span> : null}
-                              <span className="font-mono text-muted-foreground">
+                              {name ? <span className="break-all font-mono">{name}</span> : null}
+                              <span className="break-all font-mono text-muted-foreground">
                                 {name ? ` in ${t.filePath}` : t.filePath}
                               </span>
                               {relation ? (

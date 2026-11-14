@@ -54,6 +54,59 @@ const WARN_TYPES: ReadonlySet<string> = new Set([
   "job_awaiting_review",
 ]);
 
+/**
+ * #2220 — what each notification type is called in the drawer. Its header
+ * printed the raw type upper-cased ("REVIEW_APPROVED").
+ */
+const KIND_LABELS: Readonly<Record<string, string>> = {
+  mention: "Mention",
+  discussion_mention: "Discussion mention",
+  sla_deadline: "SLA deadline",
+  review_request: "Review requested",
+  review_requested: "Review requested",
+  review_decided: "Review decided",
+  review_approved: "Review approved",
+  review_rejected: "Review rejected",
+  review_item_changed: "Approved requirement edited",
+  job_completed: "Job finished",
+  job_failed: "Job failed",
+  job_awaiting_review: "Waiting for review",
+  chat_identity_bound: "Chat account linked",
+};
+
+/** The drawer's name for a notification's type: a known label, else the words of the type. */
+export function notificationKindLabel(
+  source: string | undefined,
+  level: NotificationLevel,
+): string {
+  const kind = source?.trim();
+  if (!kind) return level === "error" ? "Error" : level === "warn" ? "Warning" : "Notice";
+  const known = KIND_LABELS[kind];
+  if (known) return known;
+  const words = kind
+    .replace(/[_:-]+/g, " ")
+    .trim()
+    .toLowerCase();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * #2220 — when a notification arrived, with its date: the drawer showed only a
+ * time, so yesterday's item read as today's. Today's items say "Today".
+ */
+export function formatNotificationTime(iso: string, now: Date = new Date()): string {
+  const at = new Date(iso);
+  if (Number.isNaN(at.getTime())) return "";
+  const time = at.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  if (at.toDateString() === now.toDateString()) return `Today, ${time}`;
+  const date = at.toLocaleDateString(undefined, {
+    day: "numeric",
+    month: "short",
+    ...(at.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }),
+  });
+  return `${date}, ${time}`;
+}
+
 export class NotificationStore {
   private items: Notification[] = [];
   private listeners = new Set<Listener>();

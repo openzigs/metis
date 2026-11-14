@@ -1114,7 +1114,8 @@ export default function AnalysisPage(): React.ReactElement {
       ) : null}
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
-        <Card className="md:col-span-1 p-4">
+        {/* #2220 — as tall as its list, not stretched to the run's full height. */}
+        <Card className="md:col-span-1 p-4 md:self-start" data-testid="analysis-runs-card">
           <h3 className="mb-3 text-base font-semibold">Change requests</h3>
           {list.isLoading ? <p className="text-sm">Loading…</p> : null}
           {list.data?.items?.length === 0 ? (
@@ -1468,9 +1469,15 @@ export default function AnalysisPage(): React.ReactElement {
                               req.id === requestedRequirementId ? "ring-2 ring-primary" : ""
                             }`}
                           >
-                            <div className="flex items-start justify-between gap-2">
-                              <div>
-                                <div className="flex items-center gap-2">
+                            {/* #2220 — the actions wrap below the title when the row
+                            is narrow; they used to squeeze the title to one word a
+                            line and clip "Check across portfolio". */}
+                            <div
+                              className="flex flex-wrap items-start justify-between gap-2"
+                              data-testid={`requirement-card-header-${req.id}`}
+                            >
+                              <div className="min-w-[16rem] flex-1">
+                                <div className="flex flex-wrap items-center gap-2">
                                   <input
                                     type="checkbox"
                                     className="h-4 w-4"
@@ -1525,7 +1532,7 @@ export default function AnalysisPage(): React.ReactElement {
                                   />
                                 ) : null}
                               </div>
-                              <div className="flex gap-1">
+                              <div className="flex flex-wrap gap-1">
                                 <HoverHint hint={requirementWriteHint}>
                                   <Button
                                     size="sm"

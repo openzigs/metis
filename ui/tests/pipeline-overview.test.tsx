@@ -223,7 +223,7 @@ describe("checklist steps", () => {
     );
     expect(screen.getByTestId("pipeline-action-review")).toHaveAttribute(
       "href",
-      "/projects/p1/analysis?analysisId=a1",
+      "/projects/p1/analysis?analysisId=a1&tab=requirements",
     );
     expect(getAnalysis).toHaveBeenCalledWith("a1");
     expect(screen.getByTestId("pipeline-status-review")).toHaveTextContent(

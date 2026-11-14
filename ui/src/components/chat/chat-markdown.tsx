@@ -22,13 +22,16 @@ import DOMPurify from "dompurify";
 import { useTheme } from "next-themes";
 import { loadMermaid } from "@/lib/mermaid";
 import { useKatexCss } from "@/lib/katex-css";
+import { remarkMentions } from "@/lib/mention-text";
 
 interface ChatMarkdownProps {
   content: string;
   streaming?: boolean;
+  /** #2220 — mark `@handle` mentions (discussion messages) as mention chips. */
+  mentions?: boolean;
 }
 
-export function ChatMarkdown({ content, streaming = false }: ChatMarkdownProps) {
+export function ChatMarkdown({ content, streaming = false, mentions = false }: ChatMarkdownProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [mermaidSvgs, setMermaidSvgs] = useState<Map<string, string>>(new Map());
 
@@ -109,7 +112,7 @@ export function ChatMarkdown({ content, streaming = false }: ChatMarkdownProps) 
       className="prose prose-sm dark:prose-invert max-w-none prose-headings:text-foreground prose-p:text-foreground prose-li:text-foreground prose-strong:text-foreground prose-pre:bg-muted prose-pre:text-foreground prose-code:before:content-none prose-code:after:content-none"
     >
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={mentions ? [remarkGfm, remarkMath, remarkMentions] : [remarkGfm, remarkMath]}
         rehypePlugins={[rehypeKatex]}
         components={{
           code: ({ node: _nc, className, children, ...props }) => {
