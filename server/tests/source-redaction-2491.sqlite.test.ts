@@ -143,6 +143,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       for (const [id, aclSubjects] of [
         ["d-open", "[]"],
         ["d-secret", JSON.stringify([{ kind: "user", value: "alice" }])],
+        // Named only by the coverage record: no row cites it.
+        ["d-coverage", JSON.stringify([{ kind: "user", value: "alice" }])],
       ] as const) {
         await db.document.create({
           data: {
@@ -177,7 +179,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             capability: {
               reasons: [],
               documentReading: {
-                documents: [coverage("d-open", "Checkout"), coverage("d-secret", "3 Payroll")],
+                documents: [
+                  coverage("d-open", "Checkout"),
+                  coverage("d-secret", "3 Payroll"),
+                  coverage("d-coverage", "4 Bonuses"),
+                ],
               },
             },
           },
@@ -511,6 +517,23 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     describe("stakeholders", () => {
+      beforeAll(async () => {
+        await db.stakeholder.create({ data: { id: "sh-2491", projectId: P, name: "Finance" } });
+      });
+
+      it("refuses Bob attributing or detaching a stakeholder on a restricted requirement", async () => {
+        const path = `/api/projects/${P}/requirements/req-secret/stakeholders`;
+        expect((await post("bob", path, { stakeholderId: "sh-2491" })).status).toBe(404);
+        const del = (who: Who) =>
+          request(app()).delete(`${path}/sh-2491`).set("Authorization", bearer(who));
+        expect((await del("bob")).status).toBe(404);
+        expect((await post("alice", path, { stakeholderId: "sh-2491" })).status).toBe(204);
+        expect(
+          await db.requirementStakeholder.count({ where: { requirementId: "req-secret" } }),
+        ).toBe(1);
+        expect((await del("alice")).status).toBe(204);
+      });
+
       it("a restricted requirement's stakeholders answer Bob as an unknown requirement", async () => {
         const path = `/api/projects/${P}/requirements/req-secret/stakeholders`;
         expect((await get("bob", path)).status).toBe(404);
@@ -586,6 +609,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const alice = await docs("alice");
         expect(alice.find((d) => d.documentId === "d-secret")?.sections[0]?.heading).toBe(
           "3 Payroll",
+        );
+        // A document only the coverage record names is decided too: Alice may see
+        // it, Bob may not (were it never loaded, both would be refused).
+        expect(alice.find((d) => d.documentId === "d-coverage")?.filename).toBe("d-coverage.md");
+        expect(bob.find((d) => d.documentId === "d-coverage")?.filename).toBe(
+          RESTRICTED_SOURCE_TITLE,
         );
       });
     });

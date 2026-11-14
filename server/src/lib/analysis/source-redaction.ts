@@ -21,7 +21,8 @@
  *     the run as a whole, so it is shown only to a reader who can see
  *     everything the run could (fail closed). For a `shared` run that is its
  *     corpus: every document any of its rows records, and every document it
- *     was asked to read (`metadata.documentIds`, #2491), checked against the
+ *     was explicitly asked to read (`metadata.documentIds`, #2491; empty on an
+ *     all-documents run, whose retrievals #2448 records), checked against the
  *     access lists as they are NOW. It read them as the shared audience
  *     (#2248), so all were open then; one restricted since hides the run-wide
  *     rows (and an agent's narrative) from a reader who cannot see it. A run
@@ -294,9 +295,11 @@ async function loadRunCorpus(
     for (const r of requirements) add(r.analysisId, r.sourceIds);
     for (const c of crossDoc) add(c.analysisId, c.sourceIds);
 
-    // #2491 — the documents the run was asked to read (`metadata.documentIds`)
-    // are its corpus too, cited or not: one retrieved but never cited still
-    // shaped the run-wide text.
+    // #2491 — the documents a run was explicitly asked to read
+    // (`metadata.documentIds`) are its corpus too, cited or not: one retrieved
+    // but never cited still shaped the run-wide text. An all-documents run
+    // stores an empty list and searched the whole project; which documents it
+    // retrieved is not recorded until #2448, so only its cited ones count.
     const inputs = await db.analysis.findMany({
       where: { id: { in: ids } },
       select: { id: true, metadata: true },
