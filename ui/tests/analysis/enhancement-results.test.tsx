@@ -161,6 +161,9 @@ describe("EnhancementResults", () => {
     await waitFor(() =>
       expect(analysisApi.getClarification).toHaveBeenCalledWith("proj-1", "ana-1"),
     );
+    // #2509 — started by the user's click, never on mount.
+    expect(analysisApi.clarify).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByTestId("clarify-ask"));
     await waitFor(() => expect(analysisApi.clarify).toHaveBeenCalledWith("proj-1", "ana-1", {}));
     expect(await screen.findByText("How long must logs be retained?")).toBeInTheDocument();
   });
@@ -381,6 +384,7 @@ describe("EnhancementResults", () => {
     });
 
     expect(await screen.findByText("Question 1.1: please clarify field 1?")).toBeInTheDocument();
+    fireEvent.click(await screen.findByTestId("clarify-ask"));
     await waitFor(() => expect(analysisApi.clarify).toHaveBeenCalledWith("proj-1", "ana-1", {}));
     // No Submit control and no answer inputs exist…
     expect(screen.queryByRole("button", { name: "Submit Answers" })).not.toBeInTheDocument();
@@ -413,6 +417,7 @@ describe("EnhancementResults", () => {
       enhancement: { enableWebResearch: false, enableClarification: true },
       structuredRequirements: buildStructuredRequirements(),
     });
+    fireEvent.click(await screen.findByTestId("clarify-ask"));
 
     // The interactive dialog (real server question) is what gets rendered.
     const questionLabel = await screen.findByText("How long must logs be retained?");

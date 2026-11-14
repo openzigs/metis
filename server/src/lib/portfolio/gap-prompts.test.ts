@@ -3,6 +3,7 @@
  * keep only what the model may claim.
  */
 import { describe, expect, it } from "vitest";
+import { DEFAULT_RAG_CHUNK_SIZE } from "@metis/shared";
 import {
   HIT_TEXT_CHARS,
   buildDecomposePrompt,
@@ -70,6 +71,19 @@ describe("gap prompts fence untrusted text", () => {
     for (const fence of ["<<<END CRITERIA>>>", "<<<END REPOSITORY>>>", "<<<END CODE>>>"]) {
       expect(count(prompt, fence)).toBe(1);
     }
+  });
+
+  it("#2509 — shows a whole default-size chunk, so a field near its end is not cut off", () => {
+    const chunk = `${"x".repeat(1_514)}ReadingTime int json:"reading_time"${"y".repeat(400)}`;
+    expect(chunk.length).toBeLessThanOrEqual(DEFAULT_RAG_CHUNK_SIZE);
+    const prompt = buildRepoVerdictPrompt({
+      statement: "s",
+      criteria: ["c"],
+      repoLabel: "r",
+      hits: [{ path: "internal/model/entry.go", text: chunk }],
+    });
+    expect(prompt).toContain('json:"reading_time"');
+    expect(prompt).toContain("y".repeat(400));
   });
 
   it("caps each excerpt's text", () => {

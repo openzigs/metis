@@ -18,22 +18,25 @@
  * it lists cannot get a link from promotion.
  */
 import type { SynthesizedRequirement } from "@metis/shared";
-import { citationTargets } from "../traceability/seed-code-links-from-findings.js";
+import { groundingCitationTargets } from "../traceability/seed-code-links-from-findings.js";
 import { matchSynthesized } from "./approved-requirement-set.js";
 import type { StructuredRequirement } from "./types/requirements.js";
 
 export function requirementsWithoutCodeEvidence(input: {
   structured: ReadonlyArray<Pick<StructuredRequirement, "id" | "title">>;
   synthesized: readonly SynthesizedRequirement[];
-  /** The flattened findings, in the order synthesis's evidence indexes refer to. */
-  findings: ReadonlyArray<{ citations?: unknown }>;
+  /**
+   * The flattened findings, in the order synthesis's evidence indexes refer to.
+   * #2509 — a `could-not-verify` one's citations are not code evidence.
+   */
+  findings: ReadonlyArray<{ citations?: unknown; verdict?: unknown }>;
   /** Requirements whose latest approval is rejected: they are left out of the join. */
   rejectedIds?: ReadonlySet<string>;
 }): Set<string> {
   const rejected = input.rejectedIds ?? new Set<string>();
   const considered = input.structured.filter((r) => !rejected.has(r.id));
   const matches = matchSynthesized(considered, input.synthesized, input.structured);
-  const citesCode = input.findings.map((f) => citationTargets(f.citations).length > 0);
+  const citesCode = input.findings.map((f) => groundingCitationTargets(f).length > 0);
   const out = new Set<string>();
   for (const req of considered) {
     const indexes = matches.get(req.id)?.evidenceFindingIndexes ?? [];

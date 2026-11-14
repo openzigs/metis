@@ -10,7 +10,9 @@
  * remounted with ambiguities already present and the POST fired.
  *
  * The fix must satisfy TWO opposing failure modes at once:
- *   - #1135: start the dialog once the run completes and ambiguities appear.
+ *   - #1135: the dialog can be started once the run completes and ambiguities
+ *     appear. #2509 — started by the user's "Ask these questions", never on
+ *     mount: a start runs the model, and opening a tab must not spend.
  *   - #1104 finding C: keep an EXISTING dialog reachable after
  *     `totalAmbiguities` falls back to 0 once a round is answered. That is why
  *     the old `enabled: hasAmbiguities` gate was removed in the first place —
@@ -136,7 +138,33 @@ beforeEach(() => {
   submitClarifyAnswers.mockResolvedValue({ state: dialogState() });
 });
 
-describe("#1135 — the dialog starts once the run completes, with no reload", () => {
+/** #2509 — the user's click that starts the session. */
+async function ask(): Promise<void> {
+  fireEvent.click(await screen.findByTestId("clarify-ask"));
+}
+
+describe("#2509 — opening the panel never starts the dialog; asking does", () => {
+  it("sends no start on mount, however often the detail polls", async () => {
+    const { rerenderWith } = renderResults(metadata(1));
+    await waitFor(() => expect(getClarification).toHaveBeenCalled());
+    expect(await screen.findByTestId("clarify-ask")).toBeInTheDocument();
+    rerenderWith(metadata(1, { promotionStatus: "allowed" }));
+    rerenderWith(metadata(1, { promotionStatus: "blocked" }));
+    // Let any effect that would start it run.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(clarify).not.toHaveBeenCalled();
+    expect(screen.getByTestId("gaps-preview")).toHaveTextContent(/Ask these doc-grounded gaps/);
+  });
+
+  it("offers no ask to a viewer without analysis.run", async () => {
+    renderResults(metadata(1), false);
+    await waitFor(() => expect(getClarification).toHaveBeenCalled());
+    expect(await screen.findByTestId("gaps-preview")).toBeInTheDocument();
+    expect(screen.queryByTestId("clarify-ask")).not.toBeInTheDocument();
+  });
+});
+
+describe("#1135 — the dialog can be started once the run completes, with no reload", () => {
   it("issues the POST when ambiguities appear after the query first resolved with 0", async () => {
     // Mid-run: the analysis is still writing metadata, so totalAmbiguities is 0.
     const { rerenderWith } = renderResults(metadata(0));
@@ -145,8 +173,9 @@ describe("#1135 — the dialog starts once the run completes, with no reload", (
     expect(clarify).not.toHaveBeenCalled();
 
     // The run completes; the page's polling detail query hands down the real
-    // ambiguity count. Before the fix, the cached `null` won and no POST fired.
+    // ambiguity count. Before the fix, the cached `null` won and nothing could start.
     rerenderWith(metadata(3));
+    await ask();
 
     await waitFor(() => expect(clarify).toHaveBeenCalledWith("p1", ANALYSIS_ID, {}));
     expect(await screen.findByTestId("clarification-progress")).toBeInTheDocument();
@@ -163,9 +192,12 @@ describe("#1135 — the dialog starts once the run completes, with no reload", (
     );
 
     renderResults(metadata(1));
+    await ask();
 
     await waitFor(() => expect(clarify).toHaveBeenCalledTimes(1));
     expect(screen.getByTestId("gaps-preview")).toHaveTextContent(/Preparing an interactive/);
+    // Asked once: the button is gone while the start runs.
+    expect(screen.queryByTestId("clarify-ask")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /submit answers/i })).not.toBeInTheDocument();
 
     resolveStart(dialogState());
@@ -179,6 +211,7 @@ describe("#1135 — the dialog starts once the run completes, with no reload", (
     await waitFor(() => expect(getClarification).toHaveBeenCalled());
 
     rerenderWith(metadata(3));
+    await ask();
     await waitFor(() => expect(clarify).toHaveBeenCalledTimes(1));
 
     // The detail query polls; each poll re-renders this subtree.
@@ -201,6 +234,7 @@ describe("#1135 — the dialog starts once the run completes, with no reload", (
     clarify.mockRejectedValue(new Error("clarify failed"));
 
     const { rerenderWith } = renderResults(metadata(2));
+    await ask();
     await waitFor(() => expect(clarify).toHaveBeenCalledTimes(1));
 
     rerenderWith(metadata(2, { promotionStatus: "allowed" }));
@@ -214,6 +248,7 @@ describe("#1135 — the dialog starts once the run completes, with no reload", (
     clarify.mockRejectedValueOnce(new Error("clarify failed")).mockResolvedValue(dialogState());
 
     renderResults(metadata(2));
+    await ask();
     fireEvent.click(await screen.findByRole("button", { name: /try again/i }));
 
     await waitFor(() => expect(clarify).toHaveBeenCalledTimes(2));
@@ -769,6 +804,10 @@ describe("EnhancementResults — surrounding render branches", () => {
       },
     });
 
+    // #2509 — nothing to preview, so the card holds the ask.
+    expect(await screen.findByText("This analysis found gaps to clarify.")).toBeInTheDocument();
+    expect(clarify).not.toHaveBeenCalled();
+    await ask();
     await waitFor(() => expect(clarify).toHaveBeenCalledTimes(1));
     expect(screen.getByText("Preparing clarifying questions…")).toBeInTheDocument();
     resolveStart(dialogState());
@@ -861,8 +900,9 @@ describe("#937 — a remount while the start is in flight does not start a secon
     );
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
-    // The user opens the Questions tab: the first mount starts the dialog...
+    // The user opens the Questions tab and asks: the first mount starts the dialog...
     const first = mountWith(qc);
+    await ask();
     await waitFor(() => expect(clarify).toHaveBeenCalledTimes(1));
     // ...leaves the tab while the start is still generating, and comes back.
     first.unmount();

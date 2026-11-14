@@ -163,7 +163,9 @@ function isPositiveInt(v: unknown): v is number {
  * citations, and document citations whose filename is a repository source key
  * (the key is stripped to the repo-relative path). Every other document name —
  * a man page, an upload, the live schema, a `connector:db:` doc, a repository
- * metadata unit such as `OVERVIEW.md` — is dropped here.
+ * metadata unit such as `OVERVIEW.md` — is dropped here, and so is every
+ * citation of a finding that could not verify its requirement
+ * ({@link groundingCitationTargets}, #2509).
  */
 export function parseCitationTargets(rawEvidence: string | null | undefined): CitationTarget[] {
   if (!rawEvidence) return [];
@@ -174,13 +176,29 @@ export function parseCitationTargets(rawEvidence: string | null | undefined): Ci
     return [];
   }
   if (!parsed || typeof parsed !== "object") return [];
-  return citationTargets((parsed as { citations?: unknown }).citations);
+  return groundingCitationTargets(parsed as { citations?: unknown; verdict?: unknown });
 }
 
 /**
- * {@link parseCitationTargets} over an already-parsed `citations` value. #1568 —
- * the Approvals tab reads it to say, before approval, which requirements have
- * no evidence that could become a code link.
+ * #2509 — the citations of a finding that may ground its requirement in code.
+ * A finding whose verdict is `could-not-verify` grounds nothing: it says it
+ * could not tell where, or whether, the requirement lives, so the code it cites
+ * is not the requirement's. In the #2509 walkthrough a finding on "Python client
+ * displays reading_time" cited the Go client's `client/model.go` while saying
+ * that file "is not the Python client the requirement names", and that citation
+ * became the requirement's code link. #1568 — the Approvals tab reads this too,
+ * so what it calls code evidence is what promotion links.
+ */
+export function groundingCitationTargets(finding: {
+  citations?: unknown;
+  verdict?: unknown;
+}): CitationTarget[] {
+  if (finding.verdict === "could-not-verify") return [];
+  return citationTargets(finding.citations);
+}
+
+/**
+ * {@link parseCitationTargets} over an already-parsed `citations` value.
  */
 export function citationTargets(citations: unknown): CitationTarget[] {
   if (!Array.isArray(citations)) return [];

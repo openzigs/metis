@@ -207,12 +207,24 @@ export function requirementsRagQuery(reqs: readonly SeedRequirement[]): string {
 }
 
 /**
+ * #2509 — the spec's criterion ids are the spec's own. They are numbered from 1
+ * for every spec (the contract `tasks.md` maps to), so they reuse labels a
+ * request may already have used for something else: the walkthrough's request
+ * called its requirements `AC-1` to `AC-3b`, and the spec's `AC-2` was a
+ * different criterion. The sentence names no id itself, so nothing that
+ * collects ids from the spec picks one up from it.
+ */
+export const SPEC_OWN_CRITERION_IDS_NOTE =
+  "The acceptance criteria ids above are this spec's own, numbered so tasks can refer to them. They are not the labels the original request or its analysis used, even where the two look alike.";
+
+/**
  * The `## Source requirements` section appended to the generated `spec.md`:
  * each requirement's title, body and acceptance criteria verbatim. The body
  * and criteria are quoted (`> `), so a heading or an `## Acceptance criteria`
  * line inside a requirement cannot open a section of the spec. Each title is a
  * heading under a `Source requirement N:` prefix (#1702), so a requirement
  * titled "Stakeholders" or "Acceptance criteria" is never read as that section.
+ * It opens with {@link SPEC_OWN_CRITERION_IDS_NOTE} (#2509).
  */
 export function renderSourceRequirementsSection(reqs: readonly SeedRequirement[]): string {
   const quote = (text: string) =>
@@ -237,6 +249,8 @@ export function renderSourceRequirementsSection(reqs: readonly SeedRequirement[]
     "## Source requirements",
     "",
     `This feature was started from ${reqs.length} approved requirement${reqs.length === 1 ? "" : "s"}, reproduced in full.`,
+    "",
+    SPEC_OWN_CRITERION_IDS_NOTE,
     "",
     parts.join("\n\n"),
   ].join("\n");
