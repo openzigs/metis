@@ -44,9 +44,13 @@ export interface ExtractedCitations {
 /**
  * A path-shaped token, then an optional line reference: `:12`, `:12-40`,
  * `#L12`, `#L12-L40`, or `lines 12-40` / `line 12` after a space or bracket.
+ *
+ * #2290 — the lookbehind starts a match only where a path can start, so a long
+ * run of path characters is scanned once, not once per position: linear, where
+ * the bare pattern is quadratic (48 s on 200,000 characters in #2242).
  */
 const CITATION =
-  /([A-Za-z0-9_.\-/]*[A-Za-z0-9_-]\.[A-Za-z0-9]{1,8})(?![A-Za-z0-9])(?:(?::|#L)(\d{1,6})(?:\s*[-–]\s*L?(\d{1,6}))?|[`'")\]]?[\s(,]*\blines?\s+(\d{1,6})(?:\s*[-–]\s*(\d{1,6}))?)?/g;
+  /(?<![A-Za-z0-9_.\-/])([A-Za-z0-9_.\-/]*[A-Za-z0-9_-]\.[A-Za-z0-9]{1,8})(?![A-Za-z0-9])(?:(?::|#L)(\d{1,6})(?:\s*[-–]\s*L?(\d{1,6}))?|[`'")\]]?[\s(,]*\blines?\s+(\d{1,6})(?:\s*[-–]\s*(\d{1,6}))?)?/g;
 
 /** The paths `token` names in one product: exact first, else a unique suffix. */
 function resolveIn(product: CitableProduct, token: string): string[] {

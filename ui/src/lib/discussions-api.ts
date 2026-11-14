@@ -6,6 +6,7 @@
  * `streamFetch` for the SSE AI-reply path. The `thread:{id}` realtime fan-out is
  * consumed via the socket client (`@/lib/socket-client`), not here.
  */
+import type { ChatCitation } from "@metis/shared";
 import { apiFetch, ApiError, streamFetch } from "./api-client";
 
 /** The 3-state AI participation mode (mirrors the server `ai-gate.ts` enum). */
@@ -83,6 +84,11 @@ export interface DiscussionMessage {
   editedAt: string | null;
   /** #734 — the human author's display name, on history reads and live events. */
   authorName?: string;
+  /**
+   * #2290 — an AI reply's citations, each checked against what the reply
+   * retrieved or read; absent when it cited nothing.
+   */
+  citations?: ChatCitation[];
 }
 
 export interface PromoteResult {

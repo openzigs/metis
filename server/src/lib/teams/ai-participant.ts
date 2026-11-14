@@ -71,6 +71,7 @@ import {
 import { streamAIReply } from "../discussions/ai-responder.js";
 import { projectRetriever } from "../discussions/project-retrieval.js";
 import { loadRecentHistory } from "../discussions/thread-context.js";
+import { citationsField } from "../discussions/message-citations.js";
 import { emitMessageNew } from "../discussions/socket-emitter.js";
 import { scheduleMirrorToTeams } from "./outbound-sync.js";
 import { buildProvider, loadAIConfig, type AIProvider } from "../ai/index.js";
@@ -266,6 +267,8 @@ export async function maybeRespondAsAI(
       body: result.message.body,
       createdAt: new Date(),
       editedAt: null,
+      // #2290 — the checked citations, so members watching live see the list.
+      ...citationsField(result.message.citations ?? []),
     });
 
     // 4b. EXACTLY ONE outbound Teams mirror (#550) for the AI reply. The reply is

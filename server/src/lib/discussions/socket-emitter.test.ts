@@ -93,6 +93,20 @@ describe("toMessagePayload", () => {
     expect(p).not.toHaveProperty("authorName");
   });
 
+  it("#2290 — carries an AI reply's checked citations, and none when it made none", () => {
+    const citations = [
+      {
+        text: "src/a.ts:3",
+        path: "src/a.ts",
+        lines: [3, 3] as [number, number],
+        status: "not-read" as const,
+      },
+    ];
+    expect(toMessagePayload({ ...AI_ROW, citations }).citations).toEqual(citations);
+    expect(toMessagePayload({ ...AI_ROW, citations: [] })).not.toHaveProperty("citations");
+    expect(toMessagePayload(AI_ROW)).not.toHaveProperty("citations");
+  });
+
   it("#734 — carries the human author's display name when the row has one", () => {
     expect(toMessagePayload({ ...HUMAN_ROW, authorName: "Bob Analyst" }).authorName).toBe(
       "Bob Analyst",

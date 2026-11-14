@@ -37,6 +37,7 @@ describe("projectRetriever", () => {
     expect(out).toEqual({
       block: "## Retrieved Knowledge\n[1] internal/reader/handler.go:42",
       sources: 2,
+      evidence: expect.objectContaining({ sources: 2, contexts: expect.any(Array) }),
     });
   });
 
@@ -50,6 +51,7 @@ describe("projectRetriever", () => {
       block: "## Index status\nfailed",
       sources: 0,
       indexStatus: "## Index status\nfailed",
+      evidence: expect.objectContaining({ indexStatusLine: "## Index status\nfailed" }),
     });
   });
 });
