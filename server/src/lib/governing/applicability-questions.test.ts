@@ -1662,4 +1662,40 @@ describe("governingQuestionSourceFor — the flag gate", () => {
     await source.open(undefined);
     expect(db.project.findFirst).toHaveBeenCalled();
   });
+
+  it("#2311 — settles nothing for a re-checked requirement deleted after its question was asked", async () => {
+    process.env.GOVERNING_DOCS_ENABLED = "1";
+    const { provider, chat } = stubModel({});
+    const source = governingQuestionSourceFor({ analysisId: "a", projectId: "p", provider })!;
+    const rechecked = structuredClone(STORED);
+    rechecked.requirements[0] = {
+      ...rechecked.requirements[0]!,
+      requirementId: "r1",
+      versions: { r1: 2 },
+    };
+    db.analysis.findFirst.mockResolvedValue({
+      metadata: JSON.stringify({ governingApplicability: rechecked }),
+    });
+    db.project.findFirst.mockResolvedValue({ workspaceId: null });
+    const asked = {
+      ...answeredQ,
+      requirementId: "r1",
+      governing: { ...answeredQ.governing, requirementId: "r1" },
+    };
+    // r1 is deleted: the answer judges nothing and no rule is looked up.
+    db.requirement.findMany.mockResolvedValue([]);
+    expect(await source.settle([asked])).toBe(0);
+    expect(db.requirement.findMany).toHaveBeenCalledWith({
+      where: { id: { in: ["r1"] }, analysisId: "a", projectId: "p", deletedAt: null },
+      select: { id: true },
+    });
+    expect(db.project.findFirst).not.toHaveBeenCalled();
+    expect(chat).not.toHaveBeenCalled();
+
+    // While r1 is live, the answer goes on to its rules as before (the read
+    // fails here, so the run stops there).
+    db.requirement.findMany.mockResolvedValue([{ id: "r1" }]);
+    db.project.findFirst.mockRejectedValueOnce(new Error("rules read"));
+    await expect(source.settle([asked])).rejects.toThrow("rules read");
+  });
 });

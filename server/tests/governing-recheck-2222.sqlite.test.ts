@@ -48,6 +48,41 @@ const state = vi.hoisted(() => {
     decided: [] as Array<{ id: string; text: string }>,
     /** #2281 — the signal the route passed to the hook. */
     signal: undefined as AbortSignal | undefined,
+    /** #2311 — each re-check the route started, to await it settling. */
+    rechecks: [] as Array<Promise<unknown>>,
+    /** #2311 — settles when the server sees the last re-check request's `close`. */
+    closed: null as null | Promise<void>,
+    /** #2311 — while set, the user rate limiter waits on it before its own store call. */
+    limiterHold: null as null | Promise<void>,
+    atLimiter: () => {},
+  };
+});
+vi.mock("../src/lib/governing/recheck.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/lib/governing/recheck.js")>();
+  return {
+    ...real,
+    recheckGoverningRequirement: (
+      input: Parameters<typeof real.recheckGoverningRequirement>[0],
+    ) => {
+      const run = real.recheckGoverningRequirement(input);
+      state.rechecks.push(run);
+      return run;
+    },
+  };
+});
+vi.mock("../src/middleware/governing-recheck-rate-limit.js", async (importOriginal) => {
+  const real =
+    await importOriginal<typeof import("../src/middleware/governing-recheck-rate-limit.js")>();
+  return {
+    ...real,
+    governingRecheckUserRateLimiter: (
+      ...args: Parameters<typeof real.governingRecheckUserRateLimiter>
+    ) => {
+      const hold = state.limiterHold;
+      if (!hold) return real.governingRecheckUserRateLimiter(...args);
+      state.atLimiter();
+      return hold.then(() => real.governingRecheckUserRateLimiter(...args));
+    },
   };
 });
 vi.mock("../src/lib/prisma.js", async (importOriginal) => ({
@@ -128,6 +163,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     const app = () => {
       const a = express();
       a.use(express.json());
+      a.use((req, res, next) => {
+        if (req.method === "POST" && req.path.endsWith("/recheck")) {
+          state.closed = new Promise((resolve) => res.on("close", () => resolve()));
+        }
+        next();
+      });
       a.use("/api/projects/:projectId/analyses", initAnalysisRouter().projectScoped);
       a.use(notFoundHandler);
       a.use(errorHandler);
@@ -297,6 +338,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
               },
             ],
           },
+          // #2311 — AC-3 was checked too, and no rule applied to it.
+          { requirementId: "AC-3", text: "Sessions never time out.", decisions: [] },
         ],
       };
       for (const [id, project, user] of [
@@ -366,6 +409,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       state.provider = findingsModel();
       state.decide = applies;
       state.decided = [];
+      state.rechecks = [];
+      state.closed = null;
+      state.limiterHold = null;
     });
     afterEach(() => {
       delete process.env.GOVERNING_DOCS_ENABLED;
@@ -454,6 +500,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       ) as { governingApplicability: { requirements: Array<{ requirementId: string }> } };
       expect(stored.governingApplicability.requirements.map((r) => r.requirementId)).toEqual([
         "AC-2",
+        "AC-3",
       ]);
     });
 
@@ -517,8 +564,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await expect(recheck({ requirementId: r2 }).timeout(300)).rejects.toThrow(/timeout/i);
       await vi.waitFor(() => expect(aborted).toBe(true));
       expect(state.decided.map((d) => d.id)).toEqual([r2]);
-      // Settle any work the abort let through before reading the store.
-      await new Promise((r) => setTimeout(r, 50));
+      // The re-check has settled: nothing it could store is still to come.
+      expect(state.rechecks).toHaveLength(1);
+      expect(await state.rechecks[0]).toEqual({ ok: false, reason: "cancelled" });
       expect(vi.mocked((state.provider as AIProvider).chat)).not.toHaveBeenCalled();
       const data = await getFindings();
       expect(data.findings.map((f) => f.requirementId)).toEqual(["AC-2"]);
@@ -527,7 +575,120 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       ) as { governingApplicability: { requirements: Array<{ requirementId: string }> } };
       expect(stored.governingApplicability.requirements.map((r) => r.requirementId)).toEqual([
         "AC-2",
+        "AC-3",
       ]);
+    });
+
+    /** #2311 — nothing a re-check of `requirementId` would have stored is there. */
+    const expectNothingStoredFor = async (requirementId: string) => {
+      const data = await getFindings();
+      expect(data.findings.map((f) => f.requirementId)).toEqual(["AC-2"]);
+      const stored = JSON.parse(
+        (await db.analysis.findUniqueOrThrow({ where: { id: ANA } })).metadata!,
+      ) as { governingApplicability: { requirements: Array<{ requirementId: string }> } };
+      expect(stored.governingApplicability.requirements.map((r) => r.requirementId)).toEqual([
+        "AC-2",
+        "AC-3",
+      ]);
+      expect(
+        await db.auditLog.count({
+          where: { action: "governing.requirement.recheck", targetId: requirementId },
+        }),
+      ).toBe(0);
+    };
+
+    it("#2311 — a client that goes away before the check starts runs nothing", async () => {
+      // Hold the route's first read (the analysis visibility check) until the client has gone.
+      const real = db;
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      let reached!: () => void;
+      const atVisibility = new Promise<void>((resolve) => (reached = resolve));
+      state.db = new Proxy(real, {
+        get(target, prop, receiver) {
+          if (prop !== "analysis") return Reflect.get(target, prop, receiver);
+          return new Proxy(target.analysis, {
+            get(delegate, method, r) {
+              if (method !== "findFirst") return Reflect.get(delegate, method, r);
+              return async (args: Parameters<PrismaClient["analysis"]["findFirst"]>[0]) => {
+                reached();
+                await held;
+                return delegate.findFirst(args);
+              };
+            },
+          });
+        },
+      });
+      try {
+        // `.then` sends the request.
+        const gone = recheck({ requirementId: r2 })
+          .timeout(100)
+          .then(
+            () => "answered",
+            (err: Error) => err.message,
+          );
+        await atVisibility;
+        expect(await gone).toMatch(/timeout/i);
+        // The server has seen the client go before the read returns.
+        await state.closed;
+        release();
+        await vi.waitFor(() => expect(state.rechecks).toHaveLength(1));
+        expect(await state.rechecks[0]).toEqual({ ok: false, reason: "cancelled" });
+      } finally {
+        release();
+        state.db = real;
+      }
+      expect(state.decided).toEqual([]);
+      expect(vi.mocked((state.provider as AIProvider).chat)).not.toHaveBeenCalled();
+      await expectNothingStoredFor(r2);
+    });
+
+    it("#2311 — a client that goes away during the real findings run stores nothing", async () => {
+      const chat = vi.fn(
+        (_messages: ChatMessage[], options: ChatOptions = {}) =>
+          new Promise((_resolve, reject) => {
+            const signal = options.signal!;
+            if (signal.aborted) reject(signal.reason);
+            signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+          }),
+      );
+      state.provider = { key: "anthropic", model: "stub", offline: false, chat } as never;
+      const gone = recheck({ requirementId: r2 }).timeout(300);
+      await expect(gone).rejects.toThrow(/timeout/i);
+      // The applicability was decided and the findings run reached the model.
+      expect(state.decided.map((d) => d.id)).toEqual([r2]);
+      await vi.waitFor(() => expect(chat).toHaveBeenCalled());
+      // The re-check has settled, so nothing it could store is still to come.
+      expect(state.rechecks).toHaveLength(1);
+      expect(await state.rechecks[0]).toEqual({ ok: false, reason: "cancelled" });
+      await expectNothingStoredFor(r2);
+    });
+
+    it("#2311 — a client that goes away during the user rate limiter's store call runs nothing", async () => {
+      // `close` fires before the handler attaches its listener: the handler must read the state.
+      let release!: () => void;
+      state.limiterHold = new Promise<void>((resolve) => (release = resolve));
+      const atLimiter = new Promise<void>((resolve) => (state.atLimiter = resolve));
+      try {
+        const gone = recheck({ requirementId: r2 })
+          .timeout(100)
+          .then(
+            () => "answered",
+            (err: Error) => err.message,
+          );
+        await atLimiter;
+        expect(await gone).toMatch(/timeout/i);
+        await state.closed;
+        release();
+        await vi.waitFor(() => expect(state.rechecks).toHaveLength(1));
+        expect(await state.rechecks[0]).toEqual({ ok: false, reason: "cancelled" });
+      } finally {
+        release();
+        state.limiterHold = null;
+      }
+      expect(state.decided).toEqual([]);
+      expect(vi.mocked((state.provider as AIProvider).chat)).not.toHaveBeenCalled();
+      await expectNothingStoredFor(r2);
     });
 
     it("Re-check R1: checks its current wording only, stores its findings at v1, clears the stale marker, audits the user", async () => {

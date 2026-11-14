@@ -90,6 +90,8 @@ export async function recheckGoverningRequirement(
   input: RecheckGoverningRequirementInput,
 ): Promise<RecheckGoverningRequirementOutcome> {
   const { analysisId, projectId } = input;
+  // #2311 — a caller gone before the check starts: no model call at all.
+  if (input.signal?.aborted) return { ok: false, reason: "cancelled" };
   const requirement = await prisma.requirement.findFirst({
     where: { id: input.requirementId, analysisId, projectId, deletedAt: null },
     select: { id: true, title: true, body: true, acceptanceCriteria: true, version: true },
@@ -105,6 +107,8 @@ export async function recheckGoverningRequirement(
   if (!hook) return { ok: false, reason: "no-rules" };
 
   const text = requirementWording(requirement);
+  // #2311 — an abort that landed during the reads above: no model call.
+  if (input.signal?.aborted) return { ok: false, reason: "cancelled" };
   const set = await hook.decide({ id: requirement.id, text });
   if (input.signal?.aborted) return { ok: false, reason: "cancelled" };
   if (set.error) return { ok: false, reason: "failed", message: set.error };

@@ -58,6 +58,8 @@ vi.mock("../src/lib/prisma.js", () => {
     project: { findFirst: vi.fn(async () => ({ workspaceId: mem.workspaceId })) },
     governingRule: { findMany: vi.fn(async () => mem.rules) },
     governingFinding: { findMany: vi.fn(async () => mem.findings) },
+    // #2311 — read only for a re-check entry: none of those requirements is live.
+    requirement: { findMany: vi.fn(async () => []) },
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn({ analysis })),
   };
   return { prisma, resolveDatabaseProvider: () => "sqlite" };
@@ -1055,6 +1057,35 @@ describe("#2122 — one answer settles the same fact on the analysis's other req
 
     const next = await dialog.startOrContinue(ANALYSIS, REQS);
     expect(next.rounds.slice(1).flatMap((r) => r.questions)).toEqual([]);
+  });
+
+  it("#2311 — an answer is not carried onto a re-checked requirement deleted since", async () => {
+    const GONE_TEXT = "Passwords of the deleted requirement follow the same rules.";
+    const metadata = JSON.parse(mem.metadata) as {
+      governingApplicability: GoverningAnalysisApplicability;
+    };
+    const gone = structuredClone(metadata.governingApplicability.requirements[1]!);
+    metadata.governingApplicability.requirements.push({
+      ...gone,
+      requirementId: "req_gone",
+      text: GONE_TEXT,
+      versions: { req_gone: 1 },
+    });
+    mem.metadata = JSON.stringify(metadata);
+    // req_gone is not live (the `requirement.findMany` mock).
+    const { provider, sent } = carryModel({ verdict: "applies", answer: "A1" });
+    await answerTheFirst(provider);
+    await governingCarriesSettled(ANALYSIS);
+    // REQ-007 is carried to; the deleted requirement is neither judged nor settled.
+    const carried = sent.filter((s) => s.system.includes("each named A1"));
+    expect(carried.some((s) => s.user.includes(OTHER_TEXT))).toBe(true);
+    expect(carried.some((s) => s.user.includes(GONE_TEXT))).toBe(false);
+    const read = await readGoverningApplicability(ANALYSIS);
+    const entry = read!.requirements.find((r) => r.requirementId === "req_gone")!;
+    expect(entry.decisions[0]!.settled).toBeUndefined();
+    const produce = vi.mocked(findingsStore.produceGoverningFindingsForAnalysis);
+    expect(produce.mock.calls.flatMap((c) => c[0].requirementIds ?? [])).not.toContain("req_gone");
+    refresh.release();
   });
 
   it("a carried settlement does not count its answering question as settled: the retry backoff is kept", async () => {

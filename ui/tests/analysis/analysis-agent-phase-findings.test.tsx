@@ -489,27 +489,30 @@ describe("#289 — agent-phase findings in the results view", () => {
 
   it("#2281 — two requirements with the same title each get their note, with no key collision", async () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
-    const snapshot = structuredClone(SNAPSHOT);
-    const twin = {
-      ...snapshot.requirements[0]!,
-      title: "Login screen",
-      version: 1,
-      analysedVersion: 0,
-      evidenceFindingIds: ["f-1"],
-    };
-    snapshot.requirements = [
-      { ...twin, id: "req-a" },
-      { ...twin, id: "req-b" },
-    ] as never;
-    apiMock.get.mockResolvedValue(snapshot);
-    renderPage();
-    await waitForResults();
+    try {
+      const snapshot = structuredClone(SNAPSHOT);
+      const twin = {
+        ...snapshot.requirements[0]!,
+        title: "Login screen",
+        version: 1,
+        analysedVersion: 0,
+        evidenceFindingIds: ["f-1"],
+      };
+      snapshot.requirements = [
+        { ...twin, id: "req-a" },
+        { ...twin, id: "req-b" },
+      ] as never;
+      apiMock.get.mockResolvedValue(snapshot);
+      renderPage();
+      await waitForResults();
 
-    const findings = screen.getByTestId("findings-section");
-    expect(within(findings).getAllByTestId("finding-stale")).toHaveLength(2);
-    expect(errors.mock.calls.some((args) => args.some((a) => /same key/.test(String(a))))).toBe(
-      false,
-    );
-    errors.mockRestore();
+      const findings = screen.getByTestId("findings-section");
+      expect(within(findings).getAllByTestId("finding-stale")).toHaveLength(2);
+      expect(errors.mock.calls.some((args) => args.some((a) => /same key/.test(String(a))))).toBe(
+        false,
+      );
+    } finally {
+      errors.mockRestore();
+    }
   });
 });

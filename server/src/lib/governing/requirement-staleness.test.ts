@@ -365,4 +365,21 @@ describe("editedWithoutFindings (#2281)", () => {
       { requirementId: "r1", title: "T", judgedVersion: 2, currentVersion: 3 },
     ]);
   });
+
+  it("#2311 — lists none whose analysed requirement the check could not decide, or never reached", () => {
+    const states = [state({ id: "r1", title: "Timeout", version: 2, analysedVersion: 0 })];
+    // Every entry errored: the check judged nothing, so nothing was edited "since" it.
+    const errored = applicability([
+      { requirementId: "AC-2", text: "t", decisions: [], error: "Rules could not be loaded." },
+    ]);
+    expect(editedWithoutFindings([], states, errored)).toEqual([]);
+    // An entry for another analysed requirement only: AC-2 was never reached.
+    const elsewhere = applicability([{ requirementId: "AC-9", text: "t", decisions: [] }]);
+    expect(editedWithoutFindings([], states, elsewhere)).toEqual([]);
+    // Drawn from two analysed requirements, one of them decided: it was judged.
+    const twoSources = [state({ ...states[0]!, analysedIds: new Set(["AC-2", "AC-9"]) })];
+    expect(editedWithoutFindings([], twoSources, elsewhere)).toEqual([
+      { requirementId: "r1", title: "Timeout", judgedVersion: 0, currentVersion: 2 },
+    ]);
+  });
 });

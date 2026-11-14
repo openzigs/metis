@@ -371,7 +371,11 @@ function judgedWordingLines(run: GoverningSectionRun, requirementId: string): st
   if (!judged) return [];
   const title = run.requirementTitles?.get(requirementId)?.trim();
   if (title === undefined) return ["", `_As analysed:_ ${text(judged)}`];
-  const rest = judged.startsWith(title) ? judged.slice(title.length).trim() : judged;
+  // #2311 — the title only as the wording's whole first line (requirementWording
+  // puts the title on its own line): a heading renamed to a prefix of it
+  // ("Login" of "Login flow") must not cut the wording mid-title.
+  const whole = judged === title || judged.startsWith(`${title}\n`);
+  const rest = whole ? judged.slice(title.length).trim() : judged;
   return rest ? ["", `_As re-checked:_ ${text(rest)}`] : [];
 }
 

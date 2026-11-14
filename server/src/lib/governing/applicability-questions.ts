@@ -1250,8 +1250,10 @@ export function governingQuestionSourceFor(input: {
     const previous = carriesInFlight.get(analysisId) ?? Promise.resolve();
     const run = previous
       .then(async () => {
-        const stored = await readGoverningApplicability(analysisId);
-        if (!stored) return;
+        const read = await readGoverningApplicability(analysisId);
+        if (!read) return;
+        // #2311 — nor is an answer carried onto a deleted re-checked requirement.
+        const stored = await withoutDeletedRechecks(read, analysisId, input.projectId);
         const candidates = carryCandidates(answered, stored);
         if (candidates.length === 0) return;
         const rules = await rulesFor(candidates.flatMap((c) => c.ruleIds));
@@ -1322,8 +1324,11 @@ export function governingQuestionSourceFor(input: {
     async settle(questions, signal) {
       const withAnswer = questions.filter((q) => q.governing && q.answer?.trim());
       if (withAnswer.length === 0 || input.provider.offline) return 0;
-      const stored = await readGoverningApplicability(input.analysisId);
-      if (!stored) return 0;
+      const read = await readGoverningApplicability(input.analysisId);
+      if (!read) return 0;
+      // #2311 — as `open`: a question asked before its re-checked requirement
+      // was deleted settles nothing, and re-runs no findings for it.
+      const stored = await withoutDeletedRechecks(read, input.analysisId, input.projectId);
       // #2009 — only questions that still have a linked pair to settle.
       const answered = withAnswer.filter((q) => hasOpenLinkedPair(stored, q));
       if (answered.length === 0) return 0;
