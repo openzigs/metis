@@ -596,6 +596,60 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
 
       it.each(["/api/ai/stream", "/api/ai/chat"])(
+        "#2315 — %s: lines only in the part of a tool result the cap kept from the model are not read",
+        async (route) => {
+          process.env.CHAT_CODE_SEARCH_TOOLS = "true";
+          // A cap of a few characters: the model's copy shows none of the result's locators.
+          process.env.CHAT_TOOL_RESULT_MAX_TOKENS = "2";
+          try {
+            model.chatReplies = [SEARCH, "It is `src/validator.ts:5-12`."];
+            const sessionId = await newSession(PROJECT);
+            const res = await post(route, { sessionId, message: "where is validation?" });
+            const expected = [
+              {
+                text: "src/validator.ts:5-12",
+                path: "src/validator.ts",
+                lines: [5, 12],
+                status: "not-read",
+              },
+            ];
+            if (route.endsWith("/chat")) expect(res.body.data.citations).toEqual(expected);
+            else expect(citationFrames(res.text)).toEqual([expected]);
+            expect(await replyCitations(sessionId)).toEqual([expected]);
+          } finally {
+            delete process.env.CHAT_TOOL_RESULT_MAX_TOKENS;
+          }
+        },
+      );
+
+      it("#2315 — a `path:line` a retrieved document mentions is not code the turn read", async () => {
+        // The non-loop stream path: retrieval is the only evidence.
+        process.env.CHAT_CODE_SEARCH_TOOLS = "false";
+        state.hits = [
+          {
+            filename: "FRD-7.md",
+            position: 0,
+            score: 0.9,
+            text: "Pinning lives in src/net/pin.ts:10-20.",
+          },
+        ];
+        model.streamText = "Pinned in `src/net/pin.ts:10-20`, per FRD-7.md.";
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/stream", { sessionId, message: "Where is pinning?" });
+        const expected = [
+          {
+            text: "src/net/pin.ts:10-20",
+            path: "src/net/pin.ts",
+            lines: [10, 20],
+            status: "not-read",
+          },
+          { text: "FRD-7.md", path: "FRD-7.md", status: "verified", source: "document" },
+        ];
+        expect(citationFrames(res.text)).toEqual([expected]);
+        expect(await replyCitations(sessionId)).toEqual([expected]);
+      });
+
+      it.each(["/api/ai/stream", "/api/ai/chat"])(
         "%s: a follow-up re-citing lines an earlier turn's tool read is verified-earlier, not not-read",
         async (route) => {
           process.env.CHAT_CODE_SEARCH_TOOLS = "true";

@@ -23,6 +23,11 @@ const retrieved = {
     { name: "internal/model/feed.go", source: "repo" },
     { name: "FRD-12.md", source: "upload" },
   ],
+  // The fused block's entries, as the route captures them alongside its text.
+  codeEntries: [
+    { n: 3, path: "internal/model/feed.go", lines: [120, 150] as [number, number] },
+    { n: 4, path: "internal/config/options.go", lines: [40, 41] as [number, number] },
+  ],
 };
 
 const tool = (over: Partial<ToolEvidence> & { result: string }): ToolEvidence => ({
@@ -83,7 +88,7 @@ describe("verifyCitations — retrieved excerpts and the fused code block", () =
   });
 
   it("checks [n] references against the numbered excerpts, ignoring Markdown links", () => {
-    expect(verifyCitations("As [2] and [1, 3] show; see [1](https://x.test).", ev)).toEqual([
+    expect(verifyCitations("As [2] and [1, 5] show; see [1](https://x.test).", ev)).toEqual([
       { text: "[2]", path: "FRD-12.md", status: "verified", source: "document" },
       {
         text: "[1]",
@@ -92,7 +97,7 @@ describe("verifyCitations — retrieved excerpts and the fused code block", () =
         source: "repo",
         commitSha: null,
       },
-      { text: "[3]", path: "", status: "not-read" },
+      { text: "[5]", path: "", status: "not-read" },
     ]);
   });
 
@@ -750,5 +755,223 @@ describe("#2325 — a code citation records the version it was read at", () => {
     // No lines: either repository's copy. The commits differ, so none is
     // stated, and it may be the stale one, so it is flagged.
     expect(either).toMatchObject({ path: "src/index.ts", commitSha: null, stale: true });
+  });
+});
+
+describe("#2315 — a path written inside a retrieved document is not code evidence", () => {
+  it("does not verify a `path:line` a document excerpt mentions", () => {
+    const ev = collectCitationEvidence({
+      contexts: [
+        "[1] specs/FRD-12.md#0 (score=0.800)\nThe handler in server/src/app.ts:42 and app.ts:10-20 does it.",
+      ],
+      excerpts: [{ name: "specs/FRD-12.md", source: "upload" }],
+    });
+    expect(
+      verifyCitations("See server/src/app.ts:42 and app.ts:15, per specs/FRD-12.md.", ev),
+    ).toEqual([
+      {
+        text: "server/src/app.ts:42",
+        path: "server/src/app.ts",
+        lines: [42, 42],
+        status: "not-read",
+      },
+      { text: "app.ts:15", path: "app.ts", lines: [15, 15], status: "not-read" },
+      { text: "specs/FRD-12.md", path: "specs/FRD-12.md", status: "verified", source: "document" },
+    ]);
+  });
+
+  it("nor one quoted in the fused block's code: only its entries are what it read", () => {
+    const ev = collectCitationEvidence({
+      contexts: [`${FUSED}\n  // see internal/util/x.go:1-500`],
+      codeEntries: [{ n: 1, path: "internal/model/feed.go", lines: [120, 150] }],
+    });
+    expect(
+      verifyCitations("internal/model/feed.go:130 internal/util/x.go:7", ev).map((c) => c.status),
+    ).toEqual(["verified", "not-read"]);
+  });
+});
+
+describe("#2315 — only what the model's capped copy of a tool result showed is evidence", () => {
+  const statusOf = (
+    answer: string,
+    tools: ToolEvidence[],
+    toolResultMaxChars?: number,
+    earlier: ToolEvidence[] = [],
+  ) =>
+    verifyCitations(
+      answer,
+      collectCitationEvidence(null, tools, earlier, { toolResultMaxChars }),
+    ).map((c) => c.status);
+
+  /** A read_file_slice result of lines 1-`n`, each line `N| line N`. */
+  const slice = (n: number) =>
+    [
+      `src/a.ts (lines 1-${n} of 900)`,
+      ...Array.from({ length: n }, (_, i) => `${i + 1}| line ${i + 1}`),
+    ].join("\n");
+  /** The length of `text` up to the end of its line starting `prefix`. */
+  const endOf = (text: string, prefix: string) => {
+    const at = text.indexOf(`\n${prefix}`) + 1;
+    return text.indexOf("\n", at);
+  };
+
+  it("read_file_slice: the lines past the cap were not read, nor a line the cap cut through", () => {
+    const text = slice(200);
+    // The cap ends part-way through line 10: lines 1-9 were seen whole.
+    const cap = endOf(text, "10| ") - 3;
+    expect(
+      statusOf("src/a.ts:5-9 src/a.ts:10 src/a.ts:150", [tool({ result: text })], cap),
+    ).toEqual(["verified", "span-unverified", "span-unverified"]);
+    // Without a cap (or under it), the header's whole range stands.
+    expect(statusOf("src/a.ts:150", [tool({ result: text })])).toEqual(["verified"]);
+    expect(statusOf("src/a.ts:150", [tool({ result: text })], text.length)).toEqual(["verified"]);
+  });
+
+  it("read_file_slice: a cap that falls exactly at a line's end keeps that line", () => {
+    const text = slice(200);
+    expect(
+      statusOf("src/a.ts:10 src/a.ts:11", [tool({ result: text })], endOf(text, "10| ")),
+    ).toEqual(["verified", "span-unverified"]);
+  });
+
+  it("read_file_slice: a cap inside the numbered lines' first line leaves the file named, no line read", () => {
+    const text = slice(200);
+    const cap = endOf(text, "1| ") - 2;
+    expect(statusOf("src/a.ts src/a.ts:1", [tool({ result: text })], cap)).toEqual([
+      "verified",
+      "span-unverified",
+    ]);
+  });
+
+  it("grep_files: a match past the cap, or cut through by it, is not read", () => {
+    const result = ["src/a.ts:3: alpha", "src/b.ts:7: beta", "src/c.ts:9: gamma"].join("\n");
+    const cap = result.indexOf("src/b.ts") + 6;
+    expect(
+      statusOf("src/a.ts:3 src/b.ts:7 src/c.ts:9", [tool({ tool: "grep_files", result })], cap),
+    ).toEqual(["verified", "not-read", "not-read"]);
+  });
+
+  it("search_code_context: a block the cap cut keeps only the numbered lines it showed", () => {
+    const result = [
+      "[1] src/a.ts:1-3 — function f",
+      "1| a",
+      "2| b",
+      "3| c",
+      "",
+      "[2] src/b.ts:10-12, src/b.ts:20-22 — function g",
+      "10| x",
+      "11| y",
+      "12| z",
+      "…",
+      "20| p",
+      "21| q",
+      "22| r",
+      "",
+      "[3] src/c.ts:1-5 — function h",
+      "1| i",
+    ].join("\n");
+    const cap = endOf(result, "11| ");
+    expect(
+      statusOf(
+        "src/a.ts:3 src/b.ts:11 src/b.ts:12 src/b.ts:21 src/c.ts:1",
+        [tool({ tool: "search_code_context", result })],
+        cap,
+      ),
+    ).toEqual(["verified", "verified", "span-unverified", "span-unverified", "not-read"]);
+  });
+
+  /** A `search_code_symbols` citation. */
+  const ref = (path: string, startLine: number, endLine: number) => ({
+    repoConnectionId: null,
+    path,
+    startLine,
+    endLine,
+    commitSha: null,
+    permalink: null,
+    truncated: false,
+    totalLines: null,
+    stale: false,
+  });
+
+  it("search_code_symbols: a hit whose head the cap cut away is not read", () => {
+    const result = [
+      "function a — src/a.go:5-30 (score=0.900)",
+      "  body of a",
+      "",
+      "function b — src/b.go:1-9 (score=0.800)",
+      "",
+      "function c — src/c.go:1-9 (score=0.700)",
+    ].join("\n");
+    const cap = result.indexOf("function b") + 20;
+    const citations = [ref("src/a.go", 5, 30), ref("src/b.go", 1, 9), ref("src/c.go", 1, 9)];
+    expect(
+      statusOf(
+        "src/a.go:6 src/b.go:2 src/c.go:2",
+        [tool({ tool: "search_code_symbols", result, citations })],
+        cap,
+      ),
+    ).toEqual(["verified", "not-read", "not-read"]);
+    // Uncut, every hit stands.
+    expect(
+      statusOf(
+        "src/a.go:6 src/b.go:2 src/c.go:2",
+        [tool({ tool: "search_code_symbols", result, citations })],
+        result.length,
+      ),
+    ).toEqual(["verified", "verified", "verified"]);
+  });
+
+  it("search-knowledge: an excerpt past the cap was not retrieved for the model", () => {
+    const result = [
+      "[1] policies/refunds.md#3 (score=0.81)",
+      "Refunds within 30 days",
+      "[2] policies/returns.md#1 (score=0.70)",
+      "Returns",
+    ].join("\n");
+    expect(
+      statusOf(
+        "policies/refunds.md policies/returns.md",
+        [tool({ tool: "search-knowledge", source: "metis", result })],
+        result.indexOf("[2]") + 4,
+      ),
+    ).toEqual(["verified", "not-read"]);
+  });
+
+  it("an earlier turn's stored result is cut the same way", () => {
+    const earlier = priorToolEvidence([row([result("read_file_slice", slice(200))])]);
+    const cap = endOf(slice(200), "20| ");
+    expect(statusOf("src/a.ts:15 src/a.ts:150", [], cap, earlier)).toEqual([
+      "verified-earlier",
+      "span-unverified",
+    ]);
+  });
+});
+
+describe("#2315 — a file the answer proposes to create is not a citation", () => {
+  const ev = collectCitationEvidence(null, [tool({ result: "src/a.ts (lines 1-9 of 9)" })]);
+  const cites = (answer: string) => verifyCitations(answer, ev);
+
+  it.each([
+    "Create `server/src/lib/new-feature.ts` with the handler.",
+    "Add a new file at server/src/lib/new-feature.ts.",
+    "Creating the module `server/src/lib/new-feature.ts` keeps it apart.",
+    "We could create a test called server/tests/new-feature.test.ts.",
+    "- `server/src/lib/new-feature.ts` (new)",
+    "- server/src/lib/new-feature.ts — new file",
+  ])("skips: %s", (answer) => {
+    expect(cites(answer)).toEqual([]);
+  });
+
+  it("still checks an existing file the sentence works in, a proposal with lines, and a read file", () => {
+    expect(
+      cites(
+        "Create a helper in `server/src/app.ts`. Create `server/src/x.ts:3`. Create `src/a.ts`. Renew `lib/z.ts`.",
+      ).map((c) => [c.path, c.status]),
+    ).toEqual([
+      ["server/src/app.ts", "not-read"],
+      ["server/src/x.ts", "not-read"],
+      ["src/a.ts", "verified"],
+      ["lib/z.ts", "not-read"],
+    ]);
   });
 });

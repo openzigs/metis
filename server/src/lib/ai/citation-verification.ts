@@ -7,8 +7,8 @@
  * Here every citation is resolved against the turn's evidence:
  *
  *   - the excerpts automatic retrieval put in the prompt (by name: a chunk has
- *     no line numbers), and the `path:start-end` locators of the fused code
- *     block (#714);
+ *     no line numbers), and the fused code block's entries, each a
+ *     `path:start-end` (#714);
  *   - what the project-reading tools returned: `read_file_slice`'s
  *     `path (lines a-b of n)` header, the `path:start-end` locators the code
  *     search tools list, and the excerpt names `search-knowledge` lists.
@@ -42,6 +42,11 @@
  * stated for that file (`null` when none was stated), and `stale` when a read
  * of it came from a working tree the index is behind. A stale citation keeps
  * its status: it is flagged, never dropped or downgraded.
+ *
+ * #2315 — evidence is only what the model saw as code: the fused block's
+ * entries, never a `path:line` written inside a retrieved document; and of a
+ * tool result, only the lines the model's capped copy kept whole. A path the
+ * answer proposes to create ("create `src/lib/new.ts`") is not a citation.
  */
 import {
   MAX_CHAT_CITATIONS,
@@ -287,34 +292,111 @@ function ownLocatorText(t: ToolEvidence, text: string): string[] {
   return t.tool !== undefined && CODE_TOOLS_WITHOUT_FILE_TEXT.has(t.tool) ? [text] : [];
 }
 
+/**
+ * #2315 — the part of a tool result the model saw. Chat caps the model's copy
+ * of a result by keeping its first `maxChars` characters (`capForModel`, #138)
+ * while the record keeps all of it, so only what the cap kept is evidence, and
+ * of that only whole lines: a line the cap cut through was not seen in full.
+ */
+function seenText(text: string, maxChars: number | undefined): { text: string; cut: boolean } {
+  if (maxChars === undefined || maxChars <= 0 || text.length <= maxChars) {
+    return { text, cut: false };
+  }
+  const kept = text.slice(0, maxChars);
+  // The cut fell exactly at a line's end: the last line kept is whole.
+  if (text[maxChars] === "\n") return { text: kept, cut: true };
+  const nl = kept.lastIndexOf("\n");
+  return { text: nl < 0 ? "" : kept.slice(0, nl), cut: true };
+}
+
+/** A line of quoted file text as the code tools number it: `N| text`. */
+const NUMBERED_LINE = /^(\d{1,7})\| /;
+
+/**
+ * #2315 — the last numbered line among `lines`, the end of what a cut result
+ * showed of the block those lines belong to (0: none of its lines).
+ */
+function lastNumberedLine(lines: readonly string[]): number {
+  let last = 0;
+  for (const line of lines) {
+    const m = NUMBERED_LINE.exec(line);
+    if (m) last = Math.max(last, Number(m[1]));
+  }
+  return last;
+}
+
+/** `r` cut back to end at line `end`, or null when it starts after it. */
+function clip(r: [number, number], end: number): [number, number] | null {
+  return r[0] > end ? null : [r[0], Math.min(r[1], end)];
+}
+
+/**
+ * #2315 — the `search_code_symbols` citations whose head line the model saw,
+ * in hit order: each hit's head (`kind name — path:a-b (score=…)`) follows the
+ * previous one's, so the first head missing from a cut result ends the list.
+ */
+function seenSymbolCitations(refs: readonly CodeCitationRef[], text: string): CodeCitationRef[] {
+  const out: CodeCitationRef[] = [];
+  let at = 0;
+  for (const ref of refs) {
+    const locator =
+      ref.startLine != null && ref.endLine != null
+        ? `${ref.path}:${ref.startLine}-${ref.endLine}`
+        : ref.path;
+    const i = text.indexOf(` — ${locator} (score=`, at);
+    if (i < 0) break;
+    out.push(ref);
+    at = i + 1;
+  }
+  return out;
+}
+
 /** Fold one project-reading tool result into `ev`. */
-function addToolEvidence(ev: CitationEvidence, t: ToolEvidence, earlier: boolean): void {
+function addToolEvidence(
+  ev: CitationEvidence,
+  t: ToolEvidence,
+  earlier: boolean,
+  maxChars: number | undefined,
+): void {
   if (!readsProject(t)) return;
-  const text = t.result!;
+  const { text, cut } = seenText(t.result!, maxChars);
   // #2412 — only read_file_slice writes this header; another tool's quoted code may look like it.
   // Its header is the first line that matches: the file's lines all come after it.
-  const slice =
-    t.tool === "read_file_slice"
-      ? resultLines(text)
-          .map((line) => SLICE_HEADER.exec(line))
-          .find((m) => m !== null)
-      : undefined;
-  if (slice) {
-    const r = range(slice[2]!, slice[3]);
-    if (r) ev.add(slice[1]!, "repo", r, earlier);
+  const lines = resultLines(text);
+  const sliceAt = t.tool === "read_file_slice" ? lines.findIndex((l) => SLICE_HEADER.test(l)) : -1;
+  if (sliceAt >= 0) {
+    const slice = SLICE_HEADER.exec(lines[sliceAt]!)!;
+    const read = range(slice[2]!, slice[3]);
+    // #2315 — a cut read: only the numbered lines the model's copy kept (it
+    // still saw the file's name, so the file is read even when no line was).
+    if (read) {
+      const r = cut ? clip(read, lastNumberedLine(lines.slice(sliceAt + 1))) : read;
+      ev.add(slice[1]!, "repo", r ?? undefined, earlier);
+    }
   } else if (t.source === "code" && CODE_TOOLS_CITED_BY_CONTRACT.has(t.tool ?? "")) {
-    for (const ref of t.citations ?? []) {
+    const refs = cut ? seenSymbolCitations(t.citations ?? [], text) : (t.citations ?? []);
+    for (const ref of refs) {
       if (ref.startLine == null || ref.endLine == null) continue;
       const r = range(String(ref.startLine), String(ref.endLine));
       if (r) ev.add(ref.path, "repo", r, earlier);
     }
   } else if (t.source === "code") {
-    for (const own of ownLocatorText(t, text)) {
-      for (const m of own.matchAll(LOCATOR)) {
-        const r = range(m[2]!, m[3]);
+    const own = ownLocatorText(t, text);
+    // #2315 — a cut `search_code_context` result: every block before the last
+    // is whole; the last one shows only the numbered lines the cut kept.
+    const lastHead =
+      cut && t.tool === "search_code_context"
+        ? lines.findLastIndex((l) => CODE_TOOL_HEADERS.get("search_code_context")!.test(l))
+        : -1;
+    const lastEnd = lastHead >= 0 ? lastNumberedLine(lines.slice(lastHead + 1)) : Infinity;
+    own.forEach((locators, i) => {
+      const end = i === own.length - 1 ? lastEnd : Infinity;
+      for (const m of locators.matchAll(LOCATOR)) {
+        const read = range(m[2]!, m[3]);
+        const r = read && clip(read, end);
         if (r) ev.add(m[1]!, "repo", r, earlier);
       }
-    }
+    });
   } else {
     for (const name of headerGroups(text, EXCERPT_HEADER)) {
       ev.add(name, "document", undefined, earlier);
@@ -369,24 +451,33 @@ export function collectCitationEvidence(
   retrieved: RetrievedEvidence | null | undefined,
   tools: readonly ToolEvidence[] = [],
   earlierTools: readonly ToolEvidence[] = [],
+  options: {
+    /**
+     * #2315 — the turn's cap on the model's copy of one tool result
+     * (`toolResultMaxChars`): what lay past it was never seen. Earlier turns
+     * ran under the same cap.
+     */
+    toolResultMaxChars?: number;
+  } = {},
 ): CitationEvidence {
   const ev = new CitationEvidence();
   for (const c of retrieved?.codeEntries ?? []) {
     ev.codeEntries.set(c.n, { ...c, path: normalizePath(c.path) });
+    // #2315 — the fused block's code locators are its entries. Its text, and
+    // every retrieved document's, is never scanned for `path:line`: a spec
+    // that mentions `app.ts:42` did not read it.
+    const r = range(String(c.lines[0]), String(c.lines[1]));
+    if (r) ev.add(c.path, "repo", r);
   }
   for (const e of retrieved?.excerpts ?? []) {
     const source: ChatCitationSource = e.source === "repo" ? "repo" : "document";
     ev.excerpts.push({ name: normalizePath(e.name), source });
     ev.add(e.name, source);
   }
-  for (const text of retrieved?.contexts ?? []) {
-    // A capture with no `excerpts` (a multi-product block before #2279): read its headers.
-    if (!retrieved?.excerpts) {
+  // A capture with no `excerpts` (a multi-product block before #2279): read its headers.
+  if (!retrieved?.excerpts) {
+    for (const text of retrieved?.contexts ?? []) {
       for (const name of headerGroups(text, EXCERPT_HEADER)) ev.add(name, "document");
-    }
-    for (const m of text.matchAll(LOCATOR)) {
-      const r = range(m[2]!, m[3]);
-      if (r) ev.add(m[1]!, "repo", r);
     }
   }
   for (const c of retrieved?.codeEntries ?? []) {
@@ -400,8 +491,9 @@ export function collectCitationEvidence(
       });
     }
   }
-  for (const t of tools) addToolEvidence(ev, t, false);
-  for (const t of earlierTools) addToolEvidence(ev, t, true);
+  const cap = options.toolResultMaxChars;
+  for (const t of tools) addToolEvidence(ev, t, false, cap);
+  for (const t of earlierTools) addToolEvidence(ev, t, true, cap);
   return ev;
 }
 
@@ -448,6 +540,29 @@ function withoutInlineCode(text: string): string {
 /** Which statuses checked out, and which of two is the better support. */
 const RANK: Partial<Record<ChatCitationStatus, number>> = { verified: 2, "verified-earlier": 1 };
 
+/**
+ * #2315 — the words that introduce a file the answer proposes to create, just
+ * before its path: "create `src/lib/new.ts`", "a new file at src/lib/new.ts",
+ * "Creating the module `x/y.ts`". Only nouns for a file may sit between the
+ * verb and the path, so "create a helper in `src/app.ts`" (an existing file)
+ * is still a citation.
+ */
+const PROPOSED_BEFORE =
+  /\b(?:create[sd]?|creating|new)\s+(?:(?:a|an|the|file|module|test|spec|component|script|class|page|route|migration|folder|directory|config|called|named|at)\s+)*[`'"*([]*$/i;
+/** …or straight after it: "`src/lib/new.ts` (new)", "src/lib/new.ts — new file". */
+const PROPOSED_AFTER =
+  /^[`'"*)\]]*\s*(?:\((?:new|new file|to create|to be created)\)|[—–-]\s*new\b)/i;
+/** How far either side of a path {@link PROPOSED_BEFORE} and {@link PROPOSED_AFTER} look. */
+const PROPOSAL_WINDOW = 80;
+
+/** Whether the path at `[at, end)` of `text` is one the answer proposes to create. */
+function proposedAsNew(text: string, at: number, end: number): boolean {
+  return (
+    PROPOSED_BEFORE.test(text.slice(Math.max(0, at - PROPOSAL_WINDOW), at)) ||
+    PROPOSED_AFTER.test(text.slice(end, end + PROPOSAL_WINDOW))
+  );
+}
+
 /** Answer text with fenced code blocks and URLs blanked out (same length, so offsets hold). */
 function citableText(answer: string): string {
   return answer
@@ -480,6 +595,10 @@ export function verifyCitations(answer: string, ev: CitationEvidence): ChatCitat
     // mention, not a citation: it says nothing checkable.
     if (hits.length !== 1 && !lines && !token.includes("/")) continue;
     const cited = { text: m[0].trim(), ...(lines ? { lines } : {}) };
+    // #2315 — a file nothing read that the answer proposes to create cites nothing.
+    if (hits.length === 0 && !lines && proposedAsNew(text, m.index!, m.index! + m[0].length)) {
+      continue;
+    }
     if (hits.length === 0) {
       push(m.index!, { ...cited, path: normalizePath(token), status: "not-read" });
       continue;
