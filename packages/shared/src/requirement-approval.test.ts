@@ -56,6 +56,18 @@ describe("approvalEditWarning", () => {
     );
   });
 
+  it("says an in-review save also drops the requirement's own approval (#2224)", () => {
+    const warning = approvalEditWarning(
+      approval({
+        reviewStatus: "approved",
+        reviews: [review({ status: "in_review", approvedBy: [] })],
+      }),
+    );
+    expect(warning).toBe(
+      'In review as v1 ("Security sign-off"); saving creates v2, and the reviewers keep deciding on v1 unless the review is withdrawn and submitted again. It also goes from approved back to awaiting review.',
+    );
+  });
+
   it("prefers an approval over an open review of the same version", () => {
     const warning = approvalEditWarning(
       approval({ reviews: [review({ id: "rev-2", status: "in_review" }), review()] }),

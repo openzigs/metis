@@ -19,7 +19,7 @@ import {
 } from "@/components/reviews/review-badges";
 import { VersionDiff, formatDiffValue } from "@/components/reviews/VersionDiff";
 import { ReviewItemCard } from "@/components/reviews/ReviewItemCard";
-import { ReviewHeader, policyLabel } from "@/components/reviews/ReviewHeader";
+import { ReviewHeader, outOfDateSummary, policyLabel } from "@/components/reviews/ReviewHeader";
 import { ReviewerPanel } from "@/components/reviews/ReviewerPanel";
 import { DecisionBar } from "@/components/reviews/DecisionBar";
 import type { ReviewItem, ReviewRequest, ReviewerAssignment } from "@/lib/reviews-api";
@@ -586,6 +586,36 @@ describe("policyLabel / ReviewHeader", () => {
     // #620 — the baseline name links to the project's baseline detail page.
     const baselineLink = screen.getByRole("link", { name: "Sprint 12 baseline" });
     expect(baselineLink).toHaveAttribute("href", "/projects/p-1/baselines/b1");
+    expect(screen.getByText(/Baseline created on approval/)).toBeInTheDocument();
+  });
+
+  describe("outOfDateSummary (#2224)", () => {
+    const item = (id: string, pinnedVersion: number, version: number) => ({
+      id,
+      requirementId: `req-${id}`,
+      generatedDocumentId: null,
+      pinnedVersion,
+      requirement: { id: `req-${id}`, title: id, version },
+      generatedDocument: null,
+    });
+
+    it("counts the requirements edited since their pin", () => {
+      const items = [item("a", 1, 2), item("b", 1, 1), item("c", 3, 4)];
+      expect(outOfDateSummary({ status: "approved", items })).toBe(
+        "2 requirements changed since approval.",
+      );
+      expect(outOfDateSummary({ status: "approved", items: [item("a", 1, 2)] })).toBe(
+        "1 requirement changed since approval.",
+      );
+      expect(outOfDateSummary({ status: "in_review", items: [item("a", 1, 2)] })).toMatch(
+        /^1 requirement changed since this review was submitted/,
+      );
+    });
+
+    it("says nothing when every pin is current, or the review no longer stands on them", () => {
+      expect(outOfDateSummary({ status: "approved", items: [item("a", 1, 1)] })).toBeNull();
+      expect(outOfDateSummary({ status: "rejected", items: [item("a", 1, 2)] })).toBeNull();
+    });
   });
 });
 

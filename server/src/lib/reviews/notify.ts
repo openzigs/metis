@@ -13,8 +13,9 @@
  *     #1581 — that row is sent INSTEAD of the decision's `review_decided`: one
  *     decision is one notification.
  *   - #2219 — **an edit of a requirement an approved or in-review review pinned**
- *     → that review's reviewers and requester (`review_item_changed`), once:
- *     only the edit that moves the requirement off the pinned version notifies.
+ *     → that review's reviewers and requester (`review_item_changed`), once
+ *     per pin: a person already told the requirement moved past it is not
+ *     told again (#2224).
  *
  * PREFERENCES (#614/#608): every send is gated per recipient via
  * `shouldNotify(userId, "inApp", "requirementsApproved")` — review lifecycle
@@ -309,19 +310,63 @@ export interface ReviewedRequirementEditInput {
   fromVersion: number;
   /** The version the edit wrote. */
   toVersion: number;
-  /** The editor — never notified of their own edit. */
-  actorId: string;
+  /**
+   * The editor — never notified of their own edit. Null for a system writer
+   * (an import re-sync, #2224), which has no one to leave out.
+   */
+  actorId: string | null;
+}
+
+/** The `review_item_changed` payload fields this module reads back (#2224). */
+interface ItemChangedPayload {
+  requirementId?: unknown;
+  pinnedVersion?: unknown;
+}
+
+/**
+ * #2224 — per user, the highest pinned version of `requirementId` they were
+ * already told was edited past (`review_item_changed`, any review). Reads only
+ * the candidates' own rows of that type that name the requirement.
+ */
+async function toldUpTo(requirementId: string, userIds: string[]): Promise<Map<string, number>> {
+  const told = new Map<string, number>();
+  if (userIds.length === 0) return told;
+  const rows = await prisma.notification.findMany({
+    where: {
+      userId: { in: userIds },
+      type: "review_item_changed",
+      payload: { contains: requirementId },
+    },
+    select: { userId: true, payload: true },
+  });
+  for (const row of rows) {
+    let payload: ItemChangedPayload;
+    try {
+      payload = JSON.parse(row.payload ?? "null") as ItemChangedPayload;
+    } catch {
+      continue;
+    }
+    if (payload?.requirementId !== requirementId || typeof payload.pinnedVersion !== "number") {
+      continue;
+    }
+    told.set(row.userId, Math.max(told.get(row.userId) ?? 0, payload.pinnedVersion));
+  }
+  return told;
 }
 
 /**
  * #2219 — tell the reviewers and the requester (those who can still open the
- * project, #2394) of every approved or in-review
- * review that pinned the version this edit replaced that the requirement has
- * changed since. Only a review pinned at `fromVersion` qualifies, so the first
- * edit after a sign-off notifies and a second edit (the pin is already out of
- * date) does not: each person is told once. A person in several such reviews
- * gets one notification, for the most recent one. Every affected review's open
- * page re-reads it. Never throws.
+ * project, #2394) of every approved or in-review review whose pin this edit
+ * puts out of date that the requirement has changed since. A person in several
+ * such reviews gets one notification, for the most recent one. Every affected
+ * review's open page re-reads it. Never throws.
+ *
+ * #2224 — "once" is keyed on what each person was already told, not on the
+ * edit being the first after the pin. A pin at or before `fromVersion`
+ * qualifies, and a person already told the requirement moved past a version at
+ * or after that pin is not told again. Keying on `pinnedVersion ===
+ * fromVersion` let a version bump that sent nothing (an import re-sync, a
+ * clarification enrichment, a no-op restore) silence every later edit.
  */
 export async function notifyReviewedRequirementEdited(
   input: ReviewedRequirementEditInput,
@@ -330,10 +375,11 @@ export async function notifyReviewedRequirementEdited(
     const items = await prisma.reviewRequestItem.findMany({
       where: {
         requirementId: input.requirementId,
-        pinnedVersion: input.fromVersion,
+        pinnedVersion: { lte: input.fromVersion },
         reviewRequest: { status: { in: [...PINNING_STATUSES] } },
       },
       select: {
+        pinnedVersion: true,
         requirement: { select: { title: true } },
         reviewRequest: {
           select: {
@@ -367,10 +413,16 @@ export async function notifyReviewedRequirementEdited(
       }),
     );
 
+    const told = await toldUpTo(input.requirementId, [...new Set(audiences.flat())]);
     const recipients = new Map<string, (typeof items)[number]>();
     items.forEach((item, i) => {
       for (const userId of audiences[i]) {
-        if (!recipients.has(userId)) recipients.set(userId, item);
+        if (recipients.has(userId)) continue;
+        // Already told the requirement moved past this pin (or a later one).
+        // Versions start at 0, so "never told" is not a version.
+        const toldPin = told.get(userId);
+        if (toldPin !== undefined && toldPin >= item.pinnedVersion) continue;
+        recipients.set(userId, item);
       }
     });
 
@@ -386,14 +438,14 @@ export async function notifyReviewedRequirementEdited(
             kind: "review_item_changed",
             title: approved ? "Approved requirement changed" : "Requirement under review changed",
             message: approved
-              ? `"${name}" was edited to v${input.toVersion} after "${review.title}" approved v${input.fromVersion}. It needs a re-review.`
-              : `"${name}" was edited to v${input.toVersion} while "${review.title}" is reviewing v${input.fromVersion}.`,
+              ? `"${name}" was edited to v${input.toVersion} after "${review.title}" approved v${item.pinnedVersion}. It needs a re-review.`
+              : `"${name}" was edited to v${input.toVersion} while "${review.title}" is reviewing v${item.pinnedVersion}.`,
             reviewId: review.id,
             projectId: review.projectId,
             extra: {
               projectId: review.projectId,
               requirementId: input.requirementId,
-              pinnedVersion: input.fromVersion,
+              pinnedVersion: item.pinnedVersion,
               currentVersion: input.toVersion,
             },
           });

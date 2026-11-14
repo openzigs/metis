@@ -430,11 +430,12 @@ describe("requirement history router", () => {
       expect(auditArg.metadata).toMatchObject({
         reviewStatus: { from: "approved", to: "draft" },
       });
-      // Post-commit: the reviews pinned at the replaced version (3) are looked up.
+      // Post-commit: the reviews pinned at or before the replaced version (3)
+      // are looked up (#2224).
       await vi.waitFor(() =>
         expect(mockPrisma.reviewRequestItem.findMany).toHaveBeenCalledWith(
           expect.objectContaining({
-            where: expect.objectContaining({ requirementId: "req-1", pinnedVersion: 3 }),
+            where: expect.objectContaining({ requirementId: "req-1", pinnedVersion: { lte: 3 } }),
           }),
         ),
       );

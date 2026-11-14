@@ -40,6 +40,7 @@ import type { AgentKind, AgentRef } from "./agents.js";
 import type { CrossDocFindings } from "./cross-doc.js";
 import type { ImpactAffectedRelation } from "./impact.js";
 import type { TestLinkRelation } from "./traceability.js";
+import type { RequirementApprovalReopened } from "./requirement-approval.js";
 // Type-only, and the dependency runs the other way at runtime: the presentation
 // seam imports this module's types. Erased at build, so no import cycle exists.
 import type { RequirementSupportConfidence } from "./support-panel-view.js";
@@ -1878,6 +1879,12 @@ export interface AnalysisSnapshot {
      * requirement the viewer could otherwise approve; absent otherwise.
      */
     selfApprovalForbidden?: true;
+    /**
+     * #2224 — a formal review approved an earlier version and it was edited
+     * since, so it awaits a re-review. Set by `GET /api/analyses/:id` for a
+     * viewer with `review.read`; absent otherwise.
+     */
+    approvalReopened?: RequirementApprovalReopened;
     /**
      * #2447 — the reader cannot see a source this requirement draws on: its
      * text is the restricted placeholder and it carries no criteria, labels or

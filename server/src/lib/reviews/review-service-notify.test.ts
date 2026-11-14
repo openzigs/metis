@@ -22,8 +22,8 @@ const mockPrisma = {
     updateMany: vi.fn(async () => ({ count: 0 })),
   },
   reviewerAssignment: { updateMany: vi.fn(), findMany: vi.fn() },
-  baseline: { create: vi.fn(), count: vi.fn(async () => 0), updateMany: vi.fn() },
-  auditLog: { create: vi.fn() },
+  baseline: { create: vi.fn(), findMany: vi.fn(async () => []), updateMany: vi.fn() },
+  auditLog: { create: vi.fn(), count: vi.fn(async () => 0) },
   $transaction: vi.fn(),
 };
 vi.mock("../prisma.js", () => ({

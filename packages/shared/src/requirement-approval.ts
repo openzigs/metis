@@ -31,6 +31,18 @@ export interface RequirementApproval {
   reviews: RequirementApprovalReview[];
 }
 
+/**
+ * #2224 — a requirement a formal review approved and that was edited since, so
+ * it is back awaiting review. Set on a card (`GET /api/analyses/:id`) so it
+ * does not read "draft" like one nobody ever reviewed.
+ */
+export interface RequirementApprovalReopened {
+  reviewId: string;
+  reviewTitle: string;
+  /** The version the review approved. */
+  approvedVersion: number;
+}
+
 /** "A", "A and B", "A, B and C". */
 function joinNames(names: readonly string[]): string {
   if (names.length <= 1) return names[0] ?? "";
@@ -44,7 +56,8 @@ function joinNames(names: readonly string[]): string {
  * - An approved review pinned at the current version: "Approved as v1 by Test
  *   Coordinator; saving creates v2 and reopens review."
  * - A review in progress on the current version: the reviewers are deciding on
- *   v1, and only a withdraw and a new submit shows them v2.
+ *   v1, and only a withdraw and a new submit shows them v2. When the
+ *   requirement is approved as well, it says the save drops that too (#2224).
  * - Approved with no formal review (the card's Approve button): saving returns
  *   it to awaiting review.
  *
@@ -64,7 +77,13 @@ export function approvalEditWarning(
   }
   const inReview = current.find((r) => r.status === "in_review");
   if (inReview) {
-    return `In review as v${inReview.pinnedVersion} ("${inReview.title}"); saving creates v${next}, and the reviewers keep deciding on v${inReview.pinnedVersion} unless the review is withdrawn and submitted again.`;
+    // #2224 — an approved requirement stays approved while under review, and
+    // the save drops that approval too: say so, not only the review's pin.
+    const dropsApproval =
+      approval.reviewStatus === "approved"
+        ? " It also goes from approved back to awaiting review."
+        : "";
+    return `In review as v${inReview.pinnedVersion} ("${inReview.title}"); saving creates v${next}, and the reviewers keep deciding on v${inReview.pinnedVersion} unless the review is withdrawn and submitted again.${dropsApproval}`;
   }
   if (approval.reviewStatus === "approved") {
     return `Approved as v${approval.version}; saving creates v${next} and returns it to awaiting review.`;

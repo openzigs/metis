@@ -36,6 +36,16 @@ const RUNNING_POLL_MS = 5000;
  */
 const FOLLOWING_POLL_MS = 15_000;
 
+/**
+ * One coverage read as the page caches it: the API's answer, stamped with when
+ * it was sent and when the idle read before it was (#2213, #2218). Derived from
+ * the API's type so the cache read below cannot drift from it (#2224).
+ */
+type CoverageRead = Awaited<ReturnType<typeof embeddingsApi.coverage>> & {
+  sentAt: number;
+  priorIdleSentAt: number | null;
+};
+
 export default function AdminEmbeddingsPage() {
   const qc = useQueryClient();
   const router = useRouter();
@@ -76,9 +86,9 @@ export default function AdminEmbeddingsPage() {
     // enqueue may still have been answered before the job started.
     // Issue #2218 — and with when the read before it was sent, if that one too
     // said nothing runs, so one read alone cannot drop the page's job.
-    queryFn: async () => {
+    queryFn: async (): Promise<CoverageRead> => {
       const sentAt = Date.now();
-      const prior = qc.getQueryData<{ sentAt: number; shadow?: { inProgress: boolean } }>(
+      const prior = qc.getQueryData<CoverageRead>(
         queryKeys.admin.embeddingsCoverage(submittedProjectId),
       );
       const priorIdleSentAt = prior && !prior.shadow?.inProgress ? prior.sentAt : null;

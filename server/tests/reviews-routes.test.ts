@@ -51,10 +51,11 @@ const mockPrisma = {
     updateMany: vi.fn(async () => ({ count: 0 })),
   },
   reviewerAssignment: { updateMany: vi.fn(), findMany: vi.fn() },
-  // #2219 — a re-approval numbers its baseline (`count`); a re-review detaches
-  // the earlier one (`updateMany`).
-  baseline: { create: vi.fn(), count: vi.fn(async () => 0), updateMany: vi.fn() },
-  auditLog: { findMany: vi.fn(), create: vi.fn() },
+  // #2219 / #2224 — an approval names its baseline from the names the project
+  // holds (`findMany`) and the review's re-review count (`auditLog.count`), and
+  // detaches an earlier round's baseline (`updateMany`).
+  baseline: { create: vi.fn(), findMany: vi.fn(async () => []), updateMany: vi.fn() },
+  auditLog: { findMany: vi.fn(), create: vi.fn(), count: vi.fn(async () => 0) },
   $transaction: vi.fn(),
 };
 
@@ -600,6 +601,13 @@ describe("POST /reviews/:reviewId/decision", () => {
     expect(baselineArg.data.reviewRequestId).toBe("rev-1");
     expect(baselineArg.data.createdById).toBe("user-rev-2");
     expect(baselineArg.data.items.create).toEqual([{ requirementId: "req-1", version: 2 }]);
+    // #2224 — named in words, not after the review id; an earlier round's
+    // baseline is detached before this one takes the review.
+    expect(baselineArg.data.name).toBe("Sprint 4 sign-off");
+    expect(mockPrisma.baseline.updateMany).toHaveBeenCalledWith({
+      where: { reviewRequestId: "rev-1" },
+      data: { reviewRequestId: null },
+    });
     // Sign-off evidence commits INSIDE the decision transaction — never
     // fire-and-forget (M1: a lost audit row is an integrity defect).
     const rows = auditRows();
@@ -1132,11 +1140,9 @@ describe("POST /reviews/:reviewId/reopen — #2219 Request re-review", () => {
       where: { id: "rev-1", status: "approved" },
       data: { status: "in_review", decidedAt: null },
     });
-    // The earlier round's baseline is kept but no longer the review's.
-    expect(mockPrisma.baseline.updateMany).toHaveBeenCalledWith({
-      where: { reviewRequestId: "rev-1" },
-      data: { reviewRequestId: null },
-    });
+    // #2224 — the earlier round's baseline stays the review's while the
+    // re-review runs; only the next approval detaches it.
+    expect(mockPrisma.baseline.updateMany).not.toHaveBeenCalled();
     // Re-pinned at the edited version, and every decision starts again.
     expect(mockPrisma.reviewRequestItem.update).toHaveBeenCalledWith({
       where: { id: "item-1" },

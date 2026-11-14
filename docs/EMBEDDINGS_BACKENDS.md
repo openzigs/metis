@@ -715,8 +715,7 @@ until it expires — up to `REINDEX_LEASE_TTL_MS` (default 120 s) after the hold
 last renewal (see "The reindex lease" below). Until then coverage still reports a
 reindex running but names no job (its process is gone), so the page keeps showing it
 as running and re-reads coverage every 5 seconds; the button comes back once the lease
-expires. On
-SQLite there is no lease, so the recovery takes the two reads above.
+expires. On SQLite there is no lease, so the recovery takes the two reads above.
 
 > **Upgrading from the 384-dim default? CLEAR `EMBED_DIM` (or set it to 768).**
 > `EMBED_DIM` does **not** resize the `xenova` / `sidecar` backends — they always
