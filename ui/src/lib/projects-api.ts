@@ -148,8 +148,17 @@ export interface RetrievedChunk {
 }
 
 export const projectsApi = {
-  list: (params?: { status?: string; limit?: number; offset?: number; workspaceId?: string }) =>
-    apiFetch<ProjectListPage>("/projects", { params }),
+  list: (params?: {
+    status?: string;
+    limit?: number;
+    offset?: number;
+    workspaceId?: string;
+    /**
+     * #2424 — with `workspaceId`, only that workspace's own projects: not the
+     * projects in no workspace, which the list otherwise carries in every one.
+     */
+    onlyWorkspace?: boolean;
+  }) => apiFetch<ProjectListPage>("/projects", { params }),
   get: (id: string) => apiFetch<Project>(`/projects/${id}`),
   create: (input: {
     name: string;

@@ -160,5 +160,31 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await ids(admin, "?workspaceId=ws-3")).toEqual([P3, P_OPEN].sort());
       expect(await ids(admin)).toEqual([P1, P2, P3, P_OPEN].sort());
     });
+
+    // #2424 — "Whole workspace" (#2351) counts and selects the workspace's own
+    // projects: the switcher's list also carries every project in no workspace,
+    // which made impact analysis run on them and chat count them (17, not 2).
+    it("onlyWorkspace=true lists the named workspace's own projects, not those in none", async () => {
+      const two = bearer("u-two", ["ws-1", "ws-2"]);
+      expect(await ids(two, "?workspaceId=ws-2&onlyWorkspace=true")).toEqual([P2]);
+      const res = await request(app())
+        .get("/api/projects?workspaceId=ws-1&onlyWorkspace=true")
+        .set("Authorization", two);
+      expect(res.body.data.total).toBe(1);
+      // It only narrows: a workspace they are not in still lists nothing of it.
+      const one = bearer("u-one", ["ws-1"]);
+      expect(await ids(one, "?workspaceId=ws-2&onlyWorkspace=true")).toEqual([]);
+      expect(
+        await ids(bearer("u-admin", [], "admin"), "?workspaceId=ws-3&onlyWorkspace=true"),
+      ).toEqual([P3]);
+    });
+
+    it("onlyWorkspace without a workspace named changes nothing", async () => {
+      const two = bearer("u-two", ["ws-1", "ws-2"]);
+      expect(await ids(two, "?onlyWorkspace=true")).toEqual([P1, P2, P_OPEN].sort());
+      expect(await ids(bearer("u-admin", [], "admin"), "?onlyWorkspace=true")).toEqual(
+        [P1, P2, P3, P_OPEN].sort(),
+      );
+    });
   },
 );

@@ -22,6 +22,7 @@
 import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-client";
+import { projectsApi } from "@/lib/projects-api";
 import {
   projectSwitcherQuery,
   readStoredActiveProjectId,
@@ -142,14 +143,23 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
   const { data: workspaces = [], isSuccess: workspacesLoaded } = useQuery(workspaceListQuery);
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId) ?? null;
   // #2351 — "This project" is the top bar's, and "Whole workspace" says how
-  // many projects it searches: the top bar's own list of that workspace.
+  // many projects it searches.
   const switcher = useQuery(projectSwitcherQuery(activeWorkspaceId));
   const switcherItems = Array.isArray(switcher.data?.items) ? switcher.data.items : [];
   const activeId = resolveActiveProjectId(readStoredActiveProjectId(), switcherItems);
   const current = projects.find((p) => p.id === activeId) ?? null;
+  // #2424 — counted as a workspace chat searches: the workspace's own projects.
+  // The top bar's list also carries every project in no workspace, which the
+  // count included (17 for a workspace of 2 in a shared stack).
+  const ownProjects = useQuery({
+    queryKey: ["projects", "workspace-own", activeWorkspace?.id ?? null],
+    queryFn: () =>
+      projectsApi.list({ workspaceId: activeWorkspace!.id, onlyWorkspace: true, limit: 1 }),
+    enabled: activeWorkspace !== null,
+  });
   const workspaceCount =
-    activeWorkspace && switcher.isSuccess && typeof switcher.data?.total === "number"
-      ? switcher.data.total
+    activeWorkspace && ownProjects.isSuccess && typeof ownProjects.data?.total === "number"
+      ? ownProjects.data.total
       : null;
 
   // Self-heal a stale persisted scope: once the accessible-projects list has
@@ -178,8 +188,18 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
     storeScope(next);
   }, [workspacesLoaded, workspaces, value, onChange]);
 
+  // #2424 — the selection last made by ticking. The scope alone cannot tell
+  // the top bar's project ticked from "This project" (both are that one id),
+  // so without this a ticked top-bar project showed unticked, as "This
+  // project", and the next tick dropped it. Held as the scope object a tick
+  // emitted, not its ids: any scope set from outside (the opening rule, a
+  // resumed chat) is a different object, even with the same ids, and so is
+  // read afresh.
+  const [tickedScope, setTickedScope] = useState<ProjectScope | null>(null);
+  const tickedHere = value.mode === "selected" && value === tickedScope;
+
   function isThisProject(scope: ProjectScope): boolean {
-    return scope.projectIds.length === 1 && scope.projectIds[0] === current?.id;
+    return !tickedHere && scope.projectIds.length === 1 && scope.projectIds[0] === current?.id;
   }
 
   function pick(next: ProjectScope) {
@@ -195,7 +215,9 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
     const ids = currentIds.includes(projectId)
       ? currentIds.filter((id) => id !== projectId)
       : [...currentIds, projectId];
-    pick(normaliseScope({ mode: "selected", projectIds: ids }));
+    const next = normaliseScope({ mode: "selected", projectIds: ids });
+    setTickedScope(next.mode === "selected" ? next : null);
+    pick(next);
   }
 
   // #2351 — the shared picker's three options over chat's scope: one project
@@ -233,10 +255,13 @@ export function ProjectScopeSelector({ value, onChange, disabled }: Props) {
       workspaceNote="No workspace is open in the top bar."
       scopeWorkspace={storedWorkspace ? { name: storedWorkspace.name, count: null } : null}
       onPickThis={() => {
-        if (current) pick({ mode: "selected", projectIds: [current.id] });
+        if (!current) return;
+        setTickedScope(null);
+        pick({ mode: "selected", projectIds: [current.id] });
       }}
       onPickWorkspace={() => {
         if (activeWorkspace) {
+          setTickedScope(null);
           pick({ mode: "workspace", projectIds: [], workspaceId: activeWorkspace.id });
         }
       }}

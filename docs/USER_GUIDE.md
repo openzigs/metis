@@ -3571,8 +3571,11 @@ make answers more complete, and citation precision did not improve.
 
 A chat that is not scoped to a project is offered no tools. Administrators can
 turn the METIS and MCP tools off with `CHAT_TOOLS=false`. A chat can be scoped
-only to a project you can open: asking for another workspace's project is
-refused as "not found", and no chat is created.
+only to a project you can open. If you ask for a project you cannot open,
+because it was deleted or because it belongs to a workspace you are not in, the
+chat still starts, unscoped, and shows the notice that the selected project is
+no longer available. Both cases look the same, so a project id does not reveal
+whether that project exists.
 
 **Tool activity.** In Chat and in the Workbench, each tool call appears under
 the conversation as it happens: running, waiting for your approval, done, or an error. Open a call to
@@ -3913,7 +3916,7 @@ The list opens by itself when any citation did not check out. A file name mentio
 
 **Which version of the code a citation describes.** Each citation of the project's code shows the commit it was read at, as a short SHA such as `@0123456`. Hover it for the full commit. Its GitHub link opens the file at that commit, not at the latest one, so the lines it shows are the lines the answer read. A citation with no commit says **version unknown**: METIS did not record the version, which is the case for every answer from before this was added and for an uploaded or local folder. Read that as "not known", not as "current". When the project's index is behind the repository (new commits were pulled but the index was not rebuilt yet), a file the answer read is marked **⚠ index is behind the repository**. The lines it quoted are the newer ones, and line numbers from a search may not match them. A stale citation is still listed and still counts as verified: it is flagged, never dropped. Re-index the repository to clear it. [#2325]
 
-**When the sources don't answer, or the question is unclear.** A chat scoped to one project or several, and the AI in a discussion, answers from the project's sources. When they don't support an answer, the reply says so ("the sources don't show this") and names what is missing, such as the document, rule or code that would answer it, instead of guessing from general knowledge. When only part of a question is supported, it answers that part and says which part is not. When a question could mean more than one thing (which product, which rule, which version), it asks you one specific question listing the options it found, and waits for your answer. An unscoped chat ("All projects") has no project sources, so this does not apply there. [#2241]
+**When the sources don't answer, or the question is unclear.** A chat scoped to one project or several, and the AI in a discussion, answers from the project's sources. When they don't support an answer, the reply says so ("the sources don't show this") and names what is missing, such as the document, rule or code that would answer it, instead of guessing from general knowledge. When only part of a question is supported, it answers that part and says which part is not. When a question could mean more than one thing (which product, which rule, which version), it asks you one specific question listing the options it found, and waits for your answer. An unscoped chat ("No product chosen") has no project sources, so this does not apply there. [#2241]
 
 **Relevance floor.** In a chat scoped to one project, automatic retrieval sets aside any excerpt whose relevance to the question is below a floor, so an unrelated excerpt is never presented to the model as evidence. A keyword-only match is kept only when some other excerpt cleared the floor. When you attach documents to a question (the Workbench's context chips), the floor does not apply: you chose the source, so its closest excerpts are always given to the model, for example for "summarise this". The floor is `CHAT_RETRIEVAL_MIN_SCORE` (default 0.55; 0 turns it off). The default was measured with the default embedding model: it was the highest floor that set aside none of the excerpts a correct answer needed on the BA question set. An administrator who changes the embedding model should measure it again (`pnpm eval:ba-qa --floor-sweep`). [#2241]
 

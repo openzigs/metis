@@ -247,6 +247,10 @@ CLAUDE.local.md
 **/test-results/
 **/playwright-report/
 .playwright-mcp/
+# Reviewed and shipped on purpose: #2424's desktop walkthrough, made by
+# e2e/tests/scope-picker-2424.spec.ts against the mock-auth e2e stack (seeded
+# names, the mock `developer`, the offline LLM stub; no secrets or real data).
+!docs/walkthroughs/2424-scope-picker/*.png
 
 # Every env file is secret-bearing except the sample, which holds placeholders only.
 .env

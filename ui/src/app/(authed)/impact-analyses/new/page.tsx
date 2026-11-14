@@ -98,12 +98,15 @@ export default function NewImpactAnalysisPage() {
   // server rather than from the first page of every project. A workspace with
   // more than one run takes is refused and said, as the portfolio check does,
   // never cut to its first projects.
+  // #2424 — its own projects only: not every project in no workspace, which
+  // the unfiltered list carries in each workspace.
   const { workspaceId: activeWorkspaceId } = useValidatedActiveWorkspaceId();
   const { data: workspaces = [] } = useQuery(workspaceListQuery);
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId) ?? null;
   const workspaceProjects = useQuery({
     queryKey: ["impact", "workspace-projects", activeWorkspace?.id ?? null],
-    queryFn: () => projectsApi.list({ workspaceId: activeWorkspace!.id, limit: 100 }),
+    queryFn: () =>
+      projectsApi.list({ workspaceId: activeWorkspace!.id, onlyWorkspace: true, limit: 100 }),
     enabled: activeWorkspace !== null,
     retry: false,
   });

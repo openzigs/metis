@@ -664,11 +664,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           code: "AGENT_NOT_FOUND",
         },
         {
+          // #2440 — the unreachable project degrades as an unknown one would,
+          // leaving the custom agent with no project to bind in.
           name: "a user who cannot reach the agent's project",
           token: () => bob,
           body: { projectId: "p-ws", agentRef: "custom:c-ws" },
-          status: 404,
-          code: "NOT_FOUND",
+          status: 400,
+          code: "AGENT_REQUIRES_PROJECT",
+        },
+        {
+          name: "the same agent ref with a project id that never existed (the same answer)",
+          token: () => bob,
+          body: { projectId: "p-never-existed", agentRef: "custom:c-ws" },
+          status: 400,
+          code: "AGENT_REQUIRES_PROJECT",
         },
         {
           name: "a custom agent with no project scope",
@@ -710,30 +719,44 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     describe("#304 — a session binds only a project the caller can reach", () => {
-      const cases: Array<{ name: string; token: () => string; body: Record<string, unknown> }> = [
+      // #2440 — and the answer does not say whether the id exists: another
+      // workspace's project degrades exactly as an id that never existed does
+      // (201, unscoped, "stale-project", #607), so a leaked id is not a probe.
+      const cases: Array<{ name: string; body: (projectId: string) => Record<string, unknown> }> = [
         {
           name: "another workspace's project via projectId",
-          token: () => bob,
-          body: { projectId: "p-ws" },
+          body: (id) => ({ projectId: id }),
         },
         {
           name: "another workspace's project via a single projectIds entry",
-          token: () => bob,
-          body: { projectIds: ["p-ws"] },
+          body: (id) => ({ projectIds: [id] }),
         },
         {
           name: "another workspace's project with a library agent",
-          token: () => bob,
-          body: { projectId: "p-ws", agentRef: `library:${IDS.lead}` },
+          body: (id) => ({ projectId: id, agentRef: `library:${IDS.lead}` }),
         },
       ];
+      /** The answer, with the per-row fields and the echoed request ids masked. */
+      const masked = (res: request.Response) => {
+        const { id: _id, createdAt: _c, updatedAt: _u, ...session } = res.body.data?.session ?? {};
+        const { requestedProjectIds: _r, ...scope } = res.body.data?.scope ?? {};
+        return { status: res.status, error: res.body.error ?? null, session, scope };
+      };
       for (const c of cases) {
-        it(`refuses ${c.name}: 404 NOT_FOUND, nothing created`, async () => {
-          const before = await db.aISession.count();
-          const res = await createSession(c.token(), c.body);
-          expect(res.status, res.text).toBe(404);
-          expect(res.body.error?.code).toBe("NOT_FOUND");
-          expect(await db.aISession.count()).toBe(before);
+        it(`binds nothing for ${c.name}, answering as for an unknown id`, async () => {
+          const foreign = await createSession(bob, c.body("p-ws"));
+          const unknown = await createSession(bob, c.body("p-never-existed"));
+          expect(foreign.status, foreign.text).toBe(201);
+          expect(masked(foreign)).toEqual(masked(unknown));
+          expect(foreign.body.data.scope).toMatchObject({
+            degraded: true,
+            reason: "stale-project",
+          });
+          const row = await db.aISession.findUniqueOrThrow({
+            where: { id: foreign.body.data.session.id },
+          });
+          expect(row.projectId).toBeNull();
+          expect(row.scopeProjectIds).toBeNull();
         });
       }
 
@@ -758,6 +781,64 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const res = await createSession(admin, { projectId: "p-ws" });
         expect(res.status, res.text).toBe(201);
         expect(res.body.data.session.projectId).toBe("p-ws");
+      });
+
+      describe("#2440 — an admin passes the access check, so the live-row read decides", () => {
+        // `checkProjectAccess` returns early for an admin, so an unknown or a
+        // soft-deleted id comes back reachable; only the live-row read (with
+        // its `deletedAt: null`) keeps it out of the session.
+        const adminToken = () =>
+          issueTokens({
+            userId: IDS.bob,
+            username: "admin",
+            role: "admin",
+            permissions: [],
+            workspaces: [],
+          }).accessToken;
+        beforeAll(async () => {
+          await db.project.upsert({
+            where: { id: "p-soft-deleted" },
+            create: {
+              id: "p-soft-deleted",
+              name: "p-soft-deleted",
+              slug: "p-soft-deleted",
+              createdById: IDS.alice,
+              workspaceId: "ws-1",
+              deletedAt: new Date(),
+            },
+            update: {},
+          });
+        });
+        const cases: Array<{ name: string; body: Record<string, unknown> }> = [
+          { name: "an unknown id via projectId", body: { projectId: "p-never-existed" } },
+          { name: "a soft-deleted project via projectId", body: { projectId: "p-soft-deleted" } },
+          {
+            name: "an unknown id in a multi-product scope",
+            body: { projectIds: ["p-ws", "p-never-existed"] },
+          },
+          {
+            name: "a soft-deleted project in a multi-product scope",
+            body: { projectIds: ["p-ws", "p-soft-deleted"] },
+          },
+        ];
+        for (const c of cases) {
+          it(`degrades ${c.name} to an unscoped session`, async () => {
+            const res = await createSession(adminToken(), c.body);
+            expect(res.status, res.text).toBe(201);
+            expect(res.body.data.scope).toMatchObject({ degraded: true, reason: "stale-project" });
+            const row = await db.aISession.findUniqueOrThrow({
+              where: { id: res.body.data.session.id },
+            });
+            expect(row.projectId).toBeNull();
+            expect(row.scopeProjectIds).toBeNull();
+          });
+        }
+        it("binds a live multi-product scope (positive control)", async () => {
+          const res = await createSession(adminToken(), { projectIds: ["p-ws", IDS.project] });
+          expect(res.status, res.text).toBe(201);
+          expect(res.body.data.scope.degraded).toBe(false);
+          expect(res.body.data.session.scopeProjectIds).toEqual(["p-ws", IDS.project]);
+        });
       });
 
       it("a project that no longer exists still degrades to an unscoped session (#607, unchanged)", async () => {
