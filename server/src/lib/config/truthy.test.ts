@@ -16,6 +16,7 @@ const state = vi.hoisted(() => ({
 vi.mock("./truthy.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./truthy.js")>();
   return {
+    ...actual,
     isTruthyConfigValue: (raw: string) =>
       state.override ? state.override(raw) : actual.isTruthyConfigValue(raw),
   };
@@ -24,6 +25,7 @@ vi.mock("../prisma.js", () => ({ prisma: {} }));
 
 import { isGoverningDocsEnabled } from "../governing/flag.js";
 import { ConfigService, isTruthyConfigValue } from "./config-service.js";
+import { parseConfigBool } from "./truthy.js";
 import type { VaultService } from "../vault/vault-service.js";
 
 /** A registered `bool` key, read from the env when no tunable row is cached. */
@@ -77,6 +79,26 @@ describe("isTruthyConfigValue (#1977)", () => {
     "is false for %j",
     (raw) => {
       expect(isTruthyConfigValue(raw)).toBe(false);
+    },
+  );
+
+  // #2493 — the admin API's strict reading never disagrees with the read path.
+  it.each(SPELLINGS)("parseConfigBool agrees with isTruthyConfigValue on %j", (raw) => {
+    const strict = parseConfigBool(raw);
+    if (strict !== undefined) expect(strict).toBe(isTruthyConfigValue(raw));
+  });
+
+  it.each(["0", "false", "FALSE", "no", "off", " Off "])(
+    "parseConfigBool reads %j as false",
+    (raw) => {
+      expect(parseConfigBool(raw)).toBe(false);
+    },
+  );
+
+  it.each(["", "  ", "enabled", "2", "truee", "1 0", "y", "t"])(
+    "parseConfigBool refuses %j",
+    (raw) => {
+      expect(parseConfigBool(raw)).toBeUndefined();
     },
   );
 
