@@ -7,7 +7,7 @@
   commit a reading records is on its pull request's branch, which was squash-merged:
   `8a0601902` landed on `main` as `1c93df96e` (#2247), `658a61dc2` as `afde69a5f` (#2362),
   `362294ae3` as `b6c1799b3` (#2415) and `2d78fb104` as `815b914ee` (#2444).
-- **Readings:** `eval-data/readings/doc-understanding/`; #2407 re-measured arm R on 2026-11-12 at commit `362294ae3` (`reader-sonnet-5-5-2407`); #2374 measured arms R and B on 2026-11-13 at commit `2d78fb104` (`reader-sonnet-5-5-2374`, `reader-sonnet-5-5-2374-B-cap21333`)
+- **Readings:** `eval-data/readings/doc-understanding/`; #2407 re-measured arm R on 2026-11-12 at commit `362294ae3` (`reader-sonnet-5-5-2407`); #2374 measured arms R and B on 2026-11-13 at commit `2d78fb104` (`reader-sonnet-5-5-2374`, `reader-sonnet-5-5-2374-B-cap21333`); #2319 measured arm R's saved readings on 2026-11-14 at commit `6b9a67824` (`reader-sonnet-5-5-2319`)
 - **Harness:** `pnpm --filter server eval:doc-understanding` (`server/src/lib/eval/doc-understanding/`)
 
 ## The reader, measured (#2255)
@@ -253,6 +253,40 @@ the first measurement of the prompt change. The diagnostic read of 02 was unmete
 about $0.23, priced from its logged usage at `provider-rates.ts`'s Sonnet 5.5 rates. The total is
 about $6.13, within the $20 pre-approval.
 
+### A saved reading costs nothing on the second run (#2319)
+
+Arm R now reads as an analysis reads a stored document: through `readDocumentOnce`
+(`document-reader/reading-cache.ts`, #2280), with an in-process store standing in for the
+`saved_document_readings` table (`eval/doc-understanding/reading-store.ts`). By default every
+run still reads the document again, so `--runs` keeps measuring the reader's spread.
+`--saved-readings` makes a later run reuse the reading an earlier run of the same invocation
+saved, as a second analysis of an unchanged document does.
+
+Reading `reader-sonnet-5-5-2319` (arm R, claude-sonnet-5-5, output cap 16,384, two runs per
+document with `--saved-readings`, at the commit the reading records):
+
+| Document | Run 1: reader calls, $ | Run 2: reader calls, $ | Run 2 identical to the saved reading | Recall, precision (both runs) |
+|---|---|---|---|---|
+| 01 clinic booking | 4, $0.1956 | 0, $0.0000 | yes (142 statements) | 1.00, 0.97 |
+| 02 freight claims | 5, $0.2103 | 0, $0.0000 | yes (138 statements) | 0.98, 0.98 |
+| 03 community grants | 6, $0.2925 | 0, $0.0000 | yes (190 statements) | 0.99, 0.96 |
+| 04 library lending | 10, $0.5167 | 0, $0.0000 | yes (345 statements) | 0.99, 0.93 |
+
+**The second run made no document-read model call on any document,** and metered no reader
+input or output tokens. Each reused reading equals the one saved field for field: mode,
+statements, section coverage, dropped count, merge and output cap (`identicalToSaved`). Its
+requirements are the first run's, character for character. The reader's spend for the corpus fell from
+$1.2151 to $0. The judge still grades each run, so its spend ($0.5699 in all) is unchanged.
+The judge also counted repeats differently on two identical readings (03: 2 and 1; 04: 7 and
+8), which shows how much of the repeat count is the judge's own noise.
+
+In the report's aggregate rows, $ / doc, tokens and s / doc average the readings really made
+(run 1), and a footnote says how many were reused: with reused runs averaged in, the cost and
+time would read about half what one reading costs, and would look like a reader change next to
+the #2407 and #2374 readings. The quality columns count every reading.
+
+Spend: $1.79 metered ($1.22 reader, $0.57 judge), within the $20 pre-approval.
+
 ## The Phase 0 answer (#2229)
 
 When an analyst gives METIS a Word FRD today, Requirements Analysis finds **about a quarter
@@ -493,6 +527,7 @@ was not metered), and one direct probe call that confirmed the empty-reply cause
 pnpm --filter server eval:doc-understanding --corpus docunderstanding-01-clinic-booking   # one document, arms A,B,C
 pnpm --filter server eval:doc-understanding --arms A,B --runs 3 --budget 5
 pnpm --filter server eval:doc-understanding --arms B,R --corpus docunderstanding-04-library-lending --budget 8   # #2255, one document per process
+pnpm --filter server eval:doc-understanding --arms R --runs 2 --saved-readings   # #2319, run 2 reuses run 1's readings
 pnpm --filter server eval:doc-understanding --combine a.json,b.json,c.json --reading <name>   # no model call
 pnpm --filter server eval:doc-understanding:build    # after editing a document's frd.src.md
 ```

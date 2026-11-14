@@ -86,6 +86,9 @@ export const POSTGRES_PATTERNS = Object.freeze([
   "server/src/lib/connectors/repo/repo-service.ts",
   // #2209 — discussion-requirement-search-2209-postgres runs the real picker search.
   "server/src/lib/discussions/requirement-search.ts",
+  // #2319 — document-reading-cache-2319-postgres runs the real saved-reading upsert and prune.
+  "server/src/lib/document-reader/reader.ts",
+  "server/src/lib/document-reader/reading-cache.ts",
   // #2032 — governing-decision-pool-2032-postgres runs the real decision transaction.
   "server/src/lib/governing/findings-store.ts",
   "server/src/lib/mcp/secret-binding.ts",

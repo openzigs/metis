@@ -196,6 +196,37 @@ describe("readDocumentOnce", () => {
     expect(read).toHaveBeenCalledTimes(2);
   });
 
+  it("#2319 — in a rolling deploy two reader versions prune each other's reading, and neither ever reuses the other's", async () => {
+    // A second copy of the module, as a pod still on the earlier reader holds it.
+    vi.resetModules();
+    vi.doMock("./reader.js", async (importOriginal) => ({
+      ...(await importOriginal<typeof import("./reader.js")>()),
+      READER_VERSION: "older",
+    }));
+    const old = await import("./reading-cache.js");
+    vi.doUnmock("./reader.js");
+    vi.resetModules();
+
+    const { rows, db } = memoryStore();
+    const read = reader(() => reading());
+    const input = { title: "FRD", text: TEXT, provider, document: DOC };
+    const versions = () => rows.map((r) => r.readerVersion);
+
+    await readDocumentOnce(input, { db, read });
+    expect(versions()).toEqual([READER_VERSION]);
+    // The older pod finishes a read of the same file: its save prunes the newer reading.
+    const fromOld = await old.readDocumentOnce(input, { db, read });
+    expect(fromOld.reused).toBeUndefined();
+    expect(versions()).toEqual(["older"]);
+    // The newer pod misses (the version is in the key), reads again, and prunes the older.
+    const fromNew = await readDocumentOnce(input, { db, read });
+    expect(fromNew.reused).toBeUndefined();
+    expect(versions()).toEqual([READER_VERSION]);
+    // Once the deploy is done, the newer reading is reused: the race cost reads, never a wrong reading.
+    expect((await readDocumentOnce(input, { db, read })).reused).toBeDefined();
+    expect(read).toHaveBeenCalledTimes(3);
+  });
+
   it("never reuses a reading across projects", async () => {
     const { db } = memoryStore();
     const read = reader(() => reading());
@@ -339,7 +370,14 @@ describe("readDocumentOnce", () => {
     );
     rows[0]!.readerVersion = "older";
     rows.push({ ...rows[1]!, id: "other-doc", documentId: "d-2" });
-    expect(rows).toHaveLength(3);
+    // #2319 — an earlier reader's reading of the file being saved now: only its version differs.
+    rows.push({
+      ...rows[1]!,
+      id: "older-reader-new-file",
+      checksum: "sum-2",
+      readerVersion: "older",
+    });
+    expect(rows).toHaveLength(4);
 
     documents[0]!.checksum = "sum-2";
     await readDocumentOnce(
