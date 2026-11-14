@@ -3073,7 +3073,7 @@ are left out of the route, the BRD (and its "left out" count) and the chat tool
 (`withGoverningStaleness`), and the clarify flow asks no question about its entry, settles no answer onto it and carries none
 to it (`withoutDeletedRechecks`, #2311). They are kept, so a restored requirement brings them back. The BRD
 labels a re-checked wording **As re-checked**, without the title its heading already gives (only a
-whole title is left out, #2311).
+whole first line, when it is the title alone, is left out, #2311).
 
 **Analysis view** (#1876): `GoverningFindingsPanel`
 (`ui/src/components/analysis/governing-findings-panel.tsx`), at the foot of the Findings tab,

@@ -899,6 +899,10 @@ describe("a re-checked requirement in the BRD — #2281", () => {
     const prefix = renderGoverningSection(run("Save a cardholder's details\n\nBody.")).join("\n");
     expect(prefix).toContain("_As re-checked:_ Save a cardholder's details Body.");
     expect(prefix).not.toContain("_As re-checked:_ holder's");
+    // Whole-word prefix: the issue's own "Login" of "Login flow".
+    const word = renderGoverningSection(run("Save a card flow\n\nBody.")).join("\n");
+    expect(word).toContain("_As re-checked:_ Save a card flow Body.");
+    expect(word).not.toContain("_As re-checked:_ flow");
   });
 
   it("leaves out a deleted requirement's re-check, and does not count it as left out", async () => {

@@ -612,7 +612,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       // The applicability was decided and the findings run reached the model.
       expect(state.decided.map((d) => d.id)).toEqual([r2]);
       await vi.waitFor(() => expect(chat).toHaveBeenCalled());
-      // Settle the rejected run before reading the store.
+      // The route saw the client go: the run's signal is aborted. Then give the
+      // rejected run a few turns to settle before the negative read.
+      await vi.waitFor(() => expect(state.signal!.aborted).toBe(true));
       await new Promise((r) => setTimeout(r, 50));
       await expectNothingStoredFor(r2);
     });

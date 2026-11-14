@@ -1211,6 +1211,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       res.on("close", () => {
         if (!res.writableEnded) ac.abort();
       });
+      // Gone already (during the rate limiter's store call): `close` has fired.
+      if (req.socket.destroyed) ac.abort();
       const analysisId = String(req.params.id);
       const projectId = String(req.params.projectId);
       await ensureAnalysisVisible(analysisId, projectId);

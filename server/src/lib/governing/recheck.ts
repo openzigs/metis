@@ -107,6 +107,8 @@ export async function recheckGoverningRequirement(
   if (!hook) return { ok: false, reason: "no-rules" };
 
   const text = requirementWording(requirement);
+  // #2311 — an abort that landed during the reads above: no model call.
+  if (input.signal?.aborted) return { ok: false, reason: "cancelled" };
   const set = await hook.decide({ id: requirement.id, text });
   if (input.signal?.aborted) return { ok: false, reason: "cancelled" };
   if (set.error) return { ok: false, reason: "failed", message: set.error };
