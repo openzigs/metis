@@ -226,6 +226,13 @@ export interface VectorStore extends ProjectWriteCapability {
    */
   listChunkRefs(projectId: string): Promise<StoredChunkRef[]>;
   /**
+   * #2346 — the stored rows (vectors included) with these ids; an id not
+   * stored is left out, and a table that does not exist yields `[]`. The
+   * symbol pipeline reads a gone symbol's vector to reuse it for the same
+   * content under a new id. Callers pass a bounded number of ids.
+   */
+  getRows?(projectId: string, ids: string[]): Promise<VectorRow[]>;
+  /**
    * Issue #787 — the vector width this store's storage is FIXED at, or `null`
    * when that cannot be established.
    *
@@ -452,6 +459,14 @@ export class LocalVectorStore implements VectorStore {
       embeddingModel: r.metadata.embeddingModel ?? "",
       dimension: Array.isArray(r.vector) ? r.vector.length : 0,
     }));
+  }
+
+  async getRows(projectId: string, ids: string[]): Promise<VectorRow[]> {
+    assertProjectId(projectId);
+    if (ids.length === 0) return [];
+    const wanted = new Set(ids);
+    const rows = await this.loadTable(projectId);
+    return rows.filter((r) => wanted.has(r.id));
   }
 
   /**
@@ -1387,6 +1402,21 @@ export class LanceVectorStore implements VectorStore {
       embeddingModel: r.model ?? "",
       dimension: r.vector?.length ?? 0,
     }));
+  }
+
+  async getRows(projectId: string, ids: string[]): Promise<VectorRow[]> {
+    if (ids.length === 0) return [];
+    const conn = await this.getConnection();
+    if (!(await conn.tableNames()).includes(this.tableName(projectId))) return [];
+    const table = await this.openOrCreateTable(projectId);
+    // Every id is quoted by `sqlString`, as `deleteByChunkIds` quotes them.
+    const where = `id IN (${ids.map(sqlString).join(", ")})`;
+    const wanted = new Set(ids);
+    const raw =
+      typeof table.filter === "function"
+        ? await table.filter(where).limit(ids.length).execute<LanceRow>()
+        : (await this.readAllRows(projectId, table)).filter((r) => wanted.has(r.id));
+    return raw.map(fromLanceRow);
   }
 
   private async runExclusive<T>(projectId: string, fn: () => Promise<T>): Promise<T> {

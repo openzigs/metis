@@ -283,6 +283,8 @@ const CODE_TOOLS_CITED_BY_CONTRACT: ReadonlySet<string> = new Set(["search_code_
 const CODE_TOOLS_WITHOUT_FILE_TEXT: ReadonlySet<string> = new Set([
   "search_code_graph",
   "get_index_status",
+  // #2346 — symbol names, kinds and spans from the code graph, as search_code_graph.
+  "get_file_outline",
 ]);
 
 /** The parts of a code tool's result the tool itself wrote, where its locators are. */

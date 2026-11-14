@@ -42,6 +42,7 @@ import {
 } from "../connectors/source-ingest-state.js";
 import { repoDocumentPath, type CodeAccessFilter } from "../analysis/tools/code-access.js";
 import { parseAclSubjects } from "../rag/acl.js";
+import { isConsistent, type IndexConsistencySummary } from "../code-graph/index-consistency.js";
 
 /** The filename prefix of a repository's documents (`connector-ingest.ts`). */
 const REPO_DOC_PREFIX = "connector:repo:";
@@ -170,7 +171,18 @@ export interface ProjectIndexStatus {
   repos: RepoIndexStatus[];
   /** Repositories past {@link MAX_INDEX_REPOS}, not listed. */
   moreRepos: number;
+  /** #2346 — set only when the caller asked for the check ({@link LoadIndexStatusOptions.consistency}). */
+  consistency?: IndexConsistencyStatus;
 }
+
+/**
+ * #2346 — the symbol index's consistency check, as a status reports it:
+ * `counts` is `null` when withheld (the project has an access-restricted
+ * repository file, as {@link RepoIndexStatus.countsWithheld}).
+ */
+export type IndexConsistencyStatus =
+  | { state: "consistent" | "inconsistent"; counts: IndexConsistencySummary | null }
+  | { state: "unchecked" };
 
 function repoLastRun(
   state: SourceIngestState | null,
@@ -212,6 +224,24 @@ export interface LoadIndexStatusOptions {
   now?: number;
   /** Test seam for the in-process ingest lease. */
   ingestActive?: (connectorId: string) => boolean;
+  /**
+   * #2346 — run the symbol index's consistency check and report it. Only the
+   * `get_index_status` tool asks: it reads every symbol vector id, so the
+   * per-turn status line does not. Resolves `null` when the check could not run.
+   */
+  consistency?: () => Promise<IndexConsistencySummary | null>;
+}
+
+/** #2346 — a consistency check's status, its counts withheld where any repository's are. */
+function consistencyStatus(
+  summary: IndexConsistencySummary | null,
+  withheld: boolean,
+): IndexConsistencyStatus {
+  if (!summary) return { state: "unchecked" };
+  return {
+    state: isConsistent(summary) ? "consistent" : "inconsistent",
+    counts: withheld ? null : summary,
+  };
 }
 
 /**
@@ -236,7 +266,7 @@ export async function loadProjectIndexStatus(
     deletedAt: null,
     indexState: { not: "rejected" },
   } as const;
-  const [connections, graphs, documentCount, restrictedDocs] = await Promise.all([
+  const [connections, graphs, documentCount, restrictedDocs, consistency] = await Promise.all([
     prisma.repoConnection.findMany({
       where: { projectId, deletedAt: null },
       select: {
@@ -266,6 +296,7 @@ export async function loadProjectIndexStatus(
       },
       select: { filename: true, aclSubjects: true },
     }),
+    opts.consistency ? opts.consistency() : Promise.resolve(undefined),
   ]);
   const restricted = restrictedDocs
     .filter((d) => parseAclSubjects(d.aclSubjects).length > 0)
@@ -326,6 +357,9 @@ export async function loadProjectIndexStatus(
     documents: visibleDocs,
     repos: repos.slice(0, MAX_INDEX_REPOS),
     moreRepos: Math.max(0, repos.length - MAX_INDEX_REPOS),
+    ...(consistency !== undefined
+      ? { consistency: consistencyStatus(consistency, restrictedRepos.size > 0) }
+      : {}),
   };
 }
 
@@ -414,7 +448,40 @@ export function formatIndexStatus(status: ProjectIndexStatus): string {
     );
   }
   if (status.moreRepos > 0) lines.push(`(${status.moreRepos} more repositories not listed)`);
+  const consistency = formatConsistency(status.consistency);
+  if (consistency) lines.push(consistency);
   return lines.join("\n");
+}
+
+/** #2346 — the consistency check's line in the `get_index_status` text; `null` when not run. */
+export function formatConsistency(c: IndexConsistencyStatus | undefined): string | null {
+  if (!c) return null;
+  if (c.state === "unchecked") return "Symbol index consistency: could not be checked.";
+  const n = c.counts;
+  const pending =
+    n && n.pendingEmbeddings > 0
+      ? ` ${n.pendingEmbeddings} code symbol(s) are not embedded yet: semantic search cannot find them until they are, keyword search can.`
+      : "";
+  if (c.state === "consistent") return `Symbol index consistency: consistent.${pending}`;
+  if (!n) {
+    return (
+      "Symbol index consistency: inconsistent (counts not shown: the project has access-restricted " +
+      "files). Semantic code search may miss symbols; keyword search still finds them."
+    );
+  }
+  const parts: string[] = [];
+  if (n.missingVectors > 0) parts.push(`${n.missingVectors} code symbol(s) have no vector`);
+  if (n.orphanVectors > 0) parts.push(`${n.orphanVectors} vector(s) belong to no code symbol`);
+  if (n.driftedGraphs > 0) {
+    parts.push(
+      `${n.driftedSymbols} code symbol(s) in ${n.driftedGraphs} repository index(es) were built from ` +
+        `a commit other than the repository's last indexed one`,
+    );
+  }
+  return (
+    `Symbol index consistency: inconsistent: ${parts.join("; ")}. Semantic code search may miss ` +
+    `symbols without a vector; keyword search still finds them.${pending}`
+  );
 }
 
 /** The part of a status a reply's grounding label records (#2326). */

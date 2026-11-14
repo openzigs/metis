@@ -298,6 +298,8 @@ describe("#727 agentSelectableTools — the authoring picker offers the code too
       // #2327 — offered by chat behind CHAT_CODE_SEARCH_PRIMITIVES; an agent may name them.
       "grep_files",
       "list_files",
+      // #2346 — nameable whether or not CHAT_FILE_OUTLINE_TOOL offers it.
+      "get_file_outline",
       // #2329 — nameable whether or not CHAT_CODE_CONTEXT_TOOL offers it.
       "search_code_context",
     ]);

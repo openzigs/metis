@@ -384,6 +384,27 @@ describeIfLance("LanceVectorStore", () => {
   });
 });
 
+describeIfLance("LanceVectorStore.getRows — #2346 a stored vector read back for reuse", () => {
+  it("returns the asked rows with their vectors and metadata, and nothing else", async () => {
+    await store.upsert("p1", [
+      row("a", vec(0, 3), { filename: "src/a.ts", text: "function a in src/a.ts" }),
+      row("b", vec(1, 3)),
+      row("it's", vec(2, 3)),
+    ]);
+    const got = await store.getRows("p1", ["a", "it's", "missing"]);
+    expect(got.map((r) => r.id).sort()).toEqual(["a", "it's"]);
+    const a = got.find((r) => r.id === "a")!;
+    expect(a.vector).toEqual([1, 0, 0]);
+    expect(a.metadata).toMatchObject({ filename: "src/a.ts", text: "function a in src/a.ts" });
+    expect(await store.getRows("p1", [])).toEqual([]);
+  });
+
+  it("returns [] for a table that does not exist, without creating it", async () => {
+    expect(await store.getRows("never-indexed", ["a"])).toEqual([]);
+    expect(await store.listChunkRefs("never-indexed")).toEqual([]);
+  });
+});
+
 describeIfLance("LanceVectorStore.listChunkRefs — #787 resume checkpoint", () => {
   it("returns every row's id, model tag and persisted width rather than the configured default", async () => {
     await store.upsert("p1", [

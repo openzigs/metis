@@ -313,6 +313,27 @@ export function createSymbolEmbeddingStore(deps: SymbolEmbeddingDeps = {}): Symb
       await assertNotFenced();
       return store.deleteByChunkIds(symbolVectorsId(projectId), symbolIds);
     },
+
+    // #2346 — a gone symbol's vector, for the pipeline to reuse. Only the
+    // active model's: a vector of another generation is never reused.
+    ...(store.getRows
+      ? {
+          async getStoredVectors(projectId: string, symbolIds: string[]) {
+            if (symbolIds.length === 0) return [];
+            const activeModel = model();
+            const rows = await store.getRows!(symbolVectorsId(projectId), symbolIds);
+            return rows
+              .filter((r) => r.metadata.embeddingModel === activeModel)
+              .map((r) => ({
+                symbolId: r.id,
+                vector: r.vector,
+                text: r.metadata.text,
+                filePath: r.metadata.filename,
+                embeddingModel: r.metadata.embeddingModel,
+              }));
+          },
+        }
+      : {}),
   };
 }
 
@@ -450,7 +471,7 @@ async function withSymbolLease<T>(
  * it holds none. Every mutating symbol entry point goes through here, so there is no path
  * that writes symbol vectors unfenced.
  */
-async function withSymbolFence<T>(
+export async function withSymbolFence<T>(
   projectId: string,
   deps: SymbolEmbeddingDeps,
   fn: (fence: ReindexFence) => Promise<T>,

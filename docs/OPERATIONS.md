@@ -319,6 +319,7 @@ psql "$DATABASE_URL" -c "DELETE FROM \"prReviewWebhookDelivery\" WHERE \"receive
 | Per release | Re-run `pnpm test:coverage` and confirm gates still pass |
 | Per release | Re-run `pnpm verify:image-size` after rebuilding the Docker images |
 | After any embedding-model / pooling / dtype change | `pnpm embeddings:migrate status`, then follow the runbook (below) |
+| When code search misses symbols it should find, or after restoring the vector store or the database alone | `pnpm index:consistency --project <id>` (or `--all`; read-only, exits 1 when inconsistent): vectors with no symbol, symbols with no vector, symbols not embedded yet, and graphs built from another commit than the repository's last indexed one. `--repair` re-queues the missing embeddings and removes the orphan vectors, under the connections' ingest leases and the project's reindex lease; it refuses (exit 2) while an ingest or reindex runs, and running it twice is harmless. Commit drift is reported only: re-sync the repository (#2346) |
 | Once, after upgrading past the issue-draft dedup migration (#369) | `pnpm --filter @metis/server publishing:dedup-leftovers` — read-only; lists retired duplicate drafts that still have a published GitHub/Jira issue, split into issues shared with the kept draft (leave open) and separate issues (close one if unwanted) and live drafts whose parent was retired (#396) |
 
 ### 6.1 Embedding-model migration
