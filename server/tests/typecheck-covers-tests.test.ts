@@ -38,21 +38,23 @@ function tsFilesUnder(dir: string): string[] {
 }
 
 describe("pnpm typecheck covers @metis/server tests (#698)", () => {
-  it("the typecheck script runs the src-only pass, then tsconfig.test.json with a raised heap", () => {
+  it("the typecheck script runs the src-only pass, then tsconfig.test.json in chunks", () => {
     // Pinned exactly: a regex would also accept `... || true` or `...; tsc -p ...`,
     // either of which neuters the gate while the guard stays green.
     //  - The src-only pass stays: its `rootDir: "src"` rejects a src file importing from
     //    outside src/ (TS6059, which breaks `build`); the test config's `rootDir: ".."`
     //    cannot, so it is not a full superset.
-    //  - The test config OOMs at Node's default heap. It peaked at ~6.7 GB when this was
-    //    written and at ~8.43 GB by 2026-10 (PR #1308), past the original 8192 MB cap, so
-    //    CI's `api` typecheck died (exit 134). 12288 MB held until #1873 (2026-11-08):
-    //    main peaked at 12.96 GB used, and #1873's tests (+0.3% types) took it past the
-    //    cap. 14336 MB still leaves the 16 GB hosted runner about 2 GB.
-    //    `node --max-...` rather than a POSIX `NODE_OPTIONS=` prefix, so the script also
-    //    runs on Windows.
+    //  - The test config as ONE program outgrew every heap it was given: ~6.7 GB when
+    //    this was written, 8.43 GB by #1308, 12.96 GB by #1873, and past 14336 MB on a
+    //    16 GB runner by #2503. Steady growth, not a hot type: each tests/*.sqlite.test.ts
+    //    adds ~13 MB of its own Prisma instantiations. So it is checked as several
+    //    programs, run one after another, each holding the non-test files plus 1/N of the
+    //    test files (scripts/lib/typecheck-chunks-core.mjs). N grows with the test count
+    //    (--chunk-size), so a chunk's peak stays near 5-6 GB of heap rather than creeping
+    //    to the cap. The union of the chunks' files equals `tsc --listFilesOnly` on the
+    //    whole config (proved on #2503; `--list-files` re-runs that proof).
     expect(scripts().typecheck).toBe(
-      "tsc --noEmit -p tsconfig.json && node --max-old-space-size=14336 node_modules/typescript/bin/tsc -p tsconfig.test.json",
+      "tsc --noEmit -p tsconfig.json && node ../scripts/typecheck-chunked.mjs -p tsconfig.test.json --chunk-size 400 --heap 8192",
     );
   });
 
