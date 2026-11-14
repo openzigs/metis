@@ -43,6 +43,11 @@ describe("#2302 — the four tiers", () => {
     expect(IMPACT_GRAPH_RELATIONS).not.toContain("direct");
     expect(IMPACT_GRAPH_RELATIONS).not.toContain("related");
   });
+
+  it("verify only along edges whose confidence is a product of edge strengths", () => {
+    // Literal, so dropping (or adding) a relation fails here rather than passing silently.
+    expect([...IMPACT_GRAPH_RELATIONS].sort()).toEqual(["caller", "dependency", "importer"]);
+  });
 });
 
 describe("#2302 — impactSymbolTier", () => {
@@ -52,9 +57,29 @@ describe("#2302 — impactSymbolTier", () => {
         impactSymbolTier(sym({ relation, depth: 1, confidence: IMPACT_VERIFIED_CONFIDENCE })),
       ).toBe("verified");
     }
-    // A lineage writer promoted to a file to edit is still found along a graph path.
-    expect(impactSymbolTier(sym({ relation: "data-writer", depth: 0, confidence: 0.9 }))).toBe(
-      "verified",
+  });
+
+  it("never verifies a lineage writer: its confidence is its rank among the writers", () => {
+    // `findDataPathWriters` scores 0.4 + 0.4 * points / best, so the best writer of every
+    // run sits at exactly 0.8 whatever the evidence. Rank is not evidence.
+    expect(impactSymbolTier(sym({ relation: "data-writer", depth: 1, confidence: 0.8 }))).toBe(
+      "likely",
+    );
+    // Promoted to a file to edit (depth 0) it is still at most likely.
+    expect(impactSymbolTier(sym({ relation: "data-writer", depth: 0, confidence: 0.8 }))).toBe(
+      "likely",
+    );
+    expect(impactSymbolTier(sym({ relation: "data-writer", depth: 1, confidence: 0.4 }))).toBe(
+      "possible",
+    );
+  });
+
+  it("holds a table's definition at likely: its confidence is a fixed 0.6", () => {
+    expect(impactSymbolTier(sym({ relation: "data-model", depth: 0, confidence: 0.6 }))).toBe(
+      "likely",
+    );
+    expect(impactSymbolTier(sym({ relation: "data-model", depth: 0, confidence: 1 }))).toBe(
+      "likely",
     );
   });
 

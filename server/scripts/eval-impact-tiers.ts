@@ -65,8 +65,9 @@ async function localization(name: LocalizationCorpusName, embed: boolean) {
   let model = process.env.EMBED_MODEL ?? "Alibaba-NLP/gte-modernbert-base";
   if (embed) {
     const { getEmbedder } = await import("../src/lib/rag/embedder.js");
-    inner = getEmbedder();
-    model = getEmbedder().model;
+    const embedder = getEmbedder();
+    inner = embedder;
+    model = embedder.model;
   }
   const file = path.join(
     path.dirname(resolveSymbolsPath(corpus.dir, corpus.manifest)),

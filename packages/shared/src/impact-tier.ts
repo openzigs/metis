@@ -32,16 +32,23 @@ export const IMPACT_TIER_LABEL: Readonly<Record<ImpactTier, string>> = {
 };
 
 /**
- * Relations found by walking a stored graph from the change — call and import
- * edges, SQL lineage, the schema's table definitions — rather than by a search
- * of the requirement's words. `direct` and `related` are search hits.
+ * Relations that can be verified by graph path: call, import and dependency
+ * edges walked from a file to edit (`blast-radius.ts`), whose confidence is the
+ * seed's times each edge's weight and the per-hop decay — an absolute strength.
+ *
+ * Deliberately not here, though also reached through stored structure:
+ * - `data-writer` — its confidence is its RANK among the run's lineage writers
+ *   (`0.4 + 0.4 * points / best`, `data-path-writers.ts`), so the best writer of
+ *   every run is 0.8 whatever the evidence, and the evidence that would verify it
+ *   is not stored on the row. At most likely.
+ * - `data-model` — a table's definition, stored at a fixed 0.6
+ *   (`DATA_MODEL_CONFIDENCE`), so always likely.
+ * `direct` and `related` are search hits.
  */
 export const IMPACT_GRAPH_RELATIONS: readonly ImpactAffectedRelation[] = [
   "caller",
   "importer",
   "dependency",
-  "data-writer",
-  "data-model",
 ];
 
 /**
@@ -51,7 +58,7 @@ export const IMPACT_GRAPH_RELATIONS: readonly ImpactAffectedRelation[] = [
  * (`blast-radius.ts`), so this is the portfolio check's rule: every hop strong.
  */
 export const IMPACT_VERIFIED_CONFIDENCE = PORTFOLIO_VERIFIED_CONFIDENCE;
-/** One hop: a direct caller (or importer, or lineage writer) of a file to edit. */
+/** One hop: a direct caller (or importer, or dependency) of a file to edit. */
 export const IMPACT_VERIFIED_MAX_DEPTH = 1;
 /**
  * At or above this a symbol (or an unjudged table) is likely, below it
@@ -78,8 +85,8 @@ export interface ImpactTierSymbol {
  *   at most one hop out, at confidence {@link IMPACT_VERIFIED_CONFIDENCE} or
  *   more. It verifies the path from a file to edit, not that file.
  * - `likely` / `possible` — otherwise by confidence, against
- *   {@link IMPACT_LIKELY_CONFIDENCE}. A search match (`direct`) is never
- *   verified, and a `related` symbol, retrieved but below the edit cut and
+ *   {@link IMPACT_LIKELY_CONFIDENCE}. A search match (`direct`), a lineage
+ *   writer and a table's definition are never verified, and a `related` symbol, retrieved but below the edit cut and
  *   never a claim that it changes, is at most possible.
  */
 export function impactSymbolTier(symbol: ImpactTierSymbol): ImpactTier {

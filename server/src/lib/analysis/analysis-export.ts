@@ -699,6 +699,9 @@ function proposedColumnLines(row: ImpactAffectedTableView, indent: string): stri
     mdInline(row.changeKind),
     `source ${mdInline(row.source)}`,
     `confidence ${row.confidence.toFixed(2)}`,
+    // #2302 — each column its own tier, as on the page: a column the live schema
+    // lacks needs review even under a table that resolves.
+    `tier: ${IMPACT_TIER_LABEL[impactTableTier(row)]}`,
   ];
   if (row.riskClass) facts.push(`risk: ${DDL_RISK_LABEL[row.riskClass]}`);
   return [
@@ -752,7 +755,14 @@ function impactTableGroupBullet(group: GroupedImpactTable): string {
   }
   if (referenced.length > 0) {
     const shown = referenced.slice(0, MAX_REFERENCED_COLUMNS);
-    const names = shown.map((c) => codeSpan(c.columnName ?? c.tableName)).join(", ");
+    // #2302 — a verify-only column the live schema lacks is flagged where it is listed.
+    const names = shown
+      .map((c) => {
+        const name = codeSpan(c.columnName ?? c.tableName);
+        const tier = impactTableTier(c);
+        return tier === "needs-review" ? `${name} (${IMPACT_TIER_LABEL[tier]})` : name;
+      })
+      .join(", ");
     const more =
       referenced.length > shown.length ? ` …and ${referenced.length - shown.length} more` : "";
     lines.push(

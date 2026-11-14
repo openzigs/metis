@@ -1095,6 +1095,40 @@ describe("serializeImpactAnalysisMarkdown (#963)", () => {
     expect(line("**recalc_totals**")).toContain("· tier: Possible");
   });
 
+  it("#2302 — gives each proposed column its own tier, so an unresolved one needs review", () => {
+    const md = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        items: [
+          impactItem({
+            affectedTables: [
+              impactTable({ relevanceTier: "likely" }),
+              impactTable({
+                id: "col-1",
+                columnName: "read_at",
+                changeKind: "add-column",
+                suggestedDdl: "ALTER TABLE orders ADD COLUMN read_at <type>;",
+                reconciliation: "column-not-found",
+                confidence: 0.4,
+              }),
+              impactTable({
+                id: "col-2",
+                columnName: "status",
+                changeKind: "reference",
+                reconciliation: "column-not-found",
+                confidence: 0.4,
+              }),
+            ],
+          }),
+        ],
+      }),
+    );
+    const line = (needle: string) => md.split("\n").find((l) => l.includes(needle)) ?? "";
+    expect(line("**orders**")).toContain("· tier: Likely ·");
+    expect(line("**orders.read_at**")).toContain("· tier: Needs review");
+    // A verify-only column that does not resolve is flagged in the referenced list too.
+    expect(line("Referenced by impacted code")).toContain("`status` (Needs review)");
+  });
+
   it("#1036 — a result with only blast-radius symbols has no edit-candidate heading", () => {
     const md = serializeImpactAnalysisMarkdown(
       impactDetail({

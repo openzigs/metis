@@ -2427,17 +2427,18 @@ tier is a product's code verdict, which Impact Analysis does not give. [#2302]
 
 | Tier | An affected symbol | An affected table, column or routine |
 |---|---|---|
-| **Verified by graph path** | Reached along the code graph (a caller, importer or dependency, a writer of the affected data found through the project's SQL, or a table's definition), at most one hop from a file to edit, with a confidence of at least 0.8. This verifies the path from the file to edit, not the file to edit itself. | Never: the stored row does not keep the code path the table was reached through. |
-| **Likely** | Otherwise, a confidence of at least 0.5. A match the search found is at most Likely. | Judged *likely related* to the change, or, when no model judged it, a confidence of at least 0.5. |
+| **Verified by graph path** | Reached along a call, import or dependency edge of the code graph, at most one hop from a file to edit, with a confidence of at least 0.8. This verifies the path from the file to edit, not the file to edit itself. | Never: the stored row does not keep the code path the table was reached through. |
+| **Likely** | Otherwise, a confidence of at least 0.5. A match the search found, a writer of the affected data found through the project's SQL, and a table's definition are at most Likely: a writer's confidence ranks it against the other writers rather than measuring its evidence, and a table's definition is always Likely. | Judged *likely related* to the change, or, when no model judged it, a confidence of at least 0.5. |
 | **Possible** | A confidence below 0.5, and every **Related** symbol (found by the search but below the cut for files to edit), whatever its confidence. | Judged *possibly* or *unlikely related*, or, when no model judged it, a confidence below 0.5. |
-| **Needs review** | The symbol no longer resolves to the project's code graph (a later ingest replaced it, or it never resolved). | The table or column is not in the live database schema. |
+| **Needs review** | The symbol no longer resolves to the project's code graph (a later ingest replaced it, or it never resolved). | The table or column is not in the live database schema. Each column has its own tier, so a column the schema lacks shows **Needs review** even when its table is there. |
 
 The thresholds were measured before they were fixed (`pnpm eval:impact-tiers`, over the
 held-out corpora of #1751's measurement and the impact-recall corpus). A file to edit at
 **Likely** was one the change really edited about one time in five (0.21 on both held-out
 sets); a search hit at **Possible**, about one in fifty (0.02). On the impact-recall corpus,
 2 of the 8 **Verified by graph path** symbols were code the change edits, against 1 in 38
-graph-reached **Likely** ones. Neither corpus marks which callers a change affects, so
+graph-reached **Likely** ones. None of the 8 is a SQL-lineage writer or a table's
+definition: the corpus yields no writer rows, so no reading measures a writer's tier. Neither corpus marks which callers a change affects, so
 these rates say how often a tier names code to *edit*; a caller can be affected without
 being edited.
 

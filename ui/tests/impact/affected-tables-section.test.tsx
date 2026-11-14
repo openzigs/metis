@@ -282,6 +282,35 @@ describe("AffectedTablesSection", () => {
     expect(within(table).getByTestId("impact-tier")).toHaveAttribute("data-tier", "likely");
   });
 
+  it("#2302 — gives each column its own tier, so an unresolved column under a matched table needs review", () => {
+    render(
+      <AffectedTablesSection
+        tables={[
+          tableEntry({ id: "t", tableName: "crm.orders", relevanceTier: "likely" }),
+          tableEntry({
+            id: "c1",
+            tableName: "crm.orders",
+            columnName: "read_at",
+            changeKind: "add-column",
+            suggestedDdl: "ALTER TABLE crm.orders ADD COLUMN read_at <type>;",
+            reconciliation: "column-not-found",
+            confidence: 0.4,
+          }),
+          tableEntry({ id: "c2", tableName: "crm.orders", columnName: "status", confidence: 0.9 }),
+        ]}
+      />,
+    );
+    const columnTier = (name: string) =>
+      within(
+        screen
+          .getAllByTestId("schema-impact-column")
+          .find((c) => c.getAttribute("data-column-name") === name)!,
+      ).getByTestId("impact-tier");
+    expect(columnTier("read_at")).toHaveAttribute("data-tier", "needs-review");
+    expect(columnTier("read_at")).toHaveTextContent("Needs review");
+    expect(columnTier("status")).toHaveAttribute("data-tier", "likely");
+  });
+
   it("labels the possible tier distinctly (#950)", () => {
     render(<AffectedTablesSection tables={[tableEntry({ relevanceTier: "possible" })]} />);
     const badge = screen.getByTestId("schema-relevance-tier");

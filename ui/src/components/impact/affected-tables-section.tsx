@@ -389,9 +389,14 @@ function ColumnRow({ col }: { col: ImpactAffectedTableView }) {
       data-testid="schema-impact-column"
       data-column-name={col.columnName ?? ""}
     >
-      <p className="font-mono text-xs" title={col.columnName ?? ""}>
-        {col.columnName}
-      </p>
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="font-mono text-xs" title={col.columnName ?? ""}>
+          {col.columnName}
+        </p>
+        {/* #2302 — each column its own tier: a column the live schema lacks needs
+            review even under a table that resolves. */}
+        <ImpactTierBadge tier={impactTableTier(col)} />
+      </div>
       <EntryDetail entry={col} />
     </li>
   );
