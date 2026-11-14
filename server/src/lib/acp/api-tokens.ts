@@ -124,8 +124,10 @@ export interface VerifiedToken {
 
 /**
  * Verify a plaintext bearer token against the DB. Returns null on any
- * failure (unknown token, revoked, expired). Updates `lastUsedAt` on
- * success in a fire-and-forget fashion.
+ * failure (unknown token, revoked, expired, or — #2331 — issued to a user who
+ * is no longer active or was deleted, so every token consumer refuses a
+ * disabled user without checking it itself). Updates `lastUsedAt` on success
+ * in a fire-and-forget fashion.
  */
 export async function verifyApiToken(plaintext: string): Promise<VerifiedToken | null> {
   if (typeof plaintext !== "string" || !plaintext.startsWith(TOKEN_PREFIX)) return null;
@@ -134,6 +136,11 @@ export async function verifyApiToken(plaintext: string): Promise<VerifiedToken |
   if (!row) return null;
   if (row.revokedAt) return null;
   if (row.expiresAt && row.expiresAt.getTime() < Date.now()) return null;
+  const user = await prisma.user.findUnique({
+    where: { id: row.userId },
+    select: { status: true, deletedAt: true },
+  });
+  if (!user || user.status !== "active" || user.deletedAt) return null;
   // Fire-and-forget lastUsedAt bump. Errors are non-fatal for verification.
   prisma.apiToken.update({ where: { id: row.id }, data: { lastUsedAt: new Date() } }).catch(() => {
     /* ignore */

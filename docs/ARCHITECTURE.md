@@ -9583,6 +9583,32 @@ Layout:
 
 The MCP server is **not** mounted into the REST process — it's a separate stdio executable spawned by the client editor. Federation with the official MCP Registry is a follow-up.
 
+#### 25.6.1a `metis-index-mcp`: the governed index over MCP (#2331)
+
+[`server/src/mcp/metis-index/`](../server/src/mcp/metis-index/) is a second stdio MCP server, laid out like `speckit/`. It exposes the index to an external agent through eight read-only `metis_*` tools: `metis_list_projects`, `metis_search_code_context`, `metis_search_symbols`, `metis_graph_callers`, `metis_graph_callees`, `metis_read_file_slice`, `metis_read_requirements` and `metis_index_status`. It has no LLM: no tool path builds a provider. Unlike `speckit/` it is **not** a REST client. It runs in process against the server's database, vector store and clones, and calls chat's own implementations: the tools of `getChatCodeTools` and the `list_requirements` / `get_requirement` tools. There is no second search path.
+
+```
+agent (MCP client) ── stdio ──► registerTool handler
+  └── dispatchIndexTool(def, args, env)                       dispatcher.ts
+        ├── resolveMcpCaller(METIS_API_TOKEN)                 identity.ts  (every call)
+        │     verifyApiToken → acp:read scope → user active → resolveAcpActor
+        ├── assertLiveProjectAccess(actor, projectId)         404 ⇒ "project not found"
+        ├── isServedProject(actor, projectId)                 projects.ts: listed ⇒ not archived/deleted
+        ├── loadCodeAccessFilter({projectId, userId})         code-access.ts (document ACLs)
+        ├── def.run(...)  → chat's AgentTool / requirement tool
+        ├── redactSecrets · cap (MAX_RESULT_CHARS) · citations · instructions
+        └── audit("mcp.index.tool_call", user, tool, project, resultCount)   no bodies
+```
+
+| File | Responsibility |
+|---|---|
+| [`identity.ts`](../server/src/mcp/metis-index/identity.ts) | The credential is the caller's own `metis_` API token with `acp:read`, resolved to one active user on every call. A static shared secret, or an unknown, revoked or expired token, maps to no user and is refused with one message. `verifyApiToken` itself refuses a token whose user is disabled or deleted, so ACP's WebSocket refuses one too. |
+| [`tools.ts`](../server/src/mcp/metis-index/tools.ts) | The eight tools: bounded zod inputs, short search guidance in each description (#2324), and each tool's mapping onto the chat implementation. `metis_list_projects` reads `servedProjectWhere(actor)` (`projects.ts`: `accessibleProjectWhere` less archived projects), the same predicate the dispatcher holds every `projectId` to. `get_requirement` filters its code links through the caller's `CodeAccessFilter` itself, so chat and this server share the fix. |
+| [`dispatcher.ts`](../server/src/mcp/metis-index/dispatcher.ts) | The order of the checks above. Errors say nothing of internals. The result is redacted (#2333), capped with `truncated`, and given its citations (#2325) and fixed `instructions`. |
+| [`server.ts`](../server/src/mcp/metis-index/server.ts) | `createIndexMcpServer`. `structuredContent` holds the whole result; text `content` holds the result, then a trailer. `main()` refuses to boot on an unresolvable token and sends every log line to stderr, since stdout is the transport. |
+
+The `mcp` arm of `pnpm eval:ba-qa` drives these tools through an MCP client (`eval-data/README.md`). A remote (HTTP) endpoint with OAuth is #2344. Client setup: [`docs/integrations/metis-index-mcp.md`](integrations/metis-index-mcp.md).
+
 #### 25.6.2 Codex host emitter
 
 [`installer/hosts.ts`](../server/src/lib/spec-kit/installer/hosts.ts) adds `"codex"` as a fourth host. Codex differs from the other three hosts in two ways:

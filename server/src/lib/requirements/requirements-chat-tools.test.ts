@@ -5,8 +5,20 @@
  * `where` the tool sends, so a query that drops the project scope is caught by
  * a cross-project row leaking into the result.
  */
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { RequirementTraceabilityChain } from "@metis/shared";
+import { UNRESTRICTED_CODE_ACCESS, codeAccessFilterOf } from "../analysis/tools/code-access.js";
+
+// #2331 — the caller's code-access filter, scripted: unrestricted unless a test says otherwise.
+const access = vi.hoisted(() => ({ load: vi.fn() }));
+vi.mock("../analysis/tools/code-access.js", async (original) => ({
+  ...(await original<typeof import("../analysis/tools/code-access.js")>()),
+  loadCodeAccessFilter: access.load,
+}));
+beforeEach(() => {
+  access.load.mockReset();
+  access.load.mockResolvedValue(UNRESTRICTED_CODE_ACCESS);
+});
 import { AppError } from "../../middleware/error-handler.js";
 import { ToolRegistry } from "../ai/tool-registry.js";
 import type { ToolContext } from "../ai/types.js";
@@ -476,6 +488,112 @@ describe("get_requirement (#1030)", () => {
     expect(res.text).toContain("src/orders/repo.test.ts");
     expect(res.text).toContain("PR #42");
     expect(res.text).not.toContain("finding:");
+  });
+
+  it("#2331 — leaves out every code location in a file hidden from the caller, counted not named", async () => {
+    const { prisma } = stubPrisma([row({ id: "r1" })]);
+    access.load.mockResolvedValue(
+      codeAccessFilterOf([{ connectorId: "rc", path: "src/secret.ts" }]),
+    );
+    const code = (filePath: string, startLine: number) => ({
+      codeSymbolId: null,
+      filePath,
+      startLine,
+      endLine: startLine + 5,
+      confidence: 0.9,
+      source: "manual" as const,
+      isTest: false,
+    });
+    const test = (filePath: string, subject: string) =>
+      ({
+        codeSymbolId: null,
+        filePath,
+        symbol: `${filePath}::t`,
+        name: "covers",
+        relation: "exercises",
+        subject: { filePath: subject, symbol: null },
+      }) as unknown as RequirementTraceabilityChain["testedBy"][number];
+    const tool = createGetRequirementTool({
+      prisma,
+      chain: async (_p, id) => ({
+        ...emptyChain(id),
+        directCode: [code("src/secret.ts", 7), code("src/public.ts", 1)],
+        specs: [
+          {
+            specDocumentId: "d1",
+            specTitle: "Fees spec",
+            confidence: 0.8,
+            source: "derived" as const,
+            code: [code("./src/secret.ts", 9), code("src/public.ts", 2)],
+          },
+        ],
+        testedBy: [
+          test("src/secret.test.ts", "src/secret.ts"),
+          test("src/public.test.ts", "src/public.ts"),
+        ],
+        groundedFiles: ["src/public.ts", "src/secret.ts"],
+      }),
+    });
+    const res = await tool.exec({ requirementId: "r1" }, { ...ctx, aclAudience: "shared" });
+    expect(access.load).toHaveBeenCalledWith({
+      projectId: "p1",
+      userId: "u",
+      aclAudience: "shared",
+    });
+    expect(res.isError).toBeFalsy();
+    expect(res.text).not.toContain("secret");
+    expect(res.text).toContain("src/public.ts:1-6");
+    expect(res.text).toContain("Fees spec → src/public.ts:2-7");
+    expect(res.text).toContain("src/public.test.ts");
+    expect(res.text).toMatch(
+      /3 linked code locations are in files you cannot read and are left out/,
+    );
+    expect(JSON.stringify(res.data)).not.toContain("secret");
+  });
+
+  it("#2331 — judges a link by its symbol's own repository: a path restricted in one repo stays readable in another", async () => {
+    const { prisma } = stubPrisma([row({ id: "r1" })]);
+    access.load.mockResolvedValue(
+      codeAccessFilterOf([{ connectorId: "rc-a", path: "src/secret.ts" }]),
+    );
+    const link = (codeSymbolId: string | null, startLine: number) => ({
+      codeSymbolId,
+      filePath: "src/secret.ts",
+      startLine,
+      endLine: startLine,
+      confidence: 0.9,
+      source: "manual" as const,
+      isTest: false,
+    });
+    const symbolRepos = vi.fn(
+      async () =>
+        new Map<string, string | null>([
+          ["sym-a", "rc-a"],
+          ["sym-b", "rc-b"],
+        ]),
+    );
+    const tool = createGetRequirementTool({
+      prisma,
+      symbolRepos,
+      chain: async (_p, id) => ({
+        ...emptyChain(id),
+        // In repo a (hidden), in repo b (readable), and with no symbol: unplaceable, so hidden.
+        directCode: [link("sym-a", 7), link("sym-b", 20), link(null, 30)],
+      }),
+    });
+    const res = await tool.exec({ requirementId: "r1" }, ctx);
+    expect(symbolRepos).toHaveBeenCalledWith("p1", ["sym-a", "sym-b"]);
+    expect(res.text).toContain("src/secret.ts:20");
+    expect(res.text).not.toContain("src/secret.ts:7");
+    expect(res.text).not.toContain("src/secret.ts:30");
+    expect(res.text).toMatch(/2 linked code locations are in files you cannot read/);
+  });
+
+  it("#2331 — fails rather than show the links unfiltered when the filter cannot load", async () => {
+    const { prisma } = stubPrisma([row({ id: "r1" })]);
+    access.load.mockRejectedValue(new Error("inactive user"));
+    const tool = createGetRequirementTool({ prisma, chain: async (_p, id) => emptyChain(id) });
+    await expect(tool.exec({ requirementId: "r1" }, ctx)).rejects.toThrow("inactive user");
   });
 
   it("#1108 — says a test through a shared entry point is not evidence of testing", async () => {

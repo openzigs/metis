@@ -24,6 +24,7 @@ import {
   type FetchLike,
 } from "./dispatcher.js";
 import { SPEC_KIT_TOOLS, toolInputSchema } from "./tools.js";
+import { isDirectRun } from "../direct-run.js";
 
 export interface CreateSpecKitMcpServerOptions {
   config: SpecKitMcpConfig;
@@ -103,13 +104,7 @@ export async function main(): Promise<void> {
   await server.connect(transport);
 }
 
-const isDirectRun =
-  typeof process !== "undefined" &&
-  Array.isArray(process.argv) &&
-  process.argv[1] !== undefined &&
-  /mcp\/speckit\/server\.(?:js|ts)$/.test(process.argv[1]);
-
-if (isDirectRun) {
+if (isDirectRun(process.argv[1], "speckit")) {
   main().catch((err) => {
     // Stderr is the only safe channel — stdout is the MCP transport.
     process.stderr.write(`metis-speckit-mcp boot failed: ${(err as Error).message}\n`);

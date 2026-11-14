@@ -21,6 +21,7 @@
     "db:migrate:postgres": "prisma migrate deploy",
     "agents-md:write": "tsx src/lib/agents-md/cli.ts",
     "mcp:test": "tsx src/lib/mcp/cli.ts",
+    "metis-index-mcp": "tsx --env-file-if-exists=../.env src/mcp/metis-index/server.ts",
     "migrate:link-sso": "tsx src/lib/auth/migrate-link-sso.ts",
     "db:migrate": "prisma migrate dev",
     "db:migrate:deploy": "prisma migrate deploy",
