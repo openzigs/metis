@@ -212,7 +212,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       readOpenOnly: "",
       moved: "",
       set: "",
+      starter: "",
     };
+    const STARTER_ROW = "Refunds reach the bank";
     const MOVED = "Invoices show the tax";
 
     beforeAll(async () => {
@@ -275,6 +277,40 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await requirement("cr-set-secret", "cr-set", SECRET, "d-secret");
       checks.set = await start({ requirementIds: ["cr-set-open", "cr-set-secret"] });
       await complete(checks.set, [quote(OPEN), quote(SECRET)]);
+      // #2448 — a starter run: its code pass read d-secret, and its requirement
+      // records no sources (NULL), so it rests on the run as a whole.
+      await db.analysis.create({
+        data: {
+          id: "cr-starter",
+          projectId: P,
+          startedById: "alice",
+          status: "completed",
+          completedAt: new Date(),
+          title: "cr-starter",
+          sourceAccess: "starter",
+        },
+      });
+      await db.agentResult.create({
+        data: {
+          analysisId: "cr-starter",
+          agentKey: "codebase-assessor",
+          status: "completed",
+          readSourceIds: sources(["d-secret"]),
+        },
+      });
+      await db.requirement.create({
+        data: {
+          id: "cr-starter-row",
+          analysisId: "cr-starter",
+          projectId: P,
+          title: STARTER_ROW,
+          body: `${STARTER_ROW} — body`,
+          reviewStatus: "approved",
+          sourceIds: null,
+        },
+      });
+      checks.starter = await start({ analysisId: "cr-starter" });
+      await complete(checks.starter, [quote(STARTER_ROW)]);
       for (const id of [checks.withheld, checks.resynthesis]) {
         await complete(id, [quote(OPEN), quote(SECRET)]);
       }
@@ -411,6 +447,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const root = await view("root", checks.set);
       expect(criteriaOf(root)).toEqual([quote(OPEN), quote(SECRET)]);
       expect(root.sourceRequirementIds).toEqual(["cr-set-open", "cr-set-secret"]);
+    });
+
+    it("a starter run's row (no sources of its own) hard-deleted since is judged on the whole run, and stays hidden", async () => {
+      const row = await db.portfolioAssessment.findUniqueOrThrow({
+        where: { id: checks.starter },
+      });
+      expect(parseSourceRows(row.sourceRows)).toEqual([
+        { id: "cr-starter-row", analysisId: "cr-starter", sourceIds: null },
+      ]);
+      await db.requirement.deleteMany({ where: { id: "cr-starter-row" } });
+      const bob = await view("bob", checks.starter);
+      expect(JSON.stringify(bob)).not.toContain("Refunds");
+      expect(criteriaOf(bob)).toEqual([RESTRICTED_SOURCE_TITLE]);
+      expect(criteriaOf(await view("root", checks.starter))).toEqual([quote(STARTER_ROW)]);
     });
 
     it("a recorded row that still exists is decided on its sources now, not only as recorded", async () => {
