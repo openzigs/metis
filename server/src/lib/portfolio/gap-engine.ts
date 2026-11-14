@@ -772,6 +772,9 @@ export class SearchLimiter {
     const weight = Math.min(this.capacity, Math.max(1, weightOf));
     await this.acquire(weight, signal);
     try {
+      // Admission resolves a tick later, by when a search admitted alongside may have aborted
+      // the run: checked again just before this search is sent.
+      throwIfAborted(signal);
       return await fn();
     } finally {
       this.inUse -= weight;
