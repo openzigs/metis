@@ -330,8 +330,21 @@ function clip(r: [number, number], end: number): [number, number] | null {
   return r[0] > end ? null : [r[0], Math.min(r[1], end)];
 }
 
-/** `s` with every RegExp metacharacter escaped. */
-const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** A `search_code_symbols` head line: `kind name — <locator>` (group 1), then its score. */
+const SYMBOL_HEAD = /^(\S+ \S.*) \(score=-?\d+(?:\.\d+)?\)$/;
+/** What precedes ` — <locator>` in a head: `kind name`. */
+const SYMBOL_HEAD_LABEL = /^\S+ \S/;
+
+/** Whether `line` is a whole `search_code_symbols` head for `locator`. */
+function isSymbolHead(line: string, locator: string): boolean {
+  const body = SYMBOL_HEAD.exec(line)?.[1];
+  const tail = ` — ${locator}`;
+  return (
+    body !== undefined &&
+    body.endsWith(tail) &&
+    SYMBOL_HEAD_LABEL.test(body.slice(0, body.length - tail.length))
+  );
+}
 
 /**
  * #2315 — the `search_code_symbols` citations whose head line the model saw,
@@ -352,11 +365,8 @@ function seenSymbolCitations(refs: readonly CodeCitationRef[], text: string): Co
       ref.startLine != null && ref.endLine != null
         ? `${ref.path}:${ref.startLine}-${ref.endLine}`
         : ref.path;
-    const head = new RegExp(
-      `^\\S+ \\S.* — ${escapeRegExp(locator)} \\(score=-?\\d+(?:\\.\\d+)?\\)$`,
-    );
     let i = at;
-    while (i < lines.length && !head.test(lines[i]!)) i += 1;
+    while (i < lines.length && !isSymbolHead(lines[i]!, locator)) i += 1;
     if (i >= lines.length) break;
     out.push(ref);
     at = i + 1;
