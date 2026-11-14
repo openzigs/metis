@@ -1,6 +1,6 @@
 {
   "id": "baqa-01-acme-reader",
-  "version": 1,
+  "version": 2,
   "issue": 2237,
   "description": "Phase 0 of #2228: business-analyst questions over the Acme Reader sample, two products (the Miniflux server and its Python client). Single-product rule questions and multi-product FRD impact questions carry the facts a correct answer states and the sources that support them; ambiguous questions expect a follow-up question and unanswerable ones expect 'the sources don't show this'. Multi-turn questions (#2269) carry the analyst's earlier turns in 'before': the last turn is scored, and 'refersBack' says whether it leans on those turns or is a self-contained control asked mid-conversation.",
   "license": "Questions, facts and frd-12.md: CC0-1.0 (written for METIS). Cited sources: miniflux/v2 (Apache-2.0) and miniflux/python-client (MIT) at the pinned commits.",

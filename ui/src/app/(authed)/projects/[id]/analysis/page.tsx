@@ -132,7 +132,7 @@ import { TraceabilityView } from "@/components/traceability/traceability-view";
 import { UntestedRequirementsPanel } from "@/components/traceability/untested-requirements-panel";
 import { RequirementHistoryTab } from "@/components/requirements/RequirementHistoryTab";
 import { RequirementApprovalWarning } from "@/components/requirements/RequirementApprovalWarning";
-import { ApprovalLadderNote } from "@/components/requirements/approval-ladder";
+import { ApprovalLadderNote, SELF_APPROVAL_HINT } from "@/components/requirements/approval-ladder";
 import { SourceDivergenceNotice } from "@/components/requirements/SourceDivergenceNotice";
 import { CriteriaProposalNotice } from "@/components/requirements/CriteriaProposalNotice";
 import { CriteriaProposalsSummary } from "@/components/requirements/CriteriaProposalsSummary";
@@ -890,13 +890,20 @@ export default function AnalysisPage(): React.ReactElement {
                 {showStartForm ? "Hide new change request" : "New change request"}
               </Button>
             ) : null}
-            {/* #977 \u2014 this project's own budget first; the deployment-wide
-                cap is shown, but labelled as such. */}
-            {projectUsage.data ? <ProjectBudgetCard usage={projectUsage.data} /> : null}
-            {costCap.data ? <DeploymentCapCard cap={costCap.data} /> : null}
           </>
         }
-      />
+      >
+        {/* #977 \u2014 this project's own budget first; the deployment-wide cap is
+            shown, but labelled as such. #2454 \u2014 under the description, not
+            among the actions: beside the button the two cards left the title a
+            ~150 px column at a 1200 px desktop viewport. */}
+        {projectUsage.data || costCap.data ? (
+          <div className="flex flex-wrap gap-2 pt-1" data-testid="analysis-usage-cards">
+            {projectUsage.data ? <ProjectBudgetCard usage={projectUsage.data} /> : null}
+            {costCap.data ? <DeploymentCapCard cap={costCap.data} /> : null}
+          </div>
+        ) : null}
+      </PageHeader>
 
       {!canRunAnalysis ? (
         <p className="text-sm text-muted-foreground" data-testid="start-analysis-forbidden">
@@ -1552,6 +1559,11 @@ export default function AnalysisPage(): React.ReactElement {
                                   { readAt: detail.dataUpdatedAt, sentAt: review.submittedAt },
                                 )}
                                 writeHint={requirementApproveHint}
+                                // #2462 — the author, in a project without
+                                // self-approval, is told before the click.
+                                approveHint={
+                                  req.selfApprovalForbidden ? SELF_APPROVAL_HINT : undefined
+                                }
                                 pending={review.isPending}
                                 onReview={(reviewStatus) =>
                                   review.mutate({
@@ -1573,7 +1585,7 @@ export default function AnalysisPage(): React.ReactElement {
                           {/* #2347 — what Approve does and how a formal review
                             differs, at the point of choosing (not once approved). */}
                           {req.reviewStatus !== "approved" ? (
-                            <ApprovalLadderNote className="mt-1" />
+                            <ApprovalLadderNote className="mt-1" projectId={projectId} />
                           ) : null}
                           {/* Epic #34 (AC4) — assignee picker + SLA badge. */}
                           <RequirementCollabRow
@@ -1920,6 +1932,7 @@ export default function AnalysisPage(): React.ReactElement {
                     requirementCount={detail.data.requirements.length}
                     analysisStatus={detail.data.status}
                     approvesAsDraft={!canApproveRequirements}
+                    viewerId={user?.id}
                   />
                 </TabsContent>
 

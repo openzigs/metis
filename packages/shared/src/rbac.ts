@@ -134,6 +134,18 @@ export function hasMinRole(role: RoleKey, minRole: RoleKey): boolean {
 }
 
 /**
+ * #2453 — whether `role` may change a project's `allowSelfApproval` setting.
+ *
+ * Narrower than `review.admin`: a coordinator holds that permission but is the
+ * maker that maker-checker binds, so it must not be able to switch the check
+ * off for its own project. Only an admin may. The review-gate route and the
+ * Approval gate card both read this, so the two cannot drift.
+ */
+export function canChangeSelfApproval(role: RoleKey): boolean {
+  return role === "admin";
+}
+
+/**
  * Returns the (frozen) set of permissions granted to a role.
  */
 export function getPermissionsForRole(role: RoleKey): readonly PermissionKey[] {

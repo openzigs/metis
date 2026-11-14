@@ -183,10 +183,34 @@ const CODE_TOOLS: ReadonlySet<string> = new Set(CHAT_CODE_TOOL_NAMES);
  */
 const LOCATOR =
   /(?<![A-Za-z0-9_.\-/])([A-Za-z0-9_.\-/]*[A-Za-z0-9_-]\.[A-Za-z][A-Za-z0-9]{0,7}):(\d{1,7})(?:-(\d{1,7}))?/g;
-/** `read_file_slice`'s header: `path (lines a-b of n)`. */
-const SLICE_HEADER = /^(\S+) \(lines (\d{1,7})-(\d{1,7}) of \d+\)/m;
-/** An excerpt header in a retrieved block or a `search-knowledge` result: `[n] name#position`. */
-const EXCERPT_HEADER = /^\[\d+\] (?:\[[^\]\n]*\] )?(\S+?)#\d+\b/gm;
+/** `read_file_slice`'s header: `path (lines a-b of n)`, tested against one result line. */
+const SLICE_HEADER = /^(\S+) \(lines (\d{1,7})-(\d{1,7}) of \d+\)/;
+/**
+ * An excerpt header in a retrieved block or a `search-knowledge` result:
+ * `[n] name#position`, tested against one result line.
+ */
+const EXCERPT_HEADER = /^\[\d+\] (?:\[[^\]\n]*\] )?(\S+?)#\d+\b/;
+
+/**
+ * #2412 — a result's lines, split on LF alone, as every tool writes them.
+ * Each header pattern is tested against one of these WITHOUT the `m` flag: a JS
+ * `m`-flag `^` also matches after a lone CR, U+2028 and U+2029, which a quoted
+ * line of repository text may contain, so `m` would let that text start a
+ * forged header line of its own.
+ */
+function resultLines(text: string): string[] {
+  return text.split("\n");
+}
+
+/** Group 1 of `pattern` on every result line it matches from the line's start. */
+function headerGroups(text: string, pattern: RegExp): string[] {
+  const out: string[] = [];
+  for (const line of resultLines(text)) {
+    const m = pattern.exec(line);
+    if (m) out.push(m[1]!);
+  }
+  return out;
+}
 
 /**
  * A path-shaped token in an answer, then an optional line reference: `:12`,
@@ -222,21 +246,79 @@ function readsProject(t: ToolEvidence): boolean {
   return t.source === "metis" && t.tool !== undefined && PROJECT_FILE_TOOLS.has(t.tool);
 }
 
+/**
+ * #2412 — the lines where each code tool that quotes repository text writes
+ * its own locators (group 1), each tested against one LF-split result line
+ * ({@link resultLines}). Only these count as lines read: the code quoted under
+ * them is the file's text, and a `// see util.ts:1-500` in it was never read.
+ * A quoted line can never start that way: `search_code_context` numbers them
+ * (`N| `), and `grep_files` writes its own `[repo] path:line: ` first.
+ */
+const CODE_TOOL_HEADERS: ReadonlyMap<string, RegExp> = new Map([
+  // `[n] path:a-b, path:c-d — label`: the numbered lines under it are the file's.
+  ["search_code_context", /^\[\d+\] ([^\n]*?) — /],
+  // `[repo] path:line: text`: the text after the locator is the file's. The
+  // path may hold spaces (`My Docs/spec.md`), never a colon: it ends at the first.
+  ["grep_files", /^(?:\[[^\]\n]*\] )?([^:\n]+:\d+): /],
+]);
+/**
+ * #2412 — code tools whose evidence is their structured `citations` alone.
+ * `search_code_symbols` quotes a snippet under each head, and a snippet line
+ * keeps column 0 (`quotableSnippet` indents only markdown and `[n]` shapes), so
+ * a planted `# x — util.ts:1-500 (score=1)` line reads exactly like a head.
+ * Its citations carry each hit's path and span, never repository text.
+ */
+const CODE_TOOLS_CITED_BY_CONTRACT: ReadonlySet<string> = new Set(["search_code_symbols"]);
+/**
+ * Code tools whose results quote no repository text: every locator in them is
+ * their own. Not `list_files`: it states no lines at all, so a `path:line` in
+ * its result can only be a file NAME (`util.ts:1-500` is a legal one), never
+ * lines it read.
+ */
+const CODE_TOOLS_WITHOUT_FILE_TEXT: ReadonlySet<string> = new Set([
+  "search_code_graph",
+  "get_index_status",
+]);
+
+/** The parts of a code tool's result the tool itself wrote, where its locators are. */
+function ownLocatorText(t: ToolEvidence, text: string): string[] {
+  const headers = t.tool === undefined ? undefined : CODE_TOOL_HEADERS.get(t.tool);
+  if (headers) return headerGroups(text, headers);
+  return t.tool !== undefined && CODE_TOOLS_WITHOUT_FILE_TEXT.has(t.tool) ? [text] : [];
+}
+
 /** Fold one project-reading tool result into `ev`. */
 function addToolEvidence(ev: CitationEvidence, t: ToolEvidence, earlier: boolean): void {
   if (!readsProject(t)) return;
   const text = t.result!;
-  const slice = SLICE_HEADER.exec(text);
+  // #2412 — only read_file_slice writes this header; another tool's quoted code may look like it.
+  // Its header is the first line that matches: the file's lines all come after it.
+  const slice =
+    t.tool === "read_file_slice"
+      ? resultLines(text)
+          .map((line) => SLICE_HEADER.exec(line))
+          .find((m) => m !== null)
+      : undefined;
   if (slice) {
     const r = range(slice[2]!, slice[3]);
     if (r) ev.add(slice[1]!, "repo", r, earlier);
+  } else if (t.source === "code" && CODE_TOOLS_CITED_BY_CONTRACT.has(t.tool ?? "")) {
+    for (const ref of t.citations ?? []) {
+      if (ref.startLine == null || ref.endLine == null) continue;
+      const r = range(String(ref.startLine), String(ref.endLine));
+      if (r) ev.add(ref.path, "repo", r, earlier);
+    }
   } else if (t.source === "code") {
-    for (const m of text.matchAll(LOCATOR)) {
-      const r = range(m[2]!, m[3]);
-      if (r) ev.add(m[1]!, "repo", r, earlier);
+    for (const own of ownLocatorText(t, text)) {
+      for (const m of own.matchAll(LOCATOR)) {
+        const r = range(m[2]!, m[3]);
+        if (r) ev.add(m[1]!, "repo", r, earlier);
+      }
     }
   } else {
-    for (const m of text.matchAll(EXCERPT_HEADER)) ev.add(m[1]!, "document", undefined, earlier);
+    for (const name of headerGroups(text, EXCERPT_HEADER)) {
+      ev.add(name, "document", undefined, earlier);
+    }
   }
   // #2325 — the version the tool's citation contract stated, for what it returned.
   for (const ref of t.citations ?? []) ev.addVersion(ref.path, ref);
@@ -300,7 +382,7 @@ export function collectCitationEvidence(
   for (const text of retrieved?.contexts ?? []) {
     // A capture with no `excerpts` (a multi-product block before #2279): read its headers.
     if (!retrieved?.excerpts) {
-      for (const m of text.matchAll(EXCERPT_HEADER)) ev.add(m[1]!, "document");
+      for (const name of headerGroups(text, EXCERPT_HEADER)) ev.add(name, "document");
     }
     for (const m of text.matchAll(LOCATOR)) {
       const r = range(m[2]!, m[3]);

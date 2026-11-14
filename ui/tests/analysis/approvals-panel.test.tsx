@@ -229,6 +229,51 @@ describe("ApprovalsPanel", () => {
     );
   });
 
+  it("#2451 — answering one of several questions on one field closes that one only", async () => {
+    // The reported card: both ambiguities on `description`, the first answered.
+    const itemId = "req-single";
+    analysisApi.getClarification.mockResolvedValue({
+      state: {
+        analysisId: "ana-1",
+        currentRound: 2,
+        maxRounds: 3,
+        rounds: [],
+        answeredAmbiguities: [`${itemId}:description`],
+        resolvedAmbiguities: [],
+        escalatedToSonnet: false,
+        completed: false,
+      },
+    });
+    renderPanel(
+      [approval({ type: "requirement", itemId })],
+      { allowed: false, pendingCount: 1, rejectedCount: 0 },
+      {
+        structuredRequirements: {
+          requirements: [
+            {
+              id: itemId,
+              title: "Reset link is single-use",
+              description: "",
+              ambiguities: [
+                { field: "description", description: "", suggestedQuestion: "When is it used?" },
+                { field: "description", description: "", suggestedQuestion: "If abandoned?" },
+              ],
+              evidenceNeeds: [],
+            },
+          ],
+          totalAmbiguities: 1,
+          totalEvidenceNeeds: 0,
+        },
+      },
+    );
+    expect(await screen.findByText("Open questions (1)")).toBeInTheDocument();
+    expect(screen.queryByText("When is it used?")).not.toBeInTheDocument();
+    expect(screen.getByText("If abandoned?")).toBeInTheDocument();
+    expect(screen.getByTestId("approval-answered-questions")).toHaveTextContent(
+      "1 question answered in clarification",
+    );
+  });
+
   it("#1000 — drops the open list entirely once every question is answered", async () => {
     analysisApi.getClarification.mockResolvedValue({
       state: {

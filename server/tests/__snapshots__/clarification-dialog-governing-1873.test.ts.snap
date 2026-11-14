@@ -23,7 +23,7 @@ exports[`#1873 — flag off: question generation is unchanged > no source, no re
       [
         {
           "role": "system",
-          "content": "You are a requirements analyst conducting a clarification session. Given requirements with identified ambiguities, generate targeted clarifying questions.\\n\\nFor each ambiguity, produce a JSON object:\\n- requirementId: the requirement's id\\n- ambiguityField: the ambiguous field name\\n- question: a clear, specific question to resolve the ambiguity\\n- context: brief context explaining why this is ambiguous\\n\\nRespond ONLY with a JSON object: { \\"questions\\": [...] }\\nDo not include markdown fences or commentary."
+          "content": "You are a requirements analyst conducting a clarification session. Given requirements with identified ambiguities, generate targeted clarifying questions.\\n\\nFor each ambiguity, produce one JSON object:\\n- requirementId: the requirement's id\\n- ambiguityField: the ambiguity's key, copied exactly as it is written before its colon\\n- question: a clear, specific question to resolve the ambiguity\\n- context: brief context explaining why this is ambiguous\\n\\nRespond ONLY with a JSON object: { \\"questions\\": [...] }\\nDo not include markdown fences or commentary."
         },
         {
           "role": "user",

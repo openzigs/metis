@@ -9,6 +9,7 @@ import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { AuthUser } from "@/lib/auth-types";
 import { ApiError } from "@/lib/api-client";
+import { queryKeys } from "@/lib/query-keys";
 import {
   APPROVAL_GATE_UNAVAILABLE,
   APPROVAL_REQUIRED,
@@ -123,6 +124,42 @@ describe("ApprovalGateSettingsCard", () => {
     await waitFor(() =>
       expect(gateApi.update).toHaveBeenCalledWith("p1", { requireApprovedReview: true }),
     );
+  });
+
+  it("#2452 — re-reads the project's Requirements list after a change, so its Approve hints follow", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const listKey = [...queryKeys.analyses.requirementsList("p1"), { page: 1 }];
+    const otherKey = [...queryKeys.analyses.requirementsList("p2"), { page: 1 }];
+    qc.setQueryData(listKey, { items: [] });
+    qc.setQueryData(otherKey, { items: [] });
+    render(
+      <QueryClientProvider client={qc}>
+        <ApprovalGateSettingsCard projectId="p1" />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(gateApi.get).toHaveBeenCalled());
+    await userEvent.click(screen.getByTestId("approval-gate-toggle"));
+    await waitFor(() => expect(qc.getQueryState(listKey)?.isInvalidated).toBe(true));
+    // Another project's list is left alone.
+    expect(qc.getQueryState(otherKey)?.isInvalidated).toBe(false);
+  });
+
+  it("#2462 — re-reads the change request snapshots too, so their cards' Approve hints follow", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const detailKey = queryKeys.analyses.detail("an-1");
+    const runsKey = queryKeys.analyses.forProject("p1");
+    qc.setQueryData(detailKey, { requirements: [] });
+    qc.setQueryData(runsKey, { items: [] });
+    render(
+      <QueryClientProvider client={qc}>
+        <ApprovalGateSettingsCard projectId="p1" />
+      </QueryClientProvider>,
+    );
+    await waitFor(() => expect(gateApi.get).toHaveBeenCalled());
+    await userEvent.click(screen.getByTestId("approval-gate-toggle"));
+    await waitFor(() => expect(qc.getQueryState(detailKey)?.isInvalidated).toBe(true));
+    // The run list carries no Approve; it is left alone.
+    expect(qc.getQueryState(runsKey)?.isInvalidated).toBe(false);
   });
 
   it("developer sees a disabled toggle and the RBAC hint", async () => {

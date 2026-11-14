@@ -92,6 +92,7 @@ export const ARM_FLAGS = [
   "CHAT_FUSED_CODE_RETRIEVAL",
   "RAG_RERANK",
   "CHAT_CODE_SEARCH_PRIMITIVES",
+  "CHAT_CODE_CONTEXT_TOOL",
 ] as const;
 type ArmFlag = (typeof ARM_FLAGS)[number];
 
@@ -105,6 +106,10 @@ type ArmFlag = (typeof ARM_FLAGS)[number];
  * #2327 — `tools-primitives` is `tools-only` plus the search primitives
  * (`grep_files`, `list_files`, the symbol filters): paired with `tools-only`,
  * it measures what the primitives add.
+ *
+ * #2412 — `tools-context` is `tools-only` plus `search_code_context`
+ * (`CHAT_CODE_CONTEXT_TOOL`): paired with `tools-only`, it measures what the
+ * tool adds. Every other named arm sets that flag as it sets the primitives.
  */
 export const ARMS = {
   /** The server's defaults: every flag unset. */
@@ -114,30 +119,35 @@ export const ARMS = {
     CHAT_FUSED_CODE_RETRIEVAL: "0",
     RAG_RERANK: "0",
     CHAT_CODE_SEARCH_PRIMITIVES: "0",
+    CHAT_CODE_CONTEXT_TOOL: "0",
   },
   on: {
     CHAT_CODE_SEARCH_TOOLS: "1",
     CHAT_FUSED_CODE_RETRIEVAL: "1",
     RAG_RERANK: "1",
     CHAT_CODE_SEARCH_PRIMITIVES: "1",
+    CHAT_CODE_CONTEXT_TOOL: "1",
   },
   "no-tools": {
     CHAT_CODE_SEARCH_TOOLS: "0",
     CHAT_FUSED_CODE_RETRIEVAL: "1",
     RAG_RERANK: "1",
     CHAT_CODE_SEARCH_PRIMITIVES: "1",
+    CHAT_CODE_CONTEXT_TOOL: "1",
   },
   "no-fused": {
     CHAT_CODE_SEARCH_TOOLS: "1",
     CHAT_FUSED_CODE_RETRIEVAL: "0",
     RAG_RERANK: "1",
     CHAT_CODE_SEARCH_PRIMITIVES: "1",
+    CHAT_CODE_CONTEXT_TOOL: "1",
   },
   "no-rerank": {
     CHAT_CODE_SEARCH_TOOLS: "1",
     CHAT_FUSED_CODE_RETRIEVAL: "1",
     RAG_RERANK: "0",
     CHAT_CODE_SEARCH_PRIMITIVES: "1",
+    CHAT_CODE_CONTEXT_TOOL: "1",
   },
   /** Fused retrieval's gain over the tools alone, with the reranker off as it ships. */
   "tools-only": {
@@ -145,6 +155,7 @@ export const ARMS = {
     CHAT_FUSED_CODE_RETRIEVAL: "0",
     RAG_RERANK: "0",
     CHAT_CODE_SEARCH_PRIMITIVES: "0",
+    CHAT_CODE_CONTEXT_TOOL: "0",
   },
   /** #2327 — the search primitives' gain over the tools alone. */
   "tools-primitives": {
@@ -152,6 +163,15 @@ export const ARMS = {
     CHAT_FUSED_CODE_RETRIEVAL: "0",
     RAG_RERANK: "0",
     CHAT_CODE_SEARCH_PRIMITIVES: "1",
+    CHAT_CODE_CONTEXT_TOOL: "0",
+  },
+  /** #2412 — `search_code_context`'s gain over the tools alone: paired with `tools-only`. */
+  "tools-context": {
+    CHAT_CODE_SEARCH_TOOLS: "1",
+    CHAT_FUSED_CODE_RETRIEVAL: "0",
+    RAG_RERANK: "0",
+    CHAT_CODE_SEARCH_PRIMITIVES: "0",
+    CHAT_CODE_CONTEXT_TOOL: "1",
   },
 } as const satisfies Record<string, Partial<Record<ArmFlag, string>>>;
 export type BaQaArm = keyof typeof ARMS;
@@ -333,6 +353,12 @@ export function stepBudgetStop(input: {
   });
 }
 
+/**
+ * The results-file format this code writes. 2 (#2265): a citation's check can
+ * be `no-such-lines`, and the summary reports citation precision per check.
+ */
+export const BA_QA_RESULTS_VERSION = 2;
+
 /** The fields of a results file that decide whether it can sit beside this run. */
 export interface ComparableRun {
   kind: string;
@@ -340,12 +366,16 @@ export interface ComparableRun {
   model: string;
   judgeModel?: string;
   fixture: { id: string; version: number };
+  /** The results-file format; a file written before #2265 carries none and is version 1. */
+  version?: number;
 }
 
 /**
  * Refuse an `--include`d run that is not comparable with `current`: another
- * fixture, version, answer model or judge, or an arm already in the report
- * (`arms`), which would print two columns under one name.
+ * fixture, version, answer model or judge, an arm already in the report
+ * (`arms`), which would print two columns under one name, or a version 1
+ * results file (#2363): it labelled a citation to lines not in the file
+ * `span`, so re-summarising it would count them under the wrong check.
  */
 export function assertComparable(
   prior: ComparableRun,
@@ -355,6 +385,15 @@ export function assertComparable(
 ): void {
   if (prior.kind !== current.kind || prior.fixture.id !== current.fixture.id) {
     throw new Error(`${file} is another eval or fixture: not comparable`);
+  }
+  // Only after the kind check: a top-level `version` means nothing outside
+  // `kind: 'ba-qa'`, so another eval's file must not be refused for lacking one.
+  const resultsVersion = prior.version ?? 1;
+  if (resultsVersion < 2) {
+    throw new Error(
+      `${file} is results file version ${resultsVersion}, which labels lines not in the file ` +
+        `as span-checked: re-run that arm rather than include it`,
+    );
   }
   if (prior.fixture.version !== current.fixture.version) {
     throw new Error(

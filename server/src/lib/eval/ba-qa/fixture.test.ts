@@ -86,8 +86,14 @@ describe("parseBaQaFixture", () => {
     expect(parseBaQaFixture(base()).questions.map((q) => q.id)).toEqual(["S1", "M1", "A1"]);
   });
 
+  it("accepts a version past 1, so a reworded fact can bump it (#2363)", () => {
+    expect(parseBaQaFixture({ ...base(), version: 2 }).version).toBe(2);
+  });
+
   it.each<[string, (f: Raw) => void, RegExp]>([
     ["an unknown field", (f) => Object.assign(f, { extra: 1 }), /extra/],
+    ["a version below 1", (f) => (f.version = 0), /version/],
+    ["a fractional version", (f) => (f.version = 1.5), /version/],
     ["a duplicate product", (f) => f.products.push({ ...f.products[0] }), /listed twice/],
     ["a bad commit", (f) => (f.products[0].sha = "main"), /sha|commit/i],
     ["a non-GitHub url", (f) => (f.products[0].url = "https://example.com/x"), /github/i],
@@ -208,6 +214,9 @@ describe("the committed question set", () => {
       f.questions.filter((q) => q.category === "single-product").map((q) => q.scope[0]),
     );
     expect([...singles].sort()).toEqual(["miniflux", "python-client"]);
+    // #2363 — S1.c was reworded (#2359): a run graded on the old wording must
+    // not sit beside one graded on the new, so the set left version 1.
+    expect(f.version).toBeGreaterThanOrEqual(2);
   });
 
   it("holds a multi-turn set: follow-ups that refer back, and self-contained controls", async () => {

@@ -171,9 +171,24 @@ describe("EnhancementResults", () => {
       state: { ...roundOneState, resolvedAmbiguities: ["req-1:scope"] },
     });
 
+    // #2451 — "remaining" counts the run's open ambiguities, so the fixture
+    // lists the requirement its two ambiguities belong to.
+    const ambiguity = (field: string) => ({ field, description: field, suggestedQuestion: "" });
     renderResults({
       enhancement: { enableWebResearch: false, enableClarification: true },
-      structuredRequirements: { requirements: [], totalAmbiguities: 2, totalEvidenceNeeds: 0 },
+      structuredRequirements: {
+        requirements: [
+          {
+            id: "req-1",
+            title: "Log retention",
+            description: "",
+            ambiguities: [ambiguity("scope"), ambiguity("duration")],
+            evidenceNeeds: [],
+          },
+        ],
+        totalAmbiguities: 2,
+        totalEvidenceNeeds: 0,
+      },
     });
 
     await waitFor(() =>

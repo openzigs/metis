@@ -28,6 +28,7 @@ import { AgentsMdCard } from "@/components/projects/agents-md-card";
 import { InferenceProfileCard } from "@/components/projects/inference-profile-card";
 import { QuarantinePanel } from "@/components/projects/quarantine-panel";
 import { ChroniclePanel } from "@/components/projects/chronicle-panel";
+import { ApprovalGateSettingsCard } from "@/components/publishing/approval-gate-card";
 import { PageHeader } from "@/components/ui/page-header";
 import { SkeletonText } from "@/components/ui/skeleton";
 
@@ -101,6 +102,11 @@ export default function ProjectSettingsPage() {
         <h2 className="text-lg font-semibold">General</h2>
         <WorkspaceAssignCard projectId={id} workspaceId={p.workspaceId} />
         <PrimaryRepoCard projectId={id} />
+        {/* #2452 — the approval rules (self-approval, approved review to publish)
+            are project-wide, so they are here, where an analyst looks for one;
+            the same card stays on Deliverables → Publish. Inside General, like
+            the other cards, and still the `#approval-gate` anchor. */}
+        <ApprovalGateSettingsCard projectId={id} />
         <p className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
           {canManageSkills ? (
             <Link

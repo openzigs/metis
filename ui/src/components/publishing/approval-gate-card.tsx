@@ -5,19 +5,21 @@
  *
  * - `ApprovalGateSettingsCard`: per-project `requireApprovedReview` toggle,
  *   and (#2436) the `allowSelfApproval` maker-checker toggle, off by default.
- *   Visible to everyone with project.read; the toggles themselves are enabled
- *   only for roles carrying `review.admin` (the server enforces this regardless).
+ *   Visible to everyone with project.read; the gate toggle is enabled only for
+ *   roles carrying `review.admin`, and (#2453) the self-approval toggle only for
+ *   an admin, since a coordinator is the maker that maker-checker binds. The
+ *   server enforces both regardless.
  * - `ApprovalGateBlockNotice`: renders a 409 APPROVAL_REQUIRED / 503
  *   APPROVAL_GATE_UNAVAILABLE block with the offending items and a link to
  *   the review queue so the user can create/view the required reviews.
  */
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { hasPermission } from "@metis/shared";
+import { canChangeSelfApproval, hasPermission } from "@metis/shared";
 import { ApiError } from "@/lib/api-client";
 import { useAuth } from "@/lib/auth-context";
 import { reviewGateApi } from "@/lib/publishing-api";
-import { reviewGateKey } from "@/lib/query-keys";
+import { queryKeys, reviewGateKey } from "@/lib/query-keys";
 import type { ReviewGateConfigPatch } from "@metis/shared";
 import { APPROVAL_GATE_UNAVAILABLE, type ApprovalGateBlock } from "@/lib/approval-gate";
 import { Card } from "@/components/ui/card";
@@ -27,12 +29,17 @@ const gateKey = reviewGateKey;
 
 /** #2436 — what the self-approval setting does, under its toggle. */
 export const SELF_APPROVAL_HELP =
-  "Off (the default), someone who wrote or edited a requirement cannot approve it, and whoever requests a review cannot sign it off; a colleague must. Turn it on for a team of one. Approving still needs the requirement.approve permission, and each change of this setting is recorded in the audit log.";
+  "Off (the default), someone who wrote or edited a requirement cannot approve it, and whoever requests a review cannot sign it off; a colleague must. Turn it on for a team of one. Approving still needs the requirement.approve permission. Only an admin can change it, and each change of this setting is recorded in the audit log.";
+
+/** #2453 — shown to a review administrator who is not an admin. */
+export const SELF_APPROVAL_ADMIN_ONLY =
+  "Only an admin can change this, so someone bound by maker-checker cannot switch it off for their own project.";
 
 export function ApprovalGateSettingsCard({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
   const { user } = useAuth();
   const canToggle = user ? hasPermission(user.role, "review.admin") : false;
+  const canToggleSelfApproval = user ? canChangeSelfApproval(user.role) : false;
 
   const gate = useQuery({
     queryKey: gateKey(projectId),
@@ -42,15 +49,27 @@ export function ApprovalGateSettingsCard({ projectId }: { projectId: string }) {
 
   const update = useMutation({
     mutationFn: (patch: ReviewGateConfigPatch) => reviewGateApi.update(projectId, patch),
-    onSuccess: () => qc.invalidateQueries({ queryKey: gateKey(projectId) }),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: gateKey(projectId) });
+      // #2452 — the Requirements list flags rows by this setting
+      // (`selfApprovalForbidden`): re-read it, so turning self-approval on
+      // re-enables Approve now, not when the cached list goes stale.
+      await qc.invalidateQueries({ queryKey: queryKeys.analyses.requirementsList(projectId) });
+      // #2462 — and so do the change request page's requirement cards. Broad
+      // on purpose: every cached snapshot, across projects, because the detail
+      // key holds no project id and this is the narrowest prefix there is.
+      // Only mounted queries refetch; the rest are just marked stale.
+      await qc.invalidateQueries({ queryKey: [...queryKeys.analyses.all, "detail"] });
+    },
   });
 
   const enabled = gate.data?.requireApprovedReview ?? false;
   const selfApproval = gate.data?.allowSelfApproval ?? false;
-  const disabled = gate.isLoading || update.isPending || !canToggle;
+  const busy = gate.isLoading || update.isPending;
+  const disabled = busy || !canToggle;
 
   return (
-    <Card className="p-4" data-testid="approval-gate-card">
+    <Card id="approval-gate" className="scroll-mt-4 p-4" data-testid="approval-gate-card">
       <h2 className="text-sm font-semibold">Approval gate</h2>
       <p className="mt-1 text-xs text-muted-foreground">
         When enabled, publishing issue drafts and exporting requirements or generated documents is
@@ -73,7 +92,7 @@ export function ApprovalGateSettingsCard({ projectId }: { projectId: string }) {
           data-testid="self-approval-toggle"
           type="checkbox"
           checked={selfApproval}
-          disabled={disabled}
+          disabled={busy || !canToggleSelfApproval}
           onChange={(e) => update.mutate({ allowSelfApproval: e.target.checked })}
         />
         <Label htmlFor="allowSelfApproval">Allow self-approval</Label>
@@ -81,9 +100,15 @@ export function ApprovalGateSettingsCard({ projectId }: { projectId: string }) {
       <p className="mt-1 text-xs text-muted-foreground" data-testid="self-approval-help">
         {SELF_APPROVAL_HELP}
       </p>
+      {canToggle && !canToggleSelfApproval && (
+        <p className="mt-2 text-xs text-muted-foreground" data-testid="self-approval-admin-only">
+          {SELF_APPROVAL_ADMIN_ONLY}
+        </p>
+      )}
       {!canToggle && (
         <p className="mt-2 text-xs text-muted-foreground">
-          Only review administrators (coordinator/admin) can change this setting.
+          Only review administrators (coordinator/admin) can change the approval gate, and only an
+          admin can change self-approval.
         </p>
       )}
       {update.error && (

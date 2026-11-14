@@ -24,6 +24,10 @@
  * (`grep_files`, `list_files`, the symbol filters); each session records the
  * tools it called (`toolNames`).
  *
+ * #2412 — `tools-context` is `tools-only` plus `CHAT_CODE_CONTEXT_TOOL`
+ * (`search_code_context`). Every named arm sets that flag itself: on in `on`
+ * and the `no-*` arms, off in `off`, `tools-only` and `tools-primitives`.
+ *
  * Arms (#2243): `off` sets `CHAT_CODE_SEARCH_TOOLS`, `CHAT_FUSED_CODE_RETRIEVAL`
  * and `RAG_RERANK` off and `on` sets all three, whatever the shell or `.env` set;
  * `no-tools`, `no-fused` and `no-rerank` take one flag away from `on`; `default`
@@ -132,6 +136,7 @@ import {
   armLabel,
   assertComparable,
   assertRoutingFlags,
+  BA_QA_RESULTS_VERSION,
   budgetStop,
   buildJudgedSpans,
   chatSessionScope,
@@ -181,6 +186,11 @@ interface Session extends ReportSession {
 
 interface Envelope {
   kind: "ba-qa";
+  /**
+   * The results-file format (`BA_QA_RESULTS_VERSION`); absent before #2265.
+   * `--include` reads it to refuse a version 1 file (#2363).
+   */
+  version?: number;
   runId: string;
   provider: string;
   model: string;
@@ -951,9 +961,7 @@ async function main(): Promise<void> {
   const runId = `${startedAt.toISOString().replace(/[:.]/g, "-")}-${runArm}`;
   const envelope: Envelope & Record<string, unknown> = {
     kind: "ba-qa",
-    // 2 (#2265): a citation's check can be `no-such-lines`, and the summary
-    // reports citation precision per check instead of one blended rate.
-    version: 2,
+    version: BA_QA_RESULTS_VERSION,
     issue: 2237,
     runId,
     startedAt: startedAt.toISOString(),

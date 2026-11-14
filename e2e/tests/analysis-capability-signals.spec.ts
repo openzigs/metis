@@ -1,9 +1,11 @@
 /**
  * E2E — Analysis degraded-mode capability signals (issue #733, epic #725).
  *
- * A fresh project has no code graph, no ingested repository source, and the
- * grounding feature flags default off — i.e. it is a *degraded* project. The
- * pipeline used to swallow this silently; #733 surfaces it in two places:
+ * A project with a repository connected but no code graph and no ingested
+ * repository source yet is a *degraded* project. (A fresh project with no
+ * repository at all is "Documents only" and is not warned about code it chose
+ * not to have, #2454; these tests connect a repository first.) The pipeline
+ * used to swallow this silently; #733 surfaces it in two places:
  *
  *   - Start-analysis form: a pre-run capability HINT warns which capabilities
  *     the run will (not) have, gated by the selected agents.
@@ -80,6 +82,17 @@ test.describe("Analysis capability signals (#733)", () => {
 
   // AC3 — the form warns, before a run, that code analysis will be limited.
   test("start-analysis form shows the capability hint for a degraded project", async ({ page }) => {
+    // #2454 — a project with no code at all (created "Documents only") is not
+    // warned about a graph or source it has nothing to build them from. The
+    // degraded project here has a repository whose code is not built yet.
+    const api = await authedApi(accessToken);
+    const stamp = Date.now();
+    const repo = await api.post(`/api/projects/${projectId}/connectors/repos`, {
+      data: { label: `capability-${stamp}`, ownerOrOrg: "metis-e2e", repoName: `cap-${stamp}` },
+    });
+    expect(repo.status(), await repo.text()).toBe(201);
+    await api.dispose();
+
     const analysis = new AnalysisPage(page);
     await analysis.goto(projectId);
 

@@ -31,7 +31,7 @@ export const CHECKPOINT_HELD_KEY = "checkpointHeldForReview";
 
 /** What a promotion's response says about requirements it held for review. */
 export const CHECKPOINT_HELD_REASON =
-  "Requirements edited in the checkpoint by the person who approved them were promoted as awaiting review, not approved: someone else must approve them. A coordinator or admin can allow self-approval in the project's Publishing settings.";
+  "Requirements edited in the checkpoint by the person who approved them were promoted as awaiting review, not approved: someone else must approve them. An admin can allow self-approval in Project settings → Approval gate.";
 
 type Metadata = Record<string, unknown>;
 

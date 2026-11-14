@@ -706,9 +706,13 @@ async function updateOnce(
   });
 }
 
-/** #2436 — what an author is told when their own approval is refused. */
+/**
+ * #2436 — what an author is told when their own approval is refused.
+ * #2452 — names where the setting is: Project settings (⚙) → Approval gate,
+ * where an analyst looks for a project-wide rule (it is also on Publish).
+ */
 export const SELF_APPROVAL_FORBIDDEN_MESSAGE =
-  "You wrote or edited this requirement, so someone else must approve it. A coordinator or admin can allow self-approval in the project's Publishing settings.";
+  "You wrote or edited this requirement, so someone else must approve it. An admin can allow self-approval in Project settings → Approval gate.";
 
 /**
  * #2436 — the fields whose author an approval must not come from: the wording
@@ -739,17 +743,23 @@ async function isRecordedAuthor(
     where: { requirementId, actorId },
     select: { changedFields: true },
   });
-  return rows.some((row) => {
-    const raw = row.changedFields;
-    if (typeof raw !== "string") return true;
-    try {
-      const diff = JSON.parse(raw) as unknown;
-      if (diff === null || typeof diff !== "object") return true;
-      return Object.keys(diff).some((f) => AUTHORED_FIELDS.has(f));
-    } catch {
-      return true;
-    }
-  });
+  return rows.some((row) => isAuthoringVersion(row.changedFields));
+}
+
+/**
+ * #2436 — a version row's `changedFields` touched an {@link AUTHORED_FIELDS}
+ * field, so its actor is an author. Unreadable counts as authored (fail
+ * closed). #2452 — shared with the Requirements list, which says so up front.
+ */
+export function isAuthoringVersion(raw: unknown): boolean {
+  if (typeof raw !== "string") return true;
+  try {
+    const diff = JSON.parse(raw) as unknown;
+    if (diff === null || typeof diff !== "object") return true;
+    return Object.keys(diff).some((f) => AUTHORED_FIELDS.has(f));
+  } catch {
+    return true;
+  }
 }
 
 /**
@@ -757,8 +767,9 @@ async function isRecordedAuthor(
  * checkpoint (#1580) before it was promoted: the checkpoint edit writes no
  * version row, so the analysis records its editors instead. Unreadable
  * metadata records nobody; the version history still applies.
+ * #2452 — exported for the Requirements list, which reads the same rows.
  */
-function editedInCheckpoint(row: Record<string, unknown>, actorId: string): boolean {
+export function editedInCheckpoint(row: Record<string, unknown>, actorId: string): boolean {
   const raw = (row.analysis as { metadata?: unknown } | null | undefined)?.metadata;
   if (typeof raw !== "string") return false;
   let metadata: unknown;

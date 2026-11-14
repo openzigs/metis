@@ -22,6 +22,8 @@
 import { Prisma, prisma, resolveDatabaseProvider } from "../prisma.js";
 import { resolveRequirementReviewStatus } from "../analysis/analysis-service.js";
 import { parseRequirementLabels } from "../analysis/requirement-labels.js";
+import { CHECKPOINT_EDITORS_KEY } from "../analysis/checkpoint-authorship.js";
+import { editedInCheckpoint, isAuthoringVersion } from "./requirement-version-service.js";
 
 export const REQUIREMENT_LIST_STATUSES = ["draft", "approved", "rejected", "deferred"] as const;
 export type RequirementListStatus = (typeof REQUIREMENT_LIST_STATUSES)[number];
@@ -53,6 +55,19 @@ export interface ProjectRequirementRow {
   changeRequest: { id: string; title: string };
   /** The latest standing formal review covering it; null when none. */
   review: { id: string; title: string; status: string } | null;
+  /**
+   * #2452 — the viewer wrote or edited it, and the project does not allow
+   * self-approval, so their Approve would be refused (`SELF_APPROVAL_FORBIDDEN`).
+   * Set only on a row the viewer could otherwise approve; omitted otherwise.
+   */
+  selfApprovalForbidden?: true;
+}
+
+/** #2452 — who is reading the list, for {@link ProjectRequirementRow.selfApprovalForbidden}. */
+export interface RequirementListViewer {
+  userId: string;
+  /** Holds `requirement.approve`; without it Approve is refused regardless. */
+  canApprove: boolean;
 }
 
 export interface ProjectRequirementsPage {
@@ -137,9 +152,101 @@ async function idsMatchingTitle(
   };
 }
 
+/**
+ * #2452 — the ids among `requirementIds` (the project's, not yet approved)
+ * that `userId` may not approve because they are an author and the project
+ * does not allow self-approval. The same reading as the approve write's
+ * maker-checker (`updateRequirementWithHistory`): a version of theirs that
+ * changed the wording, or an edit of theirs in the approval checkpoint. Every
+ * read filters on the project. Exported for its project-scoping test.
+ */
+export async function selfApprovalForbiddenIds(
+  projectId: string,
+  requirementIds: string[],
+  userId: string,
+): Promise<Set<string>> {
+  const blocked = new Set<string>();
+  if (requirementIds.length === 0) return blocked;
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { allowSelfApproval: true },
+  });
+  if (project?.allowSelfApproval === true) return blocked;
+  const [versions, checkpointRows] = await Promise.all([
+    prisma.requirementVersion.findMany({
+      where: { requirementId: { in: requirementIds }, actorId: userId, requirement: { projectId } },
+      select: { requirementId: true, changedFields: true },
+    }),
+    // Only a run whose metadata records checkpoint editors can name one.
+    prisma.requirement.findMany({
+      where: {
+        id: { in: requirementIds },
+        projectId,
+        promotedStructuredId: { not: null },
+        analysis: { is: { projectId, metadata: { contains: CHECKPOINT_EDITORS_KEY } } },
+      },
+      select: {
+        id: true,
+        promotedStructuredId: true,
+        promotedStructuredRunId: true,
+        analysis: { select: { metadata: true } },
+      },
+    }),
+  ]);
+  for (const v of versions) {
+    if (isAuthoringVersion(v.changedFields)) blocked.add(v.requirementId);
+  }
+  for (const row of checkpointRows) {
+    if (editedInCheckpoint(row, userId)) blocked.add(row.id);
+  }
+  return blocked;
+}
+
+/**
+ * #2462 — whether `GET /api/analyses/:id` should work out the flag. The page
+ * polls that route every 2.5 s while a run is pending or running, and the flag
+ * costs up to three reads. So it is worked out once the run has settled
+ * (completed, failed, cancelled), while its approval checkpoint is open
+ * (`metadata.promotionBlocked.blocked`), or while a run that had completed is
+ * re-run (Regenerate, repo resume): that keeps its `completedAt`
+ * (`markAnalysisRunning`), and its promoted cards keep a live Approve. A first
+ * run in progress has no card to act on.
+ */
+export function selfApprovalFlagDue(snapshot: {
+  status: string;
+  completedAt?: string | null;
+  metadata: Record<string, unknown> | null;
+}): boolean {
+  if (snapshot.status !== "pending" && snapshot.status !== "running") return true;
+  if (snapshot.completedAt) return true;
+  const gate = snapshot.metadata?.promotionBlocked as { blocked?: unknown } | undefined;
+  return gate?.blocked === true;
+}
+
+/**
+ * #2462 — the same flag on another read of one project's requirements: the
+ * change request page's cards (`GET /api/analyses/:id`). Only a row the viewer
+ * could otherwise approve is read, as on the list: not yet approved, and the
+ * viewer holds requirement.approve. Every other row comes back unchanged.
+ */
+export async function flagSelfApprovalForbidden<T extends { id: string; reviewStatus: string }>(
+  projectId: string,
+  rows: T[],
+  viewer: RequirementListViewer | undefined,
+): Promise<Array<T & { selfApprovalForbidden?: true }>> {
+  if (!viewer?.canApprove) return rows;
+  const forbidden = await selfApprovalForbiddenIds(
+    projectId,
+    rows.filter((r) => r.reviewStatus !== "approved").map((r) => r.id),
+    viewer.userId,
+  );
+  return rows.map((r) => (forbidden.has(r.id) ? { ...r, selfApprovalForbidden: true } : r));
+}
+
 export async function listProjectRequirements(
   projectId: string,
   query: ProjectRequirementsQuery,
+  viewer?: RequirementListViewer,
 ): Promise<ProjectRequirementsPage> {
   const q = query.q?.trim() ?? "";
   const search = q ? await idsMatchingTitle(projectId, q) : null;
@@ -178,16 +285,27 @@ export async function listProjectRequirements(
       },
     }),
   ]);
+  const statusOf = (r: (typeof rows)[number]) =>
+    resolveRequirementReviewStatus(
+      r.reviewStatus,
+      parseRequirementLabels(r.labels),
+    ) as RequirementListStatus;
+  // #2452 — only rows the viewer could otherwise approve: not yet approved,
+  // and the viewer holds requirement.approve.
+  const forbidden = viewer?.canApprove
+    ? await selfApprovalForbiddenIds(
+        projectId,
+        rows.filter((r) => statusOf(r) !== "approved").map((r) => r.id),
+        viewer.userId,
+      )
+    : new Set<string>();
   return {
     items: rows.map((r) => ({
       id: r.id,
       title: r.title,
       body: r.body,
       version: r.version,
-      reviewStatus: resolveRequirementReviewStatus(
-        r.reviewStatus,
-        parseRequirementLabels(r.labels),
-      ) as RequirementListStatus,
+      reviewStatus: statusOf(r),
       updatedAt: r.updatedAt.toISOString(),
       changeRequest: {
         id: r.analysis.id,
@@ -198,6 +316,7 @@ export async function listProjectRequirements(
           `Analysis of ${r.analysis.startedAt.toISOString().slice(0, 10)}`,
       },
       review: r.reviewItems[0]?.reviewRequest ?? null,
+      ...(forbidden.has(r.id) ? { selfApprovalForbidden: true as const } : {}),
     })),
     total,
     totalIsLowerBound: search?.capped ?? false,

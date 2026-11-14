@@ -7,6 +7,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
+import { ambiguityFieldKeys, ambiguityKeys, openAmbiguityCount } from "@metis/shared";
 import { z } from "zod";
 import type { AIProvider, ChatMessage } from "../ai/types.js";
 import { HAIKU_MODEL_ID, SONNET_MODEL_ID, tierModelFor } from "../ai/model-router.js";
@@ -41,6 +42,7 @@ import type {
   UncertaintyKind,
 } from "./types/requirements.js";
 import { citationFor, selectQuestionsToAsk, type GeneratedQuestion } from "./question-selection.js";
+import { fallbackQuestionsFor, matchQuestionsToAmbiguities } from "./question-ambiguity-match.js";
 
 const log = createChildLogger("clarification-dialog");
 
@@ -99,9 +101,9 @@ const ESCALATION_THRESHOLD = 0.6; // >60% unresolved → escalate to Sonnet
 // about (ECLAIR). `question-selection.ts` decides from these what is asked.
 export const QUESTION_SYSTEM_PROMPT = `You are a requirements analyst conducting a clarification session. Given requirements with identified ambiguities, generate targeted clarifying questions, and say for each whether its answer would change what gets built.
 
-For each ambiguity, produce a JSON object:
+For each ambiguity, produce one JSON object:
 - requirementId: the requirement's id
-- ambiguityField: the ambiguous field name
+- ambiguityField: the ambiguity's key, copied exactly as it is written before its colon
 - uncertainty: "missing-knowledge" when the project's own code or documents could answer it (a definition, an existing rule, how the system works today); "ambiguity" when the text can be read two or more ways; "silence" when the text does not say something an implementer must decide; "unanswerable" when no one can settle it yet
 - options: two to four plausible readings or answers, each a short phrase
 - divergent: true when the readings would lead to different code, data or a different product; false when every reading builds the same thing
@@ -126,9 +128,9 @@ Do not include markdown fences or commentary.`;
  */
 export const LEGACY_QUESTION_SYSTEM_PROMPT = `You are a requirements analyst conducting a clarification session. Given requirements with identified ambiguities, generate targeted clarifying questions.
 
-For each ambiguity, produce a JSON object:
+For each ambiguity, produce one JSON object:
 - requirementId: the requirement's id
-- ambiguityField: the ambiguous field name
+- ambiguityField: the ambiguity's key, copied exactly as it is written before its colon
 - question: a clear, specific question to resolve the ambiguity
 - context: brief context explaining why this is ambiguous
 
@@ -205,11 +207,14 @@ export function buildAmbiguitySummary(
 ): string {
   return requirements
     .map((r) => {
-      const unresolved = r.ambiguities.filter(
-        (a) => !resolvedAmbiguities.includes(`${r.id}:${a.field}`),
+      // #2451 — listed under its key: one requirement can hold several
+      // ambiguities on the same field, and the question names which one.
+      const keys = ambiguityFieldKeys(r.ambiguities);
+      const unresolved = r.ambiguities.flatMap((a, i) =>
+        resolvedAmbiguities.includes(`${r.id}:${keys[i]}`) ? [] : [{ ...a, key: keys[i] }],
       );
       return `Requirement "${r.title}" (id: ${r.id}):\n${sourceBlock(r)}${unresolved
-        .map((a) => `  - ${a.field}: ${a.description}`)
+        .map((a) => `  - ${a.key}: ${a.description}`)
         .join("\n")}`;
     })
     .join("\n\n");
@@ -421,8 +426,10 @@ export class ClarificationDialog {
       });
       if (q.governing) {
         governing.push({ ...q, answer: prior.answer });
-      } else if (byId.get(q.requirementId)?.ambiguities.some((a) => a.field === q.ambiguityField)) {
-        answered.add(`${q.requirementId}:${q.ambiguityField}`);
+      } else {
+        const key = `${q.requirementId}:${q.ambiguityField}`;
+        const req = byId.get(q.requirementId);
+        if (req && ambiguityKeys(req).includes(key)) answered.add(key);
       }
     }
     state.reused = reused;
@@ -658,7 +665,7 @@ export class ClarificationDialog {
     // in the reported run purely because the resolution model was stingy.
     const addressed = addressedAmbiguities(state);
     const unresolvedReqs = requirements.requirements.filter((r) =>
-      r.ambiguities.some((a) => !addressed.has(`${r.id}:${a.field}`)),
+      ambiguityKeys(r).some((key) => !addressed.has(key)),
     );
 
     // #1873 — the plain business questions for `uncertain` governing rules
@@ -697,27 +704,43 @@ export class ClarificationDialog {
       requirements,
       signal,
     );
-    const ask = selection.ask.filter((q) => !reused.has(q.id));
+    let ask = selection.ask.filter((q) => !reused.has(q.id));
+    let notAsked = selection.notAsked.length;
     const governingAsk = governingQuestions.filter((q) => !reused.has(q.id));
-    if (
-      (generated.length > 0 || reused.size > 0) &&
-      ask.length === 0 &&
-      governingAsk.length === 0
-    ) {
+    if (ask.length === 0 && governingAsk.length === 0) {
       // Everything raised was set aside (or, #2236, answered before in the
-      // project): there is nothing worth asking — but
-      // only when no ambiguity is left open. A set-aside field the model made
-      // up, or an ambiguity it never raised a question about (a deterministic
-      // GtWR hit), is still open, so the round is kept (empty, as #1081 left a
-      // reply that raised nothing) and a later round asks again (#1104 guard).
+      // project), or the model raised nothing: there is nothing worth asking —
+      // but only when no ambiguity is left open. A set-aside field the model
+      // made up, or an ambiguity it never raised a question about (a
+      // deterministic GtWR hit), is still open (#1104 guard).
       const stillOpen = addressedAmbiguities(state);
-      const leftOpen = requirements.requirements.some((r) =>
-        r.ambiguities.some((a) => !stillOpen.has(`${r.id}:${a.field}`)),
-      );
-      if (!leftOpen) {
+      const fallback = fallbackQuestionsFor(requirements.requirements, stillOpen, randomUUID);
+      if (fallback.length === 0) {
         state.completed = true;
         return this.writeStart(analysisId, revision, state);
       }
+      // #2451 — recall-first (#1101): never a round with nothing to answer
+      // while ambiguities are open. That round read "N remaining" with no box
+      // to answer in; it now asks the open ambiguities themselves, each under
+      // its own key, capped as any round is.
+      log.info("No question to ask while ambiguities are open: asking them as written", {
+        analysisId,
+        round: state.currentRound,
+        open: fallback.length,
+      });
+      const byId = new Map(requirements.requirements.map((r) => [r.id, r]));
+      const cited = fallback.map((q) => {
+        const citation = citationFor(byId.get(q.requirementId), q.ambiguityField);
+        return citation ? { ...q, citation } : q;
+      });
+      const fallbackSelection = sourceQuestions
+        ? selectQuestionsToAsk(cited, {
+            askFirst: this.askFirst,
+            priorityOf: (id) => priorities.get(id),
+          })
+        : askEveryQuestion(cited);
+      ask = fallbackSelection.ask;
+      notAsked = fallbackSelection.notAsked.length;
     }
 
     // Self-resolution pass (clarify-self-resolve): before surfacing questions,
@@ -741,7 +764,7 @@ export class ClarificationDialog {
       // #1129 — the ticked items' questions lead the round.
       questions: orderQuestionsAskFirst(groundedQuestions, this.askFirst),
       answers: [],
-      ...(selection.notAsked.length > 0 ? { notAsked: selection.notAsked.length } : {}),
+      ...(notAsked > 0 ? { notAsked } : {}),
     };
 
     state.rounds.push(round);
@@ -821,9 +844,8 @@ export class ClarificationDialog {
     // ambiguities the user actually answered. This happens BEFORE the resolution
     // model is consulted, so a failed or stingy resolution call cannot cost the
     // user credit for work they did.
-    const realFieldsByReq = new Map(
-      requirements.requirements.map((r) => [r.id, new Set(r.ambiguities.map((a) => a.field))]),
-    );
+    // #2451 — keyed per ambiguity, not per field (`ambiguityKeys`).
+    const realKeys = new Set(requirements.requirements.flatMap((r) => ambiguityKeys(r)));
     const answered = new Set(state.answeredAmbiguities ?? []);
     for (const q of currentRound.questions) {
       const submitted = answers.find((a) => a.questionId === q.id);
@@ -831,9 +853,8 @@ export class ClarificationDialog {
       q.answer = submitted.answer;
       // Same guard #1104 applies to the model's claims: only a field that is a
       // REAL ambiguity of its requirement may be counted.
-      if (realFieldsByReq.get(q.requirementId)?.has(q.ambiguityField)) {
-        answered.add(`${q.requirementId}:${q.ambiguityField}`);
-      }
+      const key = `${q.requirementId}:${q.ambiguityField}`;
+      if (realKeys.has(key)) answered.add(key);
     }
     state.answeredAmbiguities = [...answered];
 
@@ -958,7 +979,24 @@ export class ClarificationDialog {
           "started. This does not mean there is nothing to clarify — try again.",
       );
     }
-    return toQuestions(outcome.verdict.questions, requirements);
+    // #2451 — each question filed under the open ambiguity it asks about, one
+    // per ambiguity, so its answer closes that ambiguity and no other.
+    const generated = toQuestions(outcome.verdict.questions, requirements);
+    const matched = matchQuestionsToAmbiguities(generated, requirements, addressed);
+    if (matched.length < generated.length) {
+      log.info("Clarifying questions with no open ambiguity of their own were not asked", {
+        analysisId: state.analysisId,
+        round: state.currentRound,
+        generated: generated.length,
+        asked: matched.length,
+      });
+    }
+    const byId = new Map(requirements.map((r) => [r.id, r]));
+    return matched.map((q) => {
+      const { citation: _was, ...rest } = q;
+      const citation = citationFor(byId.get(q.requirementId), q.ambiguityField);
+      return citation ? { ...rest, citation } : rest;
+    });
   }
 
   /**
@@ -1066,7 +1104,7 @@ export class ClarificationDialog {
       // Issue #1104 (finding C) — a field may only be marked resolved when it
       // is a REAL ambiguity of this requirement AND its question was actually
       // answered in this round. The model routinely claims more.
-      const realFields = new Set(req.ambiguities.map((a) => a.field));
+      const realFields = new Set(ambiguityFieldKeys(req.ambiguities));
       const answeredFields = new Set(
         reqQuestions.filter((q) => answerFor(q.id) !== undefined).map((q) => q.ambiguityField),
       );
@@ -1136,11 +1174,7 @@ export class ClarificationDialog {
     //
     // Issue #1117 (finding A) — an answered ambiguity is no longer outstanding
     // work for the user, so it must not be counted as remaining either.
-    const addressed = addressedAmbiguities(state);
-    const remaining = updatedReqs.reduce(
-      (sum, r) => sum + r.ambiguities.filter((a) => !addressed.has(`${r.id}:${a.field}`)).length,
-      0,
-    );
+    const remaining = openAmbiguityCount(updatedReqs, addressedAmbiguities(state));
 
     return {
       ...requirements,
@@ -1236,14 +1270,11 @@ function recordSetAside(
   requirements: StructuredRequirements,
 ): void {
   if (setAside.length === 0) return;
-  const realFieldsByReq = new Map(
-    requirements.requirements.map((r) => [r.id, new Set(r.ambiguities.map((a) => a.field))]),
-  );
+  const realKeys = new Set(requirements.requirements.flatMap((r) => ambiguityKeys(r)));
   const counted = new Set(state.setAsideAmbiguities ?? []);
   for (const q of setAside) {
-    if (realFieldsByReq.get(q.requirementId)?.has(q.ambiguityField)) {
-      counted.add(`${q.requirementId}:${q.ambiguityField}`);
-    }
+    const key = `${q.requirementId}:${q.ambiguityField}`;
+    if (realKeys.has(key)) counted.add(key);
   }
   state.setAside = [
     ...(state.setAside ?? []),

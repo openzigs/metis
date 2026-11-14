@@ -78,6 +78,15 @@ let repoSourceExists = false;
 // #1974 — the orchestrator orders them primary first, then oldest first.
 type RepoConnectorRow = { id: string; label: string; isPrimary: boolean; createdAt: Date };
 let repoConnectors: RepoConnectorRow[] = [];
+// #2454 — the capability probe asks whether the project has any repository
+// connection (`take: 1`). These tests model a project that has one even when
+// `repoConnectors` lists none for the run (graph and source not built yet);
+// set this for a project created "Documents only", with no code at all.
+let projectHasNoCode = false;
+/** The probe's read alone: one row, ids only. A pipeline read never asks for that shape. */
+type ProbeArgs = { take?: number; select?: Record<string, unknown> };
+const isCapabilityProbe = (args?: ProbeArgs) =>
+  args?.take === 1 && args.select?.id === true && Object.keys(args.select).length === 1;
 const connectorRow = (
   id: string,
   label: string,
@@ -337,7 +346,13 @@ vi.mock("../src/lib/prisma.js", () => ({
       }),
     },
     repoConnection: {
-      findMany: vi.fn(async () => repoConnectors),
+      findMany: vi.fn(async (args?: ProbeArgs) =>
+        isCapabilityProbe(args) && repoConnectors.length === 0
+          ? projectHasNoCode
+            ? []
+            : [{ id: "rc-probe" }]
+          : repoConnectors,
+      ),
     },
     quarantineChunk: {
       findMany: vi.fn(async ({ where }: { where: { documentId: { in: string[] } } }) =>
@@ -730,6 +745,7 @@ beforeEach(() => {
   repoSourceExists = false;
   quarantineRows = [];
   repoConnectors = [];
+  projectHasNoCode = false;
   projects.set("proj-abcdefghij", {
     id: "proj-abcdefghij",
     name: "Acme",
@@ -828,6 +844,42 @@ describe("AnalysisOrchestrator.start", () => {
     expect(data).toMatchObject({ title: "Checkout v2", titleGenerated: false });
     expect(JSON.parse(data.metadata as string)).toMatchObject({ startedWithDefaults: true });
     for (let i = 0; i < 200 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+  });
+
+  it("#2451 — start() stores the enhancements asked for on the row it creates", async () => {
+    const orch = new AnalysisOrchestrator({
+      provider: makeProvider({}),
+      io: makeIO() as unknown as import("../src/lib/socket/server.js").MetisIOServer,
+      retrieve: async () => [],
+    });
+    const create = vi.mocked(prisma.analysis.create);
+    create.mockClear();
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      enableClarification: true,
+    });
+    const data = (create.mock.calls[0]![0] as { data: Record<string, unknown> }).data;
+    // Before the enhancement step writes `enhancement`, the settings line reads this.
+    expect(JSON.parse(data.metadata as string).enhancementRequested).toEqual({
+      enableWebResearch: false,
+      enableClarification: true,
+    });
+    for (let i = 0; i < 200 && analyses.get(analysisId)!.status === "running"; i += 1) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+
+    // A run that asked for neither stores nothing: absent reads as both off.
+    create.mockClear();
+    const { id: plainId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+    });
+    const plain = (create.mock.calls[0]![0] as { data: Record<string, unknown> }).data;
+    expect(JSON.parse(plain.metadata as string)).not.toHaveProperty("enhancementRequested");
+    for (let i = 0; i < 200 && analyses.get(plainId)!.status === "running"; i += 1) {
       await new Promise((r) => setTimeout(r, 5));
     }
   });
@@ -4693,7 +4745,8 @@ describe("AnalysisOrchestrator capability record (#733)", () => {
   // (no graph / no source) but NOT the flag-disabled reasons, since both flags
   // are now on by default. This is the "degrades gracefully" guard.
   it("BARE project under DEFAULT config (#752): structural reasons only, never the flag-disabled reasons", async () => {
-    // beforeEach leaves codeGraphExists=false, repoSourceExists=false, no connectors.
+    // beforeEach leaves codeGraphExists=false, repoSourceExists=false, no connectors
+    // for the run; the project still has a repository (#2454), so its code is missing.
     __resetConfigSingleton();
     const io = makeIO();
     const orch = new AnalysisOrchestrator({
@@ -4715,6 +4768,27 @@ describe("AnalysisOrchestrator capability record (#733)", () => {
     // The point of #752: flags default ON, so these reasons must be absent.
     expect(cap!.reasons).not.toContain("fused-code-retrieval-disabled");
     expect(cap!.reasons).not.toContain("schema-context-disabled");
+    expect(cap!.codeConnected).toBeUndefined();
+  });
+
+  it("#2454 — a project with no code at all: no graph or source reasons, and the record says so", async () => {
+    projectHasNoCode = true;
+    __resetConfigSingleton();
+    const orch = new AnalysisOrchestrator({
+      provider: makeProvider({}),
+      knowledge: stubKnowledge(),
+    });
+    const { id: analysisId } = await orch.start({
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: ["code"],
+    });
+    await drain(analysisId);
+    expect(analyses.get(analysisId)!.status).toBe("completed");
+    const cap = readCapability(analysisId);
+    expect(cap!.codeConnected).toBe(false);
+    expect(cap!.reasons).not.toContain("no-code-graph");
+    expect(cap!.reasons).not.toContain("source-not-ingested");
   });
 
   it("records repos skipped for budget in a multi-repo agentic run", async () => {

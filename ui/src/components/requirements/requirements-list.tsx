@@ -44,13 +44,18 @@ import {
 import { HoverHint } from "@/components/spec-kit/hover-hint";
 import { RequestReviewCard } from "@/components/reviews/request-review-card";
 import { RequirementApprovalWarning } from "@/components/requirements/RequirementApprovalWarning";
-import { APPROVAL_LADDER_RUNGS, ApprovalLadderNote } from "./approval-ladder";
+import { APPROVAL_LADDER_RUNGS, ApprovalLadderNote, SELF_APPROVAL_HINT } from "./approval-ladder";
 
 export const REQUIREMENTS_PAGE_SIZE = 25;
 const SEARCH_DEBOUNCE_MS = 300;
 
+/**
+ * #2454 — a draft reads "Draft", not "Awaiting review": most drafts are in no
+ * review, and a row a review covers already says so beside it ("In review"),
+ * so only those read as waiting on someone.
+ */
 export const STATUS_LABELS: Record<RequirementListStatus, string> = {
-  draft: "Awaiting review",
+  draft: "Draft",
   approved: "Approved",
   rejected: "Rejected",
   deferred: "Deferred",
@@ -66,7 +71,7 @@ export const ROW_REVIEW_LABELS: Record<string, string> = {
 
 /** The query key of one page of the list; under `analyses` so a review or approval refreshes it. */
 export function requirementsListKey(projectId: string, filters: Record<string, unknown>) {
-  return [...queryKeys.analyses.all, "requirements-list", projectId, filters] as const;
+  return [...queryKeys.analyses.requirementsList(projectId), filters] as const;
 }
 
 function useDebounced<T>(value: T, ms: number): T {
@@ -251,7 +256,10 @@ export function RequirementsList({ projectId }: { projectId: string }) {
   // #732 — the server gates review creation on `review.create`.
   const canRequestReview = user?.permissions.includes("review.create") ?? false;
   // #1566 — a `developer` may request reviews but not approve or edit.
-  const approveHint = canApprove ? undefined : APPROVE_HINT;
+  // #2452 — and a row the viewer wrote, in a project without self-approval,
+  // says why before the click (the server marks it `selfApprovalForbidden`).
+  const approveHintFor = (row: RequirementListRow): string | undefined =>
+    !canApprove ? APPROVE_HINT : row.selfApprovalForbidden ? SELF_APPROVAL_HINT : undefined;
   const editHint = canEdit ? undefined : EDIT_HINT;
 
   const [analysisId, setAnalysisId] = useState("");
@@ -337,7 +345,7 @@ export function RequirementsList({ projectId }: { projectId: string }) {
             </li>
           ))}
         </ol>
-        <ApprovalLadderNote />
+        <ApprovalLadderNote projectId={projectId} />
       </Card>
 
       <Card className="space-y-3 p-4">
@@ -450,13 +458,14 @@ export function RequirementsList({ projectId }: { projectId: string }) {
                 </div>
                 <div className="flex gap-1">
                   {row.reviewStatus === "approved" ? null : (
-                    <HoverHint hint={approveHint}>
+                    <HoverHint hint={approveHintFor(row)}>
                       <Button
                         size="sm"
                         variant="outline"
                         // Only the row being approved waits, not every row.
                         disabled={
-                          !canApprove || (approve.isPending && approve.variables?.id === row.id)
+                          approveHintFor(row) !== undefined ||
+                          (approve.isPending && approve.variables?.id === row.id)
                         }
                         onClick={() => approve.mutate(row)}
                         data-testid={`requirements-approve-${row.id}`}

@@ -35,13 +35,18 @@ import { getConfigService } from "../config/config-service.js";
 /**
  * Project-level facts knowable before (and independent of) a run: whether a
  * code graph exists, whether repo source was ingested as knowledge, and the two
- * grounding feature flags. Two indexed lookups + two config reads.
+ * grounding feature flags. Three indexed lookups + two config reads.
+ *
+ * #2454 — and whether the project has any code at all (`codeConnected`): a
+ * repository connection, a code graph or ingested repository source. A project
+ * created "Documents only" has none, and is not warned that its absent code
+ * was not graphed or ingested.
  */
 export async function detectStaticCapability(
   projectId: string,
 ): Promise<AnalysisCapabilityPreview> {
   const cfg = getConfigService();
-  const [codeGraph, repoSourceDoc] = await Promise.all([
+  const [codeGraph, repoSourceDoc, repoConnections] = await Promise.all([
     prisma.codeGraph.findFirst({
       where: { projectId },
       select: { id: true },
@@ -51,10 +56,16 @@ export async function detectStaticCapability(
       where: { projectId, deletedAt: null, source: "repo" },
       select: { id: true },
     }),
+    prisma.repoConnection.findMany({
+      where: { projectId, deletedAt: null },
+      select: { id: true },
+      take: 1,
+    }),
   ]);
   return {
     codeGraphPresent: codeGraph !== null,
     repoSourceIngested: repoSourceDoc !== null,
+    codeConnected: codeGraph !== null || repoSourceDoc !== null || repoConnections.length > 0,
     fusedCodeRetrievalEnabled: cfg.getBool("ANALYSIS_FUSED_CODE_RETRIEVAL", true),
     schemaContextEnabled: cfg.getBool("ANALYSIS_SCHEMA_CONTEXT", true),
   };
@@ -71,6 +82,8 @@ export interface CapabilityTracker {
   databaseAnalysisRequested: boolean;
   codeGraphPresent: boolean;
   repoSourceIngested: boolean;
+  /** #2454 — the project had any code at run start (see {@link detectStaticCapability}). */
+  codeConnected: boolean;
   fusedCodeRetrievalEnabled: boolean;
   schemaContextEnabled: boolean;
   agentMode: AnalysisAgentMode;
@@ -270,6 +283,8 @@ export function createCapabilityTracker(input: {
     databaseAnalysisRequested: input.databaseAnalysisRequested,
     codeGraphPresent: input.static.codeGraphPresent,
     repoSourceIngested: input.static.repoSourceIngested,
+    // #2454 — a probe from before the field (a test's fixture) reads as having code.
+    codeConnected: input.static.codeConnected !== false,
     fusedCodeRetrievalEnabled: input.static.fusedCodeRetrievalEnabled,
     schemaContextEnabled: input.static.schemaContextEnabled,
     agentMode: "single-shot",
@@ -314,6 +329,8 @@ export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapabili
     codeAnalysisRequested: tracker.codeAnalysisRequested,
     databaseAnalysisRequested: tracker.databaseAnalysisRequested,
     codeGraphPresent: tracker.codeGraphPresent,
+    // #2454 — written only when the project had no code, so other records are unchanged.
+    ...(tracker.codeConnected ? {} : { codeConnected: false as const }),
     agentMode: tracker.agentMode,
     repoSourceIngested: tracker.repoSourceIngested,
     fusedCodeRetrievalEnabled: tracker.fusedCodeRetrievalEnabled,
@@ -365,6 +382,7 @@ export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapabili
       databaseAnalysisRequested: tracker.databaseAnalysisRequested,
       codeGraphPresent: tracker.codeGraphPresent,
       repoSourceIngested: tracker.repoSourceIngested,
+      codeConnected: tracker.codeConnected,
       fusedCodeRetrievalEnabled: tracker.fusedCodeRetrievalEnabled,
       schemaContextEnabled: tracker.schemaContextEnabled,
       agentMode: tracker.agentMode,

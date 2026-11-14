@@ -31,8 +31,9 @@ import { RequestReviewCard } from "@/components/reviews/request-review-card";
 import { runStatusText } from "@/components/analysis/analysis-status-badge";
 import { useAuth } from "@/lib/auth-context";
 
+// #2454 — "Draft", as the Requirements list says: a draft is in no review until one is requested.
 const REVIEW_ORDER: ReadonlyArray<[RequirementReviewStatus, string]> = [
-  ["draft", "Awaiting review"],
+  ["draft", "Draft"],
   ["approved", "Approved"],
   ["rejected", "Rejected"],
   ["deferred", "Deferred"],

@@ -1854,6 +1854,13 @@ export interface AnalysisSnapshot {
      * ones; these await the analyst's Accept or Dismiss. Null or absent otherwise.
      */
     criteriaProposal?: RequirementCriteriaProposal | null;
+    /**
+     * #2462 — the viewer wrote or edited it and the project does not allow
+     * self-approval, so their Approve would be refused
+     * (`SELF_APPROVAL_FORBIDDEN`). Set by `GET /api/analyses/:id` only on a
+     * requirement the viewer could otherwise approve; absent otherwise.
+     */
+    selfApprovalForbidden?: true;
   }>;
   /**
    * Epic #203 (#221) — first-class cross-document conflict / contradiction /
@@ -3235,6 +3242,13 @@ export interface AnalysisCapability {
   databaseAnalysisRequested: boolean;
   /** Whether a built code graph existed for the project at run start. */
   codeGraphPresent: boolean;
+  /**
+   * #2454 — `false` when the project had no code at run start: no repository
+   * connection, no code graph and no ingested repository source (a project
+   * created "Documents only"). Written only when false, so other records are
+   * unchanged and a record from before #2454 reads as having code.
+   */
+  codeConnected?: false;
   /** The mode the code agent ran in (only meaningful when code analysis was requested). */
   agentMode: AnalysisAgentMode;
   /** Whether repository source was ingested as knowledge (`connector:repo:` documents). */
@@ -3432,6 +3446,13 @@ export interface AnalysisCodeContinuationQuote {
 export interface AnalysisCapabilityPreview {
   codeGraphPresent: boolean;
   repoSourceIngested: boolean;
+  /**
+   * #2454 — the project has any code to analyse: a repository connection, a
+   * code graph or ingested repository source. `false` for a project created
+   * "Documents only", which has nothing to build a graph from or ingest.
+   * Always set by `detectStaticCapability`; absent reads as having code.
+   */
+  codeConnected?: boolean;
   fusedCodeRetrievalEnabled: boolean;
   schemaContextEnabled: boolean;
   /**
@@ -3464,6 +3485,13 @@ export interface CapabilityReasonInput {
   databaseAnalysisRequested: boolean;
   codeGraphPresent: boolean;
   repoSourceIngested: boolean;
+  /**
+   * #2454 — `false` when the project has no code at all. Its missing graph and
+   * source are then the project's shape, not a limitation of the run, so
+   * `no-code-graph` and `source-not-ingested` are not raised. Absent reads as
+   * having code (records from before #2454).
+   */
+  codeConnected?: boolean;
   fusedCodeRetrievalEnabled: boolean;
   schemaContextEnabled: boolean;
   /** Omitted pre-run (the mode is only known once requirements are extracted). */
@@ -3637,8 +3665,11 @@ export function restrictedLeftOutSentence(value: unknown): string | null {
 export function deriveCapabilityReasons(input: CapabilityReasonInput): AnalysisCapabilityReason[] {
   const reasons: AnalysisCapabilityReason[] = [];
   if (input.codeAnalysisRequested) {
-    if (!input.codeGraphPresent) reasons.push("no-code-graph");
-    if (!input.repoSourceIngested) reasons.push("source-not-ingested");
+    // #2454 — a project with no code (created "Documents only") is not warned
+    // that its absent code was not graphed or ingested.
+    const hasCode = input.codeConnected !== false;
+    if (hasCode && !input.codeGraphPresent) reasons.push("no-code-graph");
+    if (hasCode && !input.repoSourceIngested) reasons.push("source-not-ingested");
     // Only assertable once the run picked a mode; pre-run previews omit agentMode.
     // #768 — a single-shot run has two very different causes, and conflating them
     // is a lie: either the DOCUMENTS carried no requirements (and the operator

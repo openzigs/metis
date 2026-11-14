@@ -247,6 +247,8 @@ vi.mock("../src/lib/prisma.js", async () => {
     // Issue #733 — capability preview probe reads code graph + repo-source docs.
     codeGraph: { findFirst: vi.fn(async () => null) },
     document: { findFirst: vi.fn(async () => null) },
+    // #2454 — and whether the project has a repository connection at all.
+    repoConnection: { findMany: vi.fn(async () => []) },
     // Issue #938 — the probe also lists the enabled agents the run invokes.
     projectAgentAllowlist: { findMany: vi.fn(async () => []) },
     agent: { findMany: vi.fn(async () => []) },
@@ -631,6 +633,8 @@ describe("GET /api/projects/:projectId/analyses/capability (#733)", () => {
     expect(res.body.data).toEqual({
       codeGraphPresent: false,
       repoSourceIngested: false,
+      // #2454 — no repository, graph or source: the project has no code.
+      codeConnected: false,
       // #752 — both grounding flags default ON; the bare project is degraded
       // only because no code graph / repo source exists yet.
       fusedCodeRetrievalEnabled: true,
@@ -690,6 +694,21 @@ describe("GET /api/projects/:projectId/analyses/capability (#733)", () => {
       .set("Authorization", `Bearer ${readerToken}`);
     expect(res.status).toBe(200);
     expect(res.body.data.codeGraphPresent).toBe(true);
+    expect(res.body.data.codeConnected).toBe(true);
+  });
+
+  it("#2454 — counts a repository connection as code, before any graph or source exists", async () => {
+    const { prisma } = await import("../src/lib/prisma.js");
+    vi.mocked(prisma.repoConnection.findMany).mockResolvedValueOnce([{ id: "rc-1" }] as never);
+    const res = await request(app)
+      .get("/api/projects/proj-abcdefghij/analyses/capability")
+      .set("Authorization", `Bearer ${readerToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.codeGraphPresent).toBe(false);
+    expect(res.body.data.codeConnected).toBe(true);
+    expect(prisma.repoConnection.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { projectId: "proj-abcdefghij", deletedAt: null } }),
+    );
   });
 
   it("requires authentication", async () => {

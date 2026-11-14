@@ -6,6 +6,7 @@ import {
   buildSectionPrompt,
   buildWholeDocumentPrompt,
   readerReplySchema,
+  WHAT_TO_EXTRACT,
 } from "./prompts.js";
 
 describe("reader and judge prompts", () => {
@@ -47,6 +48,34 @@ describe("reader and judge prompts", () => {
       questions: [],
     });
     expect(judge.userMessage.match(/\(none\)/g)).toHaveLength(3);
+  });
+
+  it("does not hand arms B and C the labeller's rubric (#2250)", () => {
+    // The six labelled ambiguity kinds, and the labels' list of what is not a
+    // requirement. Asserted on the instruction alone, so wording added to the
+    // role line or the data rule later cannot trip it.
+    for (const term of [
+      /vague/i,
+      /undefined/i,
+      /escape clause/i,
+      /contradict/i,
+      /silent/i,
+      /leaves open/i,
+      /out of scope/i,
+      /background/i,
+      /non-functional/i,
+    ]) {
+      expect(WHAT_TO_EXTRACT).not.toMatch(term);
+    }
+    expect(WHAT_TO_EXTRACT).toContain("word for word");
+    // B's and C's prompts both carry that instruction, so they hold no rubric either.
+    const context = { summary: "S.", glossary: [], actors: [] };
+    for (const p of [
+      buildWholeDocumentPrompt({ title: "T", text: "Doc." }).systemMessage,
+      buildSectionPrompt({ title: "T", heading: "H", sectionText: "B.", context }).systemMessage,
+    ]) {
+      expect(p).toContain(WHAT_TO_EXTRACT);
+    }
   });
 
   it("reads a reply with a missing section or quote as empty, not as a failure", () => {

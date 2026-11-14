@@ -10,6 +10,7 @@ import userEvent from "@testing-library/user-event";
 import {
   createImpactAnalysisSchema,
   createPortfolioAssessmentSchema,
+  NO_CODE_IMPACT_REASON,
   PORTFOLIO_PRE_APPROVAL_LABEL,
 } from "@metis/shared";
 import { makeWrapper } from "../test-utils";
@@ -25,6 +26,8 @@ vi.mock("@/lib/portfolio-api", () => ({
   portfolioApi: { listForRun, create: createPortfolio },
 }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+const capabilityPreview = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/analysis-api", () => ({ analysisApi: { capabilityPreview } }));
 
 import type { AnalysisSnapshot } from "@/lib/analysis-api";
 import {
@@ -43,15 +46,22 @@ import {
 type Req = AnalysisSnapshot["requirements"][number];
 const req = (id: string, reviewStatus: string) => ({ id, reviewStatus }) as unknown as Req;
 
-function snapshot(requirements: Req[]): AnalysisSnapshot {
-  return { id: "an-1", projectId: "p1", requirements } as unknown as AnalysisSnapshot;
+function snapshot(
+  requirements: Req[],
+  capability: AnalysisSnapshot["capability"] = null,
+): AnalysisSnapshot {
+  return { id: "an-1", projectId: "p1", requirements, capability } as unknown as AnalysisSnapshot;
 }
 
-function renderCard(requirements: Req[], canRun = true) {
+function renderCard(
+  requirements: Req[],
+  canRun = true,
+  capability: AnalysisSnapshot["capability"] = null,
+) {
   return render(
     <ChangeRequestChecks
       projectId="p1"
-      snapshot={snapshot(requirements)}
+      snapshot={snapshot(requirements, capability)}
       title="Password reset"
       canRun={canRun}
     />,
@@ -65,6 +75,42 @@ beforeEach(() => {
   listForRun.mockResolvedValue([]);
   createImpact.mockResolvedValue({ id: "ia-1", status: "pending", projectIds: ["p1"] });
   createPortfolio.mockResolvedValue({ id: "pa-1" });
+  capabilityPreview.mockResolvedValue({ codeConnected: true });
+});
+
+describe("#2454 — a Documents-only project's Impact analysis", () => {
+  const noCode = { codeConnected: false } as AnalysisSnapshot["capability"];
+
+  it("offers Options over other projects, not a one-click run over a project with no code", async () => {
+    renderCard([req("a", "approved")], true, noCode);
+    expect(await screen.findByTestId("change-request-impact-no-code")).toHaveTextContent(
+      NO_CODE_IMPACT_REASON,
+    );
+    expect(screen.queryByTestId("change-request-run-impact")).not.toBeInTheDocument();
+    expect(screen.getByTestId("change-request-impact-options")).toBeInTheDocument();
+    // The portfolio check is not about this project's code: still one click.
+    expect(screen.getByTestId("change-request-run-portfolio")).toBeInTheDocument();
+  });
+
+  it("reads the live probe while the run has written no capability record", async () => {
+    capabilityPreview.mockResolvedValue({ codeConnected: false });
+    renderCard([req("a", "approved")]);
+    expect(await screen.findByTestId("change-request-impact-no-code")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByTestId("change-request-run-impact")).not.toBeInTheDocument(),
+    );
+    expect(capabilityPreview).toHaveBeenCalledWith("p1");
+  });
+
+  it("keeps the one-click run on a project with code (the control)", async () => {
+    // A record with no `codeConnected` is a project with code (only `false` is written).
+    renderCard([req("a", "approved")], true, {
+      reasons: [],
+    } as unknown as AnalysisSnapshot["capability"]);
+    expect(screen.getByTestId("change-request-run-impact")).toBeInTheDocument();
+    expect(screen.queryByTestId("change-request-impact-no-code")).not.toBeInTheDocument();
+    expect(capabilityPreview).not.toHaveBeenCalled();
+  });
 });
 
 describe("#2345 — the pre-fill", () => {
