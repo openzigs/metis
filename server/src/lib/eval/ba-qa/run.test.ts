@@ -6,6 +6,7 @@ import {
   armLabel,
   ARM_FLAGS,
   assertComparable,
+  assertRoutingFlags,
   budgetStop,
   stepBudgetStop,
   buildJudgedSpans,
@@ -113,6 +114,51 @@ describe("arms", () => {
       expect(env[k]).toBe(
         k === "CHAT_CODE_SEARCH_TOOLS" || k === "CHAT_CODE_CONTEXT_TOOL" ? "1" : "0",
       );
+    }
+  });
+});
+
+describe("assertRoutingFlags (#2397)", () => {
+  it.each([
+    ["--routing-sweep with --route", { routingSweep: true, floorSweep: false, route: "all" }],
+    ["--floor-sweep with --route alone", { routingSweep: false, floorSweep: true, route: "all" }],
+    ["an answer run with --route alone", { routingSweep: false, floorSweep: false, route: "all" }],
+  ])("refuses %s: --route needs --routing-scope", (_label, flags) => {
+    expect(() => assertRoutingFlags(flags)).toThrow("--route needs --routing-scope");
+  });
+
+  it("refuses --routing-sweep with --routing-scope", () => {
+    expect(() =>
+      assertRoutingFlags({
+        routingSweep: true,
+        floorSweep: false,
+        routingScope: "9",
+        route: "all",
+      }),
+    ).toThrow("--routing-sweep asks no model: it takes no --routing-scope");
+  });
+
+  it.each([
+    ["with --route", { route: "all" }],
+    ["alone", {}],
+  ])(
+    "refuses --floor-sweep with --routing-scope %s: the sweep returns before reading either",
+    (_l, rest) => {
+      expect(() =>
+        assertRoutingFlags({ routingSweep: false, floorSweep: true, routingScope: "9", ...rest }),
+      ).toThrow("--floor-sweep asks no model: it takes no --routing-scope");
+    },
+  );
+
+  it("accepts --route with --routing-scope, a scope alone, and neither", () => {
+    for (const flags of [
+      { routingSweep: false, floorSweep: false, routingScope: "9", route: "all" },
+      { routingSweep: false, floorSweep: false, routingScope: "9" },
+      { routingSweep: true, floorSweep: false },
+      { routingSweep: false, floorSweep: true },
+      { routingSweep: false, floorSweep: false },
+    ]) {
+      expect(() => assertRoutingFlags(flags)).not.toThrow();
     }
   });
 });

@@ -173,7 +173,7 @@ describe("formatBaQaReport", () => {
           ...base,
           arm: "all",
           searchScope: "9 of 9 products (all)",
-          seconds: 10,
+          answerSeconds: 10,
           retrievalMs: 1000,
           usage: { promptTokens: 4000 },
         },
@@ -181,7 +181,7 @@ describe("formatBaQaReport", () => {
           ...base,
           arm: "all",
           searchScope: "1 of 9 products (oracle)",
-          seconds: 11,
+          answerSeconds: 11,
           retrievalMs: 1500,
           usage: { promptTokens: 6000 },
         },
@@ -191,7 +191,7 @@ describe("formatBaQaReport", () => {
     });
     expect(md).toContain("| Sessions chat left unscoped (no retrieval) | 1/1 | 0/2 |");
     expect(md).toContain("| Input tokens per question (cache reads included) | n/a | 5,000 |");
-    expect(md).toContain("| Seconds per question | n/a | 10.5 |");
+    expect(md).toContain("| Seconds per answer (judge excluded) | n/a | 10.5 |");
     expect(md).toContain("| Retrieval ms per question | n/a | 1,250 |");
     expect(md).toContain(
       "| all | M1 | answer | unscored | - | 0 (0) | 0/1 | 1 of 9 products (oracle) |",

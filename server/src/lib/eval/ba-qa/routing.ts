@@ -478,6 +478,10 @@ export interface RoutingRow {
   scopeSize: number;
   /** Questions with an answer, answerable in this scope. */
   answerable: number;
+  /**
+   * #2397 — over the answerable questions answered in at most k products: the
+   * ones whose every answer product is in the router's top k.
+   */
   top1: Rate;
   top2: Rate;
   top3: Rate;
@@ -506,15 +510,22 @@ export function summarizeRouting(samples: readonly RoutingSample[]): RoutingRow[
       of: xs.length,
     });
     const routed = ans.filter((s) => s.decision.route === "routed");
+    // #2397 — a question answered in more than k products cannot be in the top k,
+    // so top k is read over the questions it can reach.
+    const topK = (k: number, order: (r: readonly RankedProject[]) => readonly RankedProject[]) =>
+      rate(
+        ans.filter((s) => s.answerIn.length <= k),
+        (s) => inTopK(order(s.decision.ranked), s.answerIn, k),
+      );
     return {
       scopeSize,
       answerable: ans.length,
-      top1: rate(ans, (s) => inTopK(s.decision.ranked, s.answerIn, 1)),
-      top2: rate(ans, (s) => inTopK(s.decision.ranked, s.answerIn, 2)),
-      top3: rate(ans, (s) => inTopK(s.decision.ranked, s.answerIn, 3)),
-      signalsTop1: rate(ans, (s) => inTopK(bySignals(s.decision.ranked), s.answerIn, 1)),
-      signalsTop2: rate(ans, (s) => inTopK(bySignals(s.decision.ranked), s.answerIn, 2)),
-      signalsTop3: rate(ans, (s) => inTopK(bySignals(s.decision.ranked), s.answerIn, 3)),
+      top1: topK(1, (r) => r),
+      top2: topK(2, (r) => r),
+      top3: topK(3, (r) => r),
+      signalsTop1: topK(1, bySignals),
+      signalsTop2: topK(2, bySignals),
+      signalsTop3: topK(3, bySignals),
       routed: { n: routed.length, of: ans.length },
       routedRight: rate(routed, (s) => s.answerIn.every((n) => s.decision.chosen.includes(n))),
       meanSearched:
@@ -634,6 +645,8 @@ export function formatRoutingReport(input: {
     `Router: probe k ${o.probeK}, floor ${o.floor}, keep ratio ${o.keepRatio}. No model is called.`,
     "",
     "## Is the right project in the router's top k",
+    "",
+    "Top k counts only the questions answered in at most k products: one answered in two cannot be in the top 1.",
     "",
     "| Scope | Answerable | Top 1 | Top 2 | Top 3 | Top 1, 2, 3 on signals alone (mentions ignored) | Routed (not fallen back) | Routed choice holds the answer | Mean projects searched | No-answer questions fallen back |",
     "|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|",
