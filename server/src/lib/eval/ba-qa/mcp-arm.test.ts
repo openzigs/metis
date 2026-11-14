@@ -3,7 +3,7 @@
  * `tools/list`, and every call goes through the MCP client.
  */
 import { describe, expect, it, vi } from "vitest";
-import { mcpRuntimeTools, toolParameters, toRuntimeResult } from "./mcp-arm.js";
+import { mcpRuntimeTools, openMcpArm, toolParameters, toRuntimeResult } from "./mcp-arm.js";
 import { ARMS } from "./run.js";
 
 describe("mcpRuntimeTools", () => {
@@ -98,5 +98,50 @@ describe("toolParameters", () => {
 describe("the mcp arm", () => {
   it("runs tools-only's flags, so the pair differs in the tool surface alone", () => {
     expect(ARMS.mcp).toEqual(ARMS["tools-only"]);
+  });
+});
+
+describe("openMcpArm", () => {
+  const listTools = vi.fn(async () => ({ tools: [] }));
+  function deps(connect: () => Promise<{ close(): Promise<void> }>) {
+    return {
+      mint: vi.fn(async (_userId: string) => ({ id: "tok-1", token: "metis_x" })),
+      revoke: vi.fn(async (_userId: string, _id: string) => {}),
+      connect: vi.fn(async (_credential: string) => {
+        const conn = await connect();
+        return { client: { listTools, callTool: vi.fn() } as never, close: conn.close };
+      }),
+    };
+  }
+
+  it("connects as the minted token, and revokes it once however often it is closed", async () => {
+    const d = deps(async () => ({ close: async () => {} }));
+    const arm = await openMcpArm("u1", d);
+    expect(d.mint).toHaveBeenCalledWith("u1");
+    expect(d.connect).toHaveBeenCalledWith("metis_x");
+    expect(d.revoke).not.toHaveBeenCalled();
+    await Promise.all([arm.close(), arm.close()]);
+    await arm.close();
+    expect(d.revoke).toHaveBeenCalledTimes(1);
+    expect(d.revoke).toHaveBeenCalledWith("u1", "tok-1");
+  });
+
+  it("revokes the token when the arm fails to start", async () => {
+    const d = deps(async () => {
+      throw new Error("connect failed");
+    });
+    await expect(openMcpArm("u1", d)).rejects.toThrow("connect failed");
+    expect(d.revoke).toHaveBeenCalledWith("u1", "tok-1");
+  });
+
+  it("revokes the token even when closing the connection throws", async () => {
+    const d = deps(async () => ({
+      close: async () => {
+        throw new Error("close failed");
+      },
+    }));
+    const arm = await openMcpArm("u1", d);
+    await expect(arm.close()).rejects.toThrow("close failed");
+    expect(d.revoke).toHaveBeenCalledWith("u1", "tok-1");
   });
 });

@@ -9555,6 +9555,7 @@ agent (MCP client) ── stdio ──► registerTool handler
         ├── resolveMcpCaller(METIS_API_TOKEN)                 identity.ts  (every call)
         │     verifyApiToken → acp:read scope → user active → resolveAcpActor
         ├── assertLiveProjectAccess(actor, projectId)         404 ⇒ "project not found"
+        ├── isServedProject(actor, projectId)                 projects.ts: listed ⇒ not archived/deleted
         ├── loadCodeAccessFilter({projectId, userId})         code-access.ts (document ACLs)
         ├── def.run(...)  → chat's AgentTool / requirement tool
         ├── redactSecrets · cap (MAX_RESULT_CHARS) · citations · instructions
@@ -9563,8 +9564,8 @@ agent (MCP client) ── stdio ──► registerTool handler
 
 | File | Responsibility |
 |---|---|
-| [`identity.ts`](../server/src/mcp/metis-index/identity.ts) | The credential is the caller's own `metis_` API token with `acp:read`, resolved to one active user on every call. A static shared secret, or an unknown, revoked or expired token, maps to no user and is refused with one message. |
-| [`tools.ts`](../server/src/mcp/metis-index/tools.ts) | The eight tools: bounded zod inputs, short search guidance in each description (#2324), and each tool's mapping onto the chat implementation. `metis_list_projects` reads `accessibleProjectWhere(actor)`. |
+| [`identity.ts`](../server/src/mcp/metis-index/identity.ts) | The credential is the caller's own `metis_` API token with `acp:read`, resolved to one active user on every call. A static shared secret, or an unknown, revoked or expired token, maps to no user and is refused with one message. `verifyApiToken` itself refuses a token whose user is disabled or deleted, so ACP's WebSocket refuses one too. |
+| [`tools.ts`](../server/src/mcp/metis-index/tools.ts) | The eight tools: bounded zod inputs, short search guidance in each description (#2324), and each tool's mapping onto the chat implementation. `metis_list_projects` reads `servedProjectWhere(actor)` (`projects.ts`: `accessibleProjectWhere` less archived projects), the same predicate the dispatcher holds every `projectId` to. `get_requirement` filters its code links through the caller's `CodeAccessFilter` itself, so chat and this server share the fix. |
 | [`dispatcher.ts`](../server/src/mcp/metis-index/dispatcher.ts) | The order of the checks above. Errors say nothing of internals. The result is redacted (#2333), capped with `truncated`, and given its citations (#2325) and fixed `instructions`. |
 | [`server.ts`](../server/src/mcp/metis-index/server.ts) | `createIndexMcpServer`. `structuredContent` holds the whole result; text `content` holds the result, then a trailer. `main()` refuses to boot on an unresolvable token and sends every log line to stderr, since stdout is the transport. |
 

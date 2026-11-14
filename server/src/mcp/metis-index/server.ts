@@ -28,6 +28,7 @@ import { z } from "zod";
 import winston from "winston";
 import { logger } from "../../lib/logger.js";
 import { toolInputSchema } from "../speckit/tools.js";
+import { isDirectRun } from "../direct-run.js";
 import { dispatchIndexTool, type DispatchEnv, type IndexToolOutput } from "./dispatcher.js";
 import { McpAuthError, resolveMcpCaller, type TokenVerifier } from "./identity.js";
 import { buildSharedImpls, INDEX_TOOLS, type IndexToolDef, type SharedImplDeps } from "./tools.js";
@@ -154,13 +155,7 @@ export async function main(env: NodeJS.ProcessEnv = process.env): Promise<void> 
   await server.connect(new StdioServerTransport());
 }
 
-const isDirectRun =
-  typeof process !== "undefined" &&
-  Array.isArray(process.argv) &&
-  process.argv[1] !== undefined &&
-  /mcp\/metis-index\/server\.(?:js|ts)$/.test(process.argv[1]);
-
-if (isDirectRun) {
+if (isDirectRun(process.argv[1], "metis-index")) {
   main().catch((err) => {
     process.stderr.write(`${SERVER_NAME} boot failed: ${(err as Error).message}\n`);
     process.exit(1);

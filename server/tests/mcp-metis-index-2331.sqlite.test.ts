@@ -12,8 +12,13 @@
  *   - Alice and Bob are members of the project's workspace; `src/secret.ts` is
  *     a document restricted to Alice. The SAME call gives Alice the file and
  *     its symbol, caller and context, and Bob none of them.
+ *     A requirement linked to both files names `src/secret.ts` to Alice only;
+ *     Bob reads the link counted, never named.
  *   - Carol is in another workspace: the project is absent from her
  *     `metis_list_projects`, and a call naming it answers as a missing project.
+ *     An archived or soft-deleted project in Alice's workspace answers the same.
+ *   - `verifyApiToken` itself refuses a disabled user's token, so ACP's
+ *     WebSocket upgrade does too.
  *   - A static shared token, an unknown or revoked token, a token without
  *     `acp:read`, and a disabled user's token are all refused before any read;
  *     revoking a token applies to the very next call.
@@ -23,6 +28,9 @@
  *     result body or a query.
  */
 import { createHash } from "node:crypto";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import WebSocket from "ws";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -109,6 +117,8 @@ vi.mock("@anthropic-ai/sdk", async (original) => {
 });
 
 const { createIndexMcpServer } = await import("../src/mcp/metis-index/server.js");
+const { verifyApiToken } = await import("../src/lib/acp/api-tokens.js");
+const { ACP_PATH, attachAcpServer } = await import("../src/lib/acp/server.js");
 const { createDefaultCodeSearcher } =
   await import("../src/lib/code-graph/project-code-searcher.js");
 
@@ -120,6 +130,9 @@ const WS = "w-billing";
 const WS_OTHER = "w-other";
 const PROJECT = "p-billing";
 const OTHER = "p-other";
+const ARCHIVED = "p-archived";
+const DELETED = "p-deleted";
+const REQUIREMENT = "r-fee";
 const REPO = "rc-app";
 const GRAPH = "g-app";
 const SECRET_DOC = "d-secret";
@@ -246,9 +259,47 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           createdById: CAROL,
         },
       });
+      // Readable by membership, but not listed by metis_list_projects: an
+      // archived project and a soft-deleted one.
+      for (const [id, extra] of [
+        [ARCHIVED, { status: "archived" }],
+        [DELETED, { status: "active", deletedAt: new Date() }],
+      ] as const) {
+        await db.project.create({
+          data: { id, name: id, slug: id, workspaceId: WS, createdById: ALICE, ...extra },
+        });
+      }
       await db.repoConnection.create({
         data: { id: REPO, projectId: PROJECT, label: "app", isPrimary: true },
       });
+      // A requirement linked to the restricted file and to the open one.
+      await db.analysis.create({
+        data: { id: "a-fee", projectId: PROJECT, startedById: ALICE, status: "completed" },
+      });
+      await db.requirement.create({
+        data: {
+          id: REQUIREMENT,
+          analysisId: "a-fee",
+          projectId: PROJECT,
+          title: "Charge the fee",
+          body: "Fees are charged.",
+        },
+      });
+      for (const [filePath, startLine] of [
+        ["src/secret.ts", 2],
+        ["src/public.ts", 1],
+      ] as const) {
+        await db.requirementCodeMapping.create({
+          data: {
+            requirementId: REQUIREMENT,
+            projectId: PROJECT,
+            filePath,
+            startLine,
+            endLine: startLine + 2,
+            source: "manual",
+          },
+        });
+      }
       await db.codeGraph.create({
         data: {
           id: GRAPH,
@@ -413,6 +464,29 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           await bob.close();
         }
       });
+
+      it("names a requirement's link into the restricted file for Alice only; Bob reads it counted", async () => {
+        const alice = await connect(token("t-alice"));
+        const bob = await connect(token("t-bob"));
+        try {
+          const args = { projectId: PROJECT, requirementId: REQUIREMENT };
+          const a = await alice.call("metis_read_requirements", args);
+          const b = await bob.call("metis_read_requirements", args);
+          expect(a.isError, a.text).toBe(false);
+          expect(b.isError, b.text).toBe(false);
+          expect(a.out!.result).toContain("src/secret.ts:2-4");
+          expect(a.out!.result).toContain("src/public.ts:1-3");
+          expect(a.out!.result).not.toMatch(/cannot read/);
+          expect(b.out!.result).toContain("src/public.ts:1-3");
+          expect(b.out!.result).not.toContain("secret");
+          expect(b.out!.result).toContain(
+            "1 linked code location is in a file you cannot read and is left out.",
+          );
+        } finally {
+          await alice.close();
+          await bob.close();
+        }
+      });
     });
 
     describe("project access", () => {
@@ -456,6 +530,24 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }
       });
 
+      it("answers an archived or soft-deleted project a member belongs to as not found, as the listing omits it", async () => {
+        const alice = await connect(token("t-alice"));
+        try {
+          const listed = await alice.call("metis_list_projects");
+          for (const id of [ARCHIVED, DELETED]) {
+            expect(listed.out!.result).not.toContain(id);
+            for (const tool of ["metis_index_status", "metis_read_requirements"]) {
+              const r = await alice.call(tool, { projectId: id });
+              const missing = await alice.call(tool, { projectId: "p-missing" });
+              expect(r.isError, `${tool} ${id}`).toBe(true);
+              expect(r.text, `${tool} ${id}`).toBe(missing.text);
+            }
+          }
+        } finally {
+          await alice.close();
+        }
+      });
+
       it("reads index status and requirements for a member", async () => {
         const alice = await connect(token("t-alice"));
         try {
@@ -464,8 +556,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           expect(s.out!.instructions).toMatch(/index is failed, partial/);
           const r = await alice.call("metis_read_requirements", { projectId: PROJECT });
           expect(r.isError, r.text).toBe(false);
-          expect(r.out!.resultCount).toBe(0);
-          expect(r.out!.instructions).toMatch(/nothing was found/);
+          expect(r.out!.resultCount).toBe(1);
+          const none = await alice.call("metis_read_requirements", {
+            projectId: PROJECT,
+            status: "approved",
+          });
+          expect(none.out!.resultCount).toBe(0);
+          expect(none.out!.instructions).toMatch(/nothing was found/);
         } finally {
           await alice.close();
         }
@@ -501,6 +598,45 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }
         const fresh = audits.slice(before);
         expect(fresh.map((e) => e.action)).toEqual(["mcp.index.denied", "mcp.index.denied"]);
+      });
+
+      it("verifyApiToken refuses a disabled user's token, so ACP's WebSocket refuses it too", async () => {
+        expect(await verifyApiToken(token("t-gone"))).toBeNull();
+        expect(await verifyApiToken(token("t-bob"))).toMatchObject({ userId: BOB });
+        await db.user.update({ where: { id: CAROL }, data: { deletedAt: new Date() } });
+        try {
+          expect(await verifyApiToken(token("t-carol"))).toBeNull();
+        } finally {
+          await db.user.update({ where: { id: CAROL }, data: { deletedAt: null } });
+        }
+
+        const httpServer = http.createServer((_req, res) => {
+          res.statusCode = 404;
+          res.end();
+        });
+        // The production verifier: no `verify` override.
+        const acp = attachAcpServer(httpServer);
+        await new Promise<void>((resolve) => httpServer.listen(0, "127.0.0.1", () => resolve()));
+        const { port } = httpServer.address() as AddressInfo;
+        const upgrade = (credential: string) =>
+          new Promise<number>((resolve, reject) => {
+            const ws = new WebSocket(`ws://127.0.0.1:${port}${ACP_PATH}`, {
+              headers: { authorization: `Bearer ${credential}` },
+            });
+            ws.on("open", () => {
+              ws.close();
+              resolve(101);
+            });
+            ws.on("unexpected-response", (_req, res) => resolve(res.statusCode ?? 0));
+            ws.on("error", reject);
+          });
+        try {
+          expect(await upgrade(token("t-gone"))).toBe(401);
+          expect(await upgrade(token("t-bob"))).toBe(101);
+        } finally {
+          await acp.shutdown();
+          await new Promise<void>((resolve) => httpServer.close(() => resolve()));
+        }
       });
 
       it("applies a revocation to the very next call", async () => {

@@ -47,6 +47,7 @@ import { getRequirementChain } from "../traceability/traceability-spine.js";
 import { reciprocalRankFusion } from "../rag/bm25-index.js";
 import { createChildLogger } from "../logger.js";
 import { findNearestRequirements } from "./requirement-embeddings.js";
+import { loadCodeAccessFilter, type CodeAccessFilter } from "../analysis/tools/code-access.js";
 
 const log = createChildLogger("requirements-chat-tools");
 
@@ -380,6 +381,38 @@ function lineRange(start: number | null, end: number | null): string {
   return end !== null && end !== start ? `:${start}-${end}` : `:${start}`;
 }
 
+/**
+ * #2331 — `chain` without a code location in a file hidden from the caller
+ * (`code-access.ts`), and how many it left out. A trace node carries no
+ * repository, so a path is matched against every repository's restrictions.
+ * A test is dropped when its own file or the code it was linked through is
+ * hidden. `groundedFiles` is filtered too but not counted: it is not printed.
+ */
+function visibleChain(
+  chain: RequirementTraceabilityChain,
+  access: CodeAccessFilter,
+): { chain: RequirementTraceabilityChain; hidden: number } {
+  if (access.unrestricted) return { chain, hidden: 0 };
+  const visible = (filePath: string) => !access.isHidden(null, filePath);
+  let hidden = 0;
+  const keep = <T>(items: T[], ok: (item: T) => boolean): T[] => {
+    const kept = items.filter(ok);
+    hidden += items.length - kept.length;
+    return kept;
+  };
+  const filtered: RequirementTraceabilityChain = {
+    ...chain,
+    directCode: keep(chain.directCode, (c) => visible(c.filePath)),
+    specs: chain.specs.map((s) => ({ ...s, code: keep(s.code, (c) => visible(c.filePath)) })),
+    testedBy: keep(
+      chain.testedBy,
+      (t) => visible(t.filePath) && (!t.subject || visible(t.subject.filePath)),
+    ),
+  };
+  if (chain.groundedFiles) filtered.groundedFiles = chain.groundedFiles.filter(visible);
+  return { chain: filtered, hidden };
+}
+
 export function createGetRequirementTool(
   deps: RequirementToolsDeps = {},
 ): ToolDefinition<typeof getSchema> {
@@ -426,9 +459,9 @@ export function createGetRequirementTool(
           isError: true,
         };
       }
-      let chain: RequirementTraceabilityChain;
+      let fullChain: RequirementTraceabilityChain;
       try {
-        chain = await (deps.chain ?? getRequirementChain)(projectId, r.id);
+        fullChain = await (deps.chain ?? getRequirementChain)(projectId, r.id);
       } catch (err) {
         // Soft-deleted between the read above and the trace: same answer as not found.
         if ((err as { code?: string } | null)?.code === "REQUIREMENT_NOT_FOUND") {
@@ -436,6 +469,17 @@ export function createGetRequirementTool(
         }
         throw err;
       }
+      // #2331 — the code links name files and line ranges, so they pass the
+      // caller's document ACLs as the code tools do. A filter that cannot be
+      // loaded (an inactive user) fails the call rather than show them unfiltered.
+      const { chain, hidden } = visibleChain(
+        fullChain,
+        await loadCodeAccessFilter({
+          projectId,
+          userId: ctx.userId,
+          ...(ctx.aclAudience ? { aclAudience: ctx.aclAudience } : {}),
+        }),
+      );
 
       const status = resolveRequirementReviewStatus(
         r.reviewStatus,
@@ -485,6 +529,14 @@ export function createGetRequirementTool(
               .join("\n")}`
           : "Data mappings: none",
       );
+      if (hidden > 0) {
+        out.push(
+          `${hidden} linked code location${hidden === 1 ? " is in a file" : "s are in files"} ` +
+            "you cannot read and " +
+            (hidden === 1 ? "is" : "are") +
+            " left out.",
+        );
+      }
       if (chain.specs.length) {
         out.push(
           `Specs:\n${chain.specs

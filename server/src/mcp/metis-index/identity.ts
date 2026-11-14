@@ -53,7 +53,8 @@ export class McpAuthError extends Error {
 /**
  * Resolve `credential` to the METIS user it was issued to, or throw
  * {@link McpAuthError}. A token whose user is disabled or deleted is refused
- * too: `verifyApiToken` checks the token row only.
+ * too: `verifyApiToken` refuses one itself, and the user row is read again
+ * here so an injected verifier cannot let one through.
  */
 export async function resolveMcpCaller(
   credential: string,

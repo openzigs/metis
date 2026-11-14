@@ -3,8 +3,10 @@
 `metis-index-mcp` lets an external agent, such as Claude Code, Cursor or Claude Desktop, query
 the index METIS builds for a project. It uses the Model Context Protocol (MCP) over stdio. It
 offers eight read-only tools and makes no model call: your agent does the reasoning. Every
-call runs as you. You see the projects you can read in METIS, and a file whose document is
-restricted from you is never read, listed or counted (#2331).
+call runs as you. You see the projects you can read in METIS (not archived ones), and a file
+whose document is restricted from you is never read, listed or found. A requirement's code link
+into such a file is left out of `metis_read_requirements`; the result says how many links it
+left out, never which (#2331).
 
 | Tool                        | What it returns                                                                                          |
 | --------------------------- | -------------------------------------------------------------------------------------------------------- |
@@ -37,14 +39,21 @@ environment (`DATABASE_URL`, the LanceDB path, the clone root and the embedder s
 is typically a developer machine running METIS locally. A remote endpoint for agents on other
 machines is a separate piece of work (#2344).
 
+**The trust boundary is the agent, not the operator.** Whoever launches the server holds the
+METIS server's `DATABASE_URL` and clone root, so they can already read every project and every
+restricted file directly. Your token and your access decide what the *agent* is given, not what
+the person running the process could read. On a shared host, launch it only where the operator
+is already trusted with the whole METIS installation.
+
 ## Your credential
 
 The server does not use a shared service secret. It needs **your own METIS API token**
 (`metis_…`) with the `acp:read` scope:
 
 - a system admin creates one under **Settings → ACP tokens**;
-- any signed-in user can create one with `POST /api/acp/tokens` (`{"name": "my agent"}`). A
-  token minted without scopes gets `acp:read` and `acp:run`.
+- any signed-in user can create one with `POST /api/acp/tokens`. Ask for `acp:read` only:
+  `{"name": "my agent", "scopes": ["acp:read"]}`. This server needs nothing more, and a token
+  minted without scopes gets `acp:run` as well.
 
 METIS shows the token once. Keep it out of files you commit. METIS checks it again on **every
 call**. Revoking the token, disabling your account or removing you from a workspace takes

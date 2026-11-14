@@ -3,8 +3,9 @@
  *
  *   1. resolve the credential to ONE METIS user (`identity.ts`), or refuse;
  *   2. a project-scoped tool: the user must be able to read the project
- *      (`assertLiveProjectAccess`, the rule every project route uses); a
- *      project they cannot read answers exactly as one that does not exist;
+ *      (`assertLiveProjectAccess`, the rule every project route uses), and it
+ *      must be one `metis_list_projects` lists (`projects.ts`: not archived,
+ *      not deleted); any other id answers exactly as one that does not exist;
  *   3. load the user's per-document ACL filter in that project
  *      (`loadCodeAccessFilter`, `code-access.ts`) — the filter chat's code
  *      tools run with, so a file restricted from them is neither read, listed
@@ -25,6 +26,7 @@ import { loadCodeAccessFilter } from "../../lib/analysis/tools/code-access.js";
 import { redactSecrets } from "../../lib/safety/secret-patterns.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { McpAuthError, resolveMcpCaller, type McpCaller, type TokenVerifier } from "./identity.js";
+import { isServedProject } from "./projects.js";
 import type { IndexToolDef, SharedImpls, SharedResult } from "./tools.js";
 
 /** The most characters of result text one call returns. */
@@ -126,14 +128,18 @@ export async function dispatchIndexTool(
   try {
     if (def.projectScoped) {
       if (!projectId) return { isError: true, message: `${def.name}: projectId is required.` };
+      let served: boolean;
       try {
         await assertLiveProjectAccess(caller.actor, projectId);
+        // Only a project metis_list_projects would list: not archived, not deleted.
+        served = await isServedProject(caller.actor, projectId);
       } catch (err) {
-        if (err instanceof AppError && err.statusCode === 404) {
-          record({ resultCount: null, isError: true, truncated: false });
-          return { isError: true, message: projectNotFoundMessage(def.name) };
-        }
-        throw err;
+        if (!(err instanceof AppError && err.statusCode === 404)) throw err;
+        served = false;
+      }
+      if (!served) {
+        record({ resultCount: null, isError: true, truncated: false });
+        return { isError: true, message: projectNotFoundMessage(def.name) };
       }
     }
     const codeAccess = projectId

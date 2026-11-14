@@ -12,7 +12,9 @@ const m = vi.hoisted(() => ({
   resolveMcpCaller: vi.fn(),
   assertLiveProjectAccess: vi.fn(),
   loadCodeAccessFilter: vi.fn(),
+  isServedProject: vi.fn(),
 }));
+vi.mock("./projects.js", () => ({ isServedProject: m.isServedProject }));
 vi.mock("./identity.js", async (original) => ({
   ...(await original<typeof import("./identity.js")>()),
   resolveMcpCaller: m.resolveMcpCaller,
@@ -63,6 +65,7 @@ describe("dispatchIndexTool", () => {
     vi.clearAllMocks();
     m.resolveMcpCaller.mockResolvedValue(CALLER);
     m.assertLiveProjectAccess.mockResolvedValue(undefined);
+    m.isServedProject.mockResolvedValue(true);
     m.loadCodeAccessFilter.mockResolvedValue(UNRESTRICTED_CODE_ACCESS);
   });
 
@@ -138,6 +141,16 @@ describe("dispatchIndexTool", () => {
         metadata: expect.objectContaining({ isError: true, resultCount: null }),
       }),
     );
+  });
+
+  it("answers a readable project metis_list_projects does not list (archived) as not found", async () => {
+    m.isServedProject.mockResolvedValue(false);
+    const d = def({ content: "x" });
+    const out = await dispatchIndexTool(d, { projectId: "p-archived" }, env);
+    expect(m.isServedProject).toHaveBeenCalledWith(CALLER.actor, "p-archived");
+    expect(out).toEqual({ isError: true, message: projectNotFoundMessage("metis_fake") });
+    expect(d.run).not.toHaveBeenCalled();
+    expect(m.loadCodeAccessFilter).not.toHaveBeenCalled();
   });
 
   it("fails closed, with no detail, when the access check itself fails", async () => {

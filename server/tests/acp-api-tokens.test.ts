@@ -17,9 +17,16 @@ interface Row {
 }
 const rows = new Map<string, Row>();
 let nextId = 0;
+/** #2331 — users by id; one not listed is active. */
+const users = new Map<string, { status: string; deletedAt: Date | null } | null>();
 
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
+    user: {
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+        users.has(where.id) ? users.get(where.id) : { status: "active", deletedAt: null },
+      ),
+    },
     apiToken: {
       create: vi.fn(
         async ({ data }: { data: Omit<Row, "id" | "createdAt" | "lastUsedAt" | "revokedAt"> }) => {
@@ -71,6 +78,7 @@ import {
 
 beforeEach(() => {
   rows.clear();
+  users.clear();
   nextId = 0;
 });
 
@@ -123,6 +131,15 @@ describe("verifyApiToken", () => {
       name: "n",
       expiresAt: new Date(Date.now() - 1000).toISOString(),
     });
+    expect(await verifyApiToken(t.token)).toBeNull();
+  });
+  it.each([
+    ["disabled", { status: "disabled", deletedAt: null }],
+    ["deleted", { status: "active", deletedAt: new Date() }],
+    ["missing", null],
+  ])("#2331 — returns null when the token's user is %s", async (_label, user) => {
+    const t = await createApiToken({ userId: "u-x", name: "n" });
+    users.set("u-x", user);
     expect(await verifyApiToken(t.token)).toBeNull();
   });
   it("returns scopes for valid tokens", async () => {

@@ -113,8 +113,7 @@ import {
   type RetrievalSample,
 } from "../src/lib/eval/ba-qa/relevance-floor.js";
 import { formatBaQaReport, type ReportSession } from "../src/lib/eval/ba-qa/report.js";
-import { MCP_ARM, mcpRuntimeTools } from "../src/lib/eval/ba-qa/mcp-arm.js";
-import type { RuntimeTool } from "../src/lib/ai/tool-runtime/types.js";
+import { MCP_ARM, openMcpArm, type McpArm } from "../src/lib/eval/ba-qa/mcp-arm.js";
 import type { ReplyToolCall } from "../src/lib/ai/conversation/turn.js";
 import type { RagContextCapture } from "../src/routes/ai.js";
 import {
@@ -584,8 +583,9 @@ async function main(): Promise<void> {
 
   const sessionFlags = loadSessionToolsFlags();
   // #2331 — the `mcp` arm's tools: metis-index-mcp over an in-memory MCP
-  // transport, as the eval user's own token. Built once; closed after the run.
-  const mcpArm = flagArm === MCP_ARM ? await startMcpArm(user.id) : null;
+  // transport, as the eval user's own token. Started inside the `try` below,
+  // so the `finally` (or the signal handler) always revokes the token.
+  let mcpArm: McpArm | null = null;
   // #2326 — the fault is written for this run only, and restored after it.
   const indexFault = values["index-fault"] ? parseIndexFault(values["index-fault"]) : null;
   const savedIngestStates = new Map<string, string | null>();
@@ -596,11 +596,14 @@ async function main(): Promise<void> {
       await prisma.repoConnection.update({ where: { id }, data: { sourceIngestState: saved } });
     }
   };
-  // An interrupted run (Ctrl-C) must not leave the products' index faulted.
+  // An interrupted run (Ctrl-C) must not leave the products' index faulted,
+  // nor the `mcp` arm's token live.
   const onSignal = (signal: NodeJS.Signals) => {
-    void restoreIngestStates().finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+    void Promise.allSettled([mcpArm?.close(), restoreIngestStates()]).finally(() =>
+      process.exit(signal === "SIGINT" ? 130 : 143),
+    );
   };
-  if (indexFault) {
+  if (indexFault || flagArm === MCP_ARM) {
     process.once("SIGINT", onSignal);
     process.once("SIGTERM", onSignal);
   }
@@ -624,6 +627,7 @@ async function main(): Promise<void> {
     });
 
   try {
+    if (flagArm === MCP_ARM) mcpArm = await startMcpArm(user.id);
     if (indexFault) {
       const faulted = JSON.stringify(indexFaultState(indexFault, new Date()));
       for (const repo of repos.values()) {
@@ -1149,41 +1153,47 @@ async function runFloorSweep(input: {
 }
 
 /**
- * #2336 — the router's probe: each project's own knowledge search for `text`,
- * as the asking user, of which only keyword-backed hits count as evidence.
- */
-/**
  * #2331 — the `mcp` arm's server and client, over an in-memory transport. The
  * credential is the eval user's own API token with `acp:read`, minted for this
  * run and revoked when it ends, so the server resolves every call to that user
- * exactly as it would a developer's.
+ * exactly as it would a developer's. `openMcpArm` revokes the token however
+ * the arm ends, including when it fails to start.
  */
-async function startMcpArm(
-  userId: string,
-): Promise<{ tools: RuntimeTool[]; close(): Promise<void> }> {
+async function startMcpArm(userId: string): Promise<McpArm> {
   const { createApiToken, revokeApiToken } = await import("../src/lib/acp/api-tokens.js");
   const { createIndexMcpServer } = await import("../src/mcp/metis-index/server.js");
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
-  const minted = await createApiToken({
-    userId,
-    name: "eval:ba-qa mcp arm (#2331)",
-    scopes: ["acp:read"],
-  });
-  const server = createIndexMcpServer({ credential: minted.token });
-  const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: "eval-ba-qa", version: "0.0.0" });
-  await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
-  return {
-    tools: await mcpRuntimeTools(client),
-    async close() {
-      await client.close();
-      await server.close();
-      await revokeApiToken(userId, minted.id);
+  return openMcpArm(userId, {
+    mint: (id) =>
+      createApiToken({ userId: id, name: "eval:ba-qa mcp arm (#2331)", scopes: ["acp:read"] }),
+    revoke: revokeApiToken,
+    async connect(credential) {
+      const server = createIndexMcpServer({ credential });
+      const client = new Client({ name: "eval-ba-qa", version: "0.0.0" });
+      const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+      const close = async () => {
+        try {
+          await client.close();
+        } finally {
+          await server.close();
+        }
+      };
+      try {
+        await Promise.all([server.connect(serverSide), client.connect(clientSide)]);
+      } catch (err) {
+        await close().catch(() => {});
+        throw err;
+      }
+      return { client, close };
     },
-  };
+  });
 }
 
+/**
+ * #2336 — the router's probe: each project's own knowledge search for `text`,
+ * as the asking user, of which only keyword-backed hits count as evidence.
+ */
 async function probeEvidence(
   scope: readonly { name: string }[],
   pool: ReadonlyMap<string, PoolProject>,

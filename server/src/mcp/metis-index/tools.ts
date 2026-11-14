@@ -8,7 +8,8 @@
  *     set, with the #2325 citation contract), by their chat names;
  *   - `metis_read_requirements` is chat's `list_requirements` / `get_requirement`;
  *   - `metis_list_projects` reads the projects the caller may access under the
- *     rule every project-scoped surface uses (`accessibleProjectWhere`).
+ *     rule every project-scoped surface uses (`accessibleProjectWhere`), less
+ *     archived projects (`projects.ts`) — the ids the project-scoped tools accept.
  *
  * Inputs are bounded zod shapes: every string has a maximum length, the kinds,
  * languages and statuses are enums, and every limit is capped at the shared
@@ -21,7 +22,7 @@
 import { z } from "zod";
 import { REQUIREMENT_REVIEW_STATUSES, type CodeCitationRef } from "@metis/shared";
 import { prisma } from "../../lib/prisma.js";
-import { accessibleProjectWhere } from "../../lib/acp/authz.js";
+import { servedProjectWhere } from "./projects.js";
 import { getChatCodeTools, type ChatCodeToolDeps } from "../../lib/analysis/tools/index.js";
 import type { AgentTool, ToolResult, ZeroResultKind } from "../../lib/analysis/tools/types.js";
 import type { CodeAccessFilter } from "../../lib/analysis/tools/code-access.js";
@@ -203,7 +204,7 @@ export const INDEX_TOOLS = [
     projectScoped: false,
     async run(_args, ctx) {
       const rows = await prisma.project.findMany({
-        where: { ...accessibleProjectWhere(ctx.caller.actor), status: { not: "archived" } },
+        where: servedProjectWhere(ctx.caller.actor),
         select: { id: true, name: true, slug: true, description: true },
         orderBy: [{ name: "asc" }, { id: "asc" }],
         take: MAX_PROJECTS + 1,

@@ -46,7 +46,7 @@ afterEach(() => {
 });
 
 describe("createIndexMcpServer", () => {
-  it("returns a successful call as structured content and as its JSON text", async () => {
+  it("returns a successful call as structured content and as its result text plus trailer", async () => {
     const output = {
       tool: "metis_index_status",
       projectId: "p1",

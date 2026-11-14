@@ -9,7 +9,8 @@
  * the eval user's own API token. So the model sees what an external agent
  * sees: the MCP tool names, descriptions and input schemas from `tools/list`,
  * a `projectId` it must find with `metis_list_projects`, and each result as
- * the JSON text an MCP client reads (`content`), instructions included.
+ * the text an MCP client reads (`content`): the result, then its count,
+ * whether it was cut and its instructions (`resultTrailer`, `server.ts`).
  *
  * Paired with a `tools-only` run, the difference is the MCP surface alone.
  */
@@ -42,6 +43,48 @@ export function toRuntimeResult(r: Record<string, unknown>): RuntimeToolResult {
     ...(typeof s?.resultCount === "number" ? { resultCount: s.resultCount } : {}),
     ...(s?.truncated === true ? { truncated: true } : {}),
   };
+}
+
+/** How the arm reaches its credential and its server; the script supplies the real ones. */
+export interface McpArmDeps {
+  /** Mint the eval user's own `acp:read` token for this run. */
+  mint(userId: string): Promise<{ id: string; token: string }>;
+  revoke(userId: string, tokenId: string): Promise<unknown>;
+  /** Connect an MCP client to a server that runs as `credential`. */
+  connect(credential: string): Promise<{ client: McpClient; close(): Promise<void> }>;
+}
+
+export interface McpArm {
+  tools: RuntimeTool[];
+  /** Close the connection and revoke the token; once, however often it is called. */
+  close(): Promise<void>;
+}
+
+/**
+ * Start the arm as `userId`'s freshly minted token. The token is revoked
+ * however the arm ends: by {@link McpArm.close} (even when closing the
+ * connection throws), or here when the arm fails to start.
+ */
+export async function openMcpArm(userId: string, deps: McpArmDeps): Promise<McpArm> {
+  const minted = await deps.mint(userId);
+  let conn: { close(): Promise<void> } | null = null;
+  let closing: Promise<void> | null = null;
+  const close = (): Promise<void> =>
+    (closing ??= (async () => {
+      try {
+        await conn?.close();
+      } finally {
+        await deps.revoke(userId, minted.id);
+      }
+    })());
+  try {
+    const connected = await deps.connect(minted.token);
+    conn = connected;
+    return { tools: await mcpRuntimeTools(connected.client), close };
+  } catch (err) {
+    await close().catch(() => {});
+    throw err;
+  }
 }
 
 /** The server's tools, as the chat tool loop runs them: every call goes through `client`. */
