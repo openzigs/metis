@@ -21,6 +21,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   BOUNDARY_TIERS,
+  CHUNK_CONTEXT_MODEL_OVERSIZE,
+  CHUNK_CONTEXT_MODEL_PARTIAL,
   CHUNK_CONTEXT_NONE,
   CHUNKER_ALGORITHM_VERSION,
   chunkMarkdown,
@@ -392,6 +394,21 @@ describe("issue #2268 — the contextual mode in the chunker identity", () => {
     const oldCut = chunkerIdentity({ chunkSize: 1024, overlap: 128 }, CHUNK_CONTEXT_NONE);
     expect(classifyChunkerIdentity(oldCut, HEADINGS)).toBe("drifted");
     expect(classifyChunkerIdentity(oldCut, OFF)).toBe("drifted");
+  });
+
+  it("#2355 — a stopped model document is re-ingest work; one over the size cap is not", () => {
+    // A stop a re-ingest can finish (budget, failures, no provider) stays listed.
+    expect(classifyChunkerIdentity(chunkerIdentity(OPTS, CHUNK_CONTEXT_MODEL_PARTIAL), MODEL)).toBe(
+      "drifted",
+    );
+    // Over the cap, a re-ingest under `model` writes the same rows again: current.
+    const oversize = chunkerIdentity(OPTS, CHUNK_CONTEXT_MODEL_OVERSIZE);
+    expect(classifyChunkerIdentity(oversize, MODEL)).toBe("current");
+    // ...but still drift once the mode changes, or the cut does.
+    expect(classifyChunkerIdentity(oversize, HEADINGS)).toBe("drifted");
+    expect(classifyChunkerIdentity(oversize, OFF)).toBe("drifted");
+    const oldCut = chunkerIdentity({ chunkSize: 1024, overlap: 128 }, CHUNK_CONTEXT_MODEL_OVERSIZE);
+    expect(classifyChunkerIdentity(oldCut, MODEL)).toBe("drifted");
   });
 });
 

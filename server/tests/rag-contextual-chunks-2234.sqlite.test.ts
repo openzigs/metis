@@ -573,6 +573,23 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect((await s.knowledge.coverageReport(PROJECT)).needsReingest).toBe(true);
       });
 
+      it("model: a document over the size cap is tagged model-oversize and is not re-ingest work", async () => {
+        await seedDocument("doc-oversize", "leave-policy.md");
+        const generator = modelChunkContextGenerator({
+          provider: () => {
+            throw new Error("never asked");
+          },
+          maxDocumentChars: 10,
+        });
+        const s = service("model", recordingEmbedder(), generator);
+        expect((await s.knowledge.ingestDocument("doc-oversize")).status).toBe("ready");
+        const rows = await storedChunks("doc-oversize");
+        expect(new Set(rows.map((r) => r.chunkerIdentity))).toEqual(
+          new Set(["doc:v3:256/0;ctx=model-oversize"]),
+        );
+        expect((await s.knowledge.coverageReport(PROJECT)).needsReingest).toBe(false);
+      });
+
       /** Every chunk without a model context; `during` runs inside the call when armed. */
       function hookedGenerator(during: () => Promise<void>) {
         const hook = { armed: false };

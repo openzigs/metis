@@ -40,9 +40,10 @@
  * supersedes it. The chunker identity records the mode (`chunkerIdentity`), so
  * `embeddings:migrate status` lists the documents a flag change leaves behind.
  * #2355 — a document whose calls were stopped (the budget, the failure limit, no
- * provider, a document too large, a generator error) is tagged `model-partial`, not
- * `model`, so it is listed there too: re-ingesting it once the cause is gone reuses
- * the contexts it got and asks only for the rest.
+ * provider, a generator error) is tagged `model-partial`, not `model`, so it is
+ * listed there too: re-ingesting it once the cause is gone reuses the contexts it got
+ * and asks only for the rest. One over the size cap is tagged `model-oversize`, which
+ * counts as current: no re-ingest can change it.
  *
  * Repository source files are left alone in every mode: a code file has no heading
  * path and no lead sentence, and its path is already a boosted BM25 field.
@@ -78,6 +79,12 @@ export const CHUNK_CONTEXT_MAX_CHARS = 300;
  * the per-chunk cost are both bounded by it.
  */
 export const MODEL_CONTEXT_MAX_DOCUMENT_CHARS = 400_000;
+/**
+ * #2355 — the `onStopped` reason for a document over
+ * {@link MODEL_CONTEXT_MAX_DOCUMENT_CHARS}. A re-ingest cannot change it, so the
+ * caller tags such rows apart from a stop a re-ingest can finish.
+ */
+export const MODEL_CONTEXT_TOO_LARGE = "the document is too large for model chunk context";
 /** Concurrent per-chunk calls after the first, which writes the prompt cache. */
 export const MODEL_CONTEXT_CONCURRENCY = 4;
 /** Failures, with no success yet, after which the remaining chunks are not attempted. */
@@ -553,7 +560,7 @@ export function modelChunkContextGenerator(deps: {
         documentChars: document.length,
         maxChars,
       });
-      onStopped?.("the document is too large for model chunk context");
+      onStopped?.(MODEL_CONTEXT_TOO_LARGE);
       return out;
     }
     const usage: ChunkContextUsage = {

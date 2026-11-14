@@ -28,6 +28,7 @@ import { prisma } from "../prisma.js";
 import { readDerivedLabel } from "./derived-label.js";
 import { withVectorSql, type ProjectVectorWrite } from "./project-vector-write.js";
 import {
+  CHUNK_CONTEXT_MODEL_OVERSIZE,
   CHUNK_CONTEXT_MODEL_PARTIAL,
   CHUNK_CONTEXT_NONE,
   chunkMarkdown,
@@ -69,6 +70,7 @@ import {
   defaultModelChunkContextGenerator,
   indexedTextOf,
   isContextualDocument,
+  MODEL_CONTEXT_TOO_LARGE,
   prefixedText,
   resolveContextualChunksMode,
   savedChunkContexts,
@@ -652,7 +654,9 @@ export class KnowledgeService {
     // the document is deleted or a newer ingest supersedes this one. #2355 — a stop
     // (the budget was spent) leaves chunks without a model context, so the rows are
     // tagged `model-partial` below and read as needing a re-ingest, not as current.
-    let contextsStopped = false;
+    // #2355 — a document over the size cap is tagged `model-oversize` instead: no
+    // re-ingest can give it model contexts, so it must not read as re-ingest work.
+    let contextsStopped: string | undefined;
     const contextual = await contextPrefixesFor({
       mode: this.contextualMode,
       projectId: doc.projectId,
@@ -663,8 +667,8 @@ export class KnowledgeService {
       documentId,
       ...(savedContexts ? { saved: savedContexts } : {}),
       shouldContinue: () => this.ingestIsCurrent(documentId, ingestGeneration),
-      onStopped: () => {
-        contextsStopped = true;
+      onStopped: (reason) => {
+        contextsStopped = reason;
       },
     });
     const contextPrefixes = contextual.map((c) => c.prefix);
@@ -735,11 +739,13 @@ export class KnowledgeService {
       // With the flag off, nothing is appended: the identity is what it was before.
       chunkerIdentity: chunkerIdentity(
         this.chunkOptions,
-        contextsStopped
-          ? CHUNK_CONTEXT_MODEL_PARTIAL
-          : this.contextualMode === "off" || isContextualDocument(doc.filename)
-            ? this.contextualMode
-            : CHUNK_CONTEXT_NONE,
+        contextsStopped === MODEL_CONTEXT_TOO_LARGE
+          ? CHUNK_CONTEXT_MODEL_OVERSIZE
+          : contextsStopped !== undefined
+            ? CHUNK_CONTEXT_MODEL_PARTIAL
+            : this.contextualMode === "off" || isContextualDocument(doc.filename)
+              ? this.contextualMode
+              : CHUNK_CONTEXT_NONE,
       ),
       aclSubjects: docAcl,
     });

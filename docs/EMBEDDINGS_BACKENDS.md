@@ -830,8 +830,9 @@ Projects needing re-ingest: 1/2 (chunker drift — a reindex does NOT fix this)
   project's token budget ran out, the failure limit tripped, no provider was
   configured, or the generator failed. It is listed as re-ingest work, and that
   re-ingest reuses the contexts the document already has and asks only for the rest.
-  A document over the model-context size cap is tagged the same way; a re-ingest does
-  not clear it unless the cap is raised.
+  A document over the model-context size cap is tagged `;ctx=model-oversize`
+  instead: it keeps deterministic prefixes, no re-ingest can change that, and so it
+  counts as current under `model` rather than as re-ingest work that never clears.
 - Nothing is excluded from retrieval on this signal, ever. See
   [ADR 0006](decisions/0006-chunker-drift-serve-degraded-but-observable.md) for why
   excluding would be strictly worse than the gaps.
