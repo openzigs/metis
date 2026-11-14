@@ -496,20 +496,28 @@ describe("#2262 — implicitReaderSelection", () => {
       uploadedAt,
       ...(restricted ? { aclSubjects: restrictedTo({ kind: "user", value: "u2" }) } : {}),
     });
+    expect(READER_IMPLICIT_MAX_DOCUMENTS).toBe(5);
     db.documents = [
-      // The two newest are withheld; then six the member may read; then forty more withheld.
+      // Ranks 0-1 withheld, 2-3 readable, rank 4 (the last within the bound)
+      // withheld, rank 5 (the first past it) withheld; then readable ones and
+      // forty more withheld. Pins the bound exactly: one less drops `edge-in`,
+      // one more adds `edge-out`.
       upload("new-a", 100, true),
       upload("new-b", 99, true),
-      ...Array.from({ length: 6 }, (_, i) => upload(`v${i}`, 50 - i, false)),
+      upload("v0", 60, false),
+      upload("v1", 59, false),
+      upload("edge-in", 58, true),
+      upload("edge-out", 57, true),
+      ...Array.from({ length: 4 }, (_, i) => upload(`v${i + 2}`, 50 - i, false)),
       ...Array.from({ length: 40 }, (_, i) => upload(`old-${i}`, 10 - i, true)),
     ];
     const selection = await implicitReaderSelection("p1", MEMBER);
     expect(selection.documentIds).toEqual(["v0", "v1", "v2", "v3", "v4"]);
-    // Read in the newest five's place had the member seen them; the forty older ones never would be.
+    // Read in the newest five's place had the member seen them; the older ones never would be.
     expect(aclAudits()).toEqual([
       expect.objectContaining({
         action: "analysis.document_reader.acl_denied",
-        metadata: expect.objectContaining({ documentIds: ["new-a", "new-b"] }),
+        metadata: expect.objectContaining({ documentIds: ["new-a", "new-b", "edge-in"] }),
       }),
     ]);
   });

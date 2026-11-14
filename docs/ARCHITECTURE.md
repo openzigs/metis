@@ -5139,10 +5139,12 @@ none selected it never retrieves (#2321): a project with no ready upload and one
 upload the requester may not see give the same empty reading ("No document was read"), so the
 document agent's output says nothing of documents the requester cannot see, and its retrieval,
 which checks no document ACL, never reads a withheld one in their place. That holds for the
-document agent only, not for the analysis as a whole: the reading then has no requirements, so
-`detectAgentMode` sends the code agent to single-shot, and its `retrieveContext` requirement
-half reads every ready upload (`defaultAnalysisDocumentIds`, its quarantine fallback, and
-`runGroundedRetrieval` with no actor), withheld ones included. The two cases still differ
+document agent only, not for the analysis as a whole. With none selected, the code agent's
+requirement retrieval reads every ready upload with no actor, withheld ones included: on
+single-shot (the reading has no requirements and none came from the operator or an import),
+`retrieveContext` through `defaultAnalysisDocumentIds`, its quarantine fallback and
+`runGroundedRetrieval`; on the requirement-grounded path, through `defaultAnalysisDocumentIds`
+and `retrievePerRequirement`. The two cases still differ
 there; giving analysis retrieval the document ACL is #2431. On this path the summary counts
 the documents as "uploaded", not "selected".
 
