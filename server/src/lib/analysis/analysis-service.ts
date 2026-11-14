@@ -210,6 +210,12 @@ export interface CreateAnalysisInput {
   /** Issue #2341 — started with "Run with defaults"; recorded in the metadata. */
   startedWithDefaults?: boolean;
   /**
+   * #2448 — how the run reads code. Absent, a person's start is `starter` and a
+   * system start `shared`. A synthetic row with no passes (docs-gen domain
+   * research) passes `shared` so it keeps the shared rule.
+   */
+  sourceAccess?: typeof SOURCE_ACCESS_SHARED | typeof SOURCE_ACCESS_STARTER;
+  /**
    * #2451 — the enhancements the run was started with, stored as
    * `metadata.enhancementRequested` when the row is created. `enhancement`
    * is written only once the enhancement step starts, part-way through the
@@ -316,7 +322,8 @@ export async function createAnalysis(input: CreateAnalysisInput) {
       // (`pass-reads.ts`); a scheduled run has nobody's access to read with,
       // so it reads as the shared audience (#2314).
       sourceAccess:
-        input.startedById === SYSTEM_ACTOR_ID ? SOURCE_ACCESS_SHARED : SOURCE_ACCESS_STARTER,
+        input.sourceAccess ??
+        (input.startedById === SYSTEM_ACTOR_ID ? SOURCE_ACCESS_SHARED : SOURCE_ACCESS_STARTER),
       metadata: JSON.stringify({
         agentKeys: input.agentKeys,
         documentIds: input.documentIds ?? [],

@@ -26,6 +26,7 @@
 import { randomUUID } from "node:crypto";
 import { createChildLogger } from "../../logger.js";
 import { prisma } from "../../prisma.js";
+import { SOURCE_ACCESS_SHARED } from "../../analysis/source-ids.js";
 import {
   WebResearchAugmenter,
   createSearchProvider,
@@ -138,6 +139,8 @@ async function persistDomainResearch(
     projectId: input.projectId,
     startedById: input.actorId,
     agentKeys: [],
+    // #2448 — no passes run, so the row keeps the shared rule.
+    sourceAccess: SOURCE_ACCESS_SHARED,
   });
   // Tag the synthetic row so listAnalysesForProject() excludes it like other
   // non-LLM background rows, and mark it completed (it is not a running job).

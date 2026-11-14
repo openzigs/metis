@@ -95,6 +95,8 @@ export function recordPassReads(pass: PassReads, documentIds: Iterable<string>):
  * of their `readSourceIds`, or `null` when one recorded none (fail closed).
  * `exceptAgentKey`: leave out that agent's own results, which a pass of the
  * same agent replaces or continues and does not read (a regenerate, a resume).
+ * Known coarseness (fails closed): other agents' rows include a synthesis row,
+ * so a regenerated pass on a finished run inherits what the replaced pass read.
  */
 export async function storedReadSet(
   db: Pick<PrismaClient, "agentResult">,
@@ -237,6 +239,9 @@ export async function withPassReads<T>(
  * graph's query) leaves those files out as well, so a restricted file reaches
  * the model only through a check that records it.
  */
+// Known coarseness (fails closed): `isHidden` records a readable restricted
+// file whenever it is checked, so a directory listing or a fused-search seed
+// records every such file it walks, not only the ones actually read.
 export function passCodeAccess(pass: PassReads): CodeAccessFilter {
   const hidden = codeAccessFilterOf(pass.hiddenFiles);
   if (pass.readableFiles.size === 0) return hidden;

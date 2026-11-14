@@ -9,3 +9,4 @@ section: Security
   access see everything. The change request and the Spec Kit handoff say how many restricted
   files the analysis read, never which. Scheduled analyses, and document reading and search,
   still use only what everyone on the project can see.
+  The live capability event no longer carries the titles of findings cut at the cap, on any run.
