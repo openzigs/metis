@@ -124,8 +124,10 @@ export async function getGapReport(
     retrieval: snapshot.retrieval ?? null,
     // Issue #825 — per-requirement affected-schema inputs, when a producer is
     // wired. Undefined by default ⇒ no `databaseChanges` section (backward compatible).
+    // #2447 — a requirement the reader cannot see is its placeholder, and its
+    // database changes (read from its text) are left out with it.
     schemaImpactByRequirementId: deps.loadSchemaImpact
-      ? await deps.loadSchemaImpact(analysisId)
+      ? withoutRestricted(await deps.loadSchemaImpact(analysisId), snapshot.requirements)
       : undefined,
     // #856 — threaded through verbatim; undefined when the caller never resolved
     // one (byte-identical to pre-#856).
@@ -135,4 +137,14 @@ export async function getGapReport(
     sqlLineageCoverage: deps.sqlLineageCoverage,
   });
   return paged ? { ...report, page: paged.page } : report;
+}
+
+/** `byRequirement` without the requirements the snapshot shows restricted (#2447). */
+function withoutRestricted<V>(
+  byRequirement: ReadonlyMap<string, V>,
+  requirements: ReadonlyArray<{ id: string; restricted?: true }>,
+): ReadonlyMap<string, V> {
+  const restricted = new Set(requirements.filter((r) => r.restricted).map((r) => r.id));
+  if (restricted.size === 0) return byRequirement;
+  return new Map([...byRequirement].filter(([id]) => !restricted.has(id)));
 }

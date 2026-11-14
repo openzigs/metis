@@ -28,6 +28,7 @@ import { prisma } from "../prisma.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { assertLiveProjectAccess } from "../custom-agents/authz.js";
 import { audit } from "../audit/audit-service.js";
+import { restrictedIds, userSourceReader } from "../analysis/source-redaction.js";
 
 /** A request that has passed {@link requireRequirementAccess}. */
 export interface RequirementScopedRequest extends Request {
@@ -61,7 +62,7 @@ export async function assertRequirementAccessible(
 
   const row = await prisma.requirement.findUnique({
     where: { id: requirementId },
-    select: { projectId: true },
+    select: { projectId: true, analysisId: true, sourceIds: true },
   });
   if (!row) throw requirementNotFound();
 
@@ -83,6 +84,22 @@ export async function assertRequirementAccessible(
       throw requirementNotFound();
     }
     throw err;
+  }
+
+  // #2447 — a requirement resting on a source the caller cannot see answers
+  // like an unknown one on every route behind this guard (its history,
+  // comments, links, edit and approval would all show its text).
+  const restricted = await restrictedIds(userSourceReader(user.userId), [
+    { id: requirementId, analysisId: row.analysisId, sourceIds: row.sourceIds },
+  ]);
+  if (restricted.size > 0) {
+    audit({
+      actor: { id: user.userId },
+      action: "requirement.access.denied",
+      target: { type: "requirement", id: requirementId },
+      metadata: { reason: "source-restricted", projectId: row.projectId },
+    });
+    throw requirementNotFound();
   }
 
   return row.projectId;

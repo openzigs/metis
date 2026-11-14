@@ -469,6 +469,8 @@ describe("analyses/:id/* — cross-project scope (#1097)", () => {
         projectId: "proj-b",
         analysisId: "ana-b",
         findingId: "find-1",
+        // #2447 — redacted for the caller.
+        reader: expect.any(Function),
       });
     });
   });
@@ -498,6 +500,8 @@ describe("analyses/:id/* — cross-project scope (#1097)", () => {
         projectId: "proj-b",
         analysisId: "ana-b",
         findingId: "find-1",
+        // #2447 — redacted for the caller.
+        reader: expect.any(Function),
       });
     });
   });

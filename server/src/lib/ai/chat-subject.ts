@@ -16,6 +16,7 @@
  * reach all answer the one 404, so a probe cannot tell them apart. A role
  * without `analysis.read` is refused 403, as the change request page refuses it.
  */
+import { restrictedIds, userSourceReader } from "../analysis/source-redaction.js";
 import {
   hasPermission,
   type AuthPayload,
@@ -114,10 +115,15 @@ export async function resolveChatSubject(
 
   const requirement = await prisma.requirement.findFirst({
     where: { id, deletedAt: null },
-    select: { projectId: true, analysisId: true, title: true },
+    select: { id: true, projectId: true, analysisId: true, title: true, sourceIds: true },
   });
   if (!requirement) throw subjectNotFound();
   await asSubject404(() => assertLiveProjectAccess(user, requirement.projectId));
+  // #2447 — one resting on a source the caller cannot see is not a subject:
+  // its title and body would be put in front of the model for them.
+  if ((await restrictedIds(userSourceReader(user.userId), [requirement])).size > 0) {
+    throw subjectNotFound();
+  }
   const projectName = await liveProjectName(requirement.projectId);
   // Scoped on the requirement's own project, so a mismatched run is never read.
   const crTitle = await changeRequestTitle(requirement.projectId, requirement.analysisId);

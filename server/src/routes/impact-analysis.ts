@@ -15,6 +15,7 @@
  * accessible-project set. A caller must be able to access EVERY project in the
  * request (POST) or in the stored analysis (GET /:id) — no cross-tenant leak.
  */
+import { restrictedIds, userSourceReader } from "../lib/analysis/source-redaction.js";
 import { Router, type Request } from "express";
 import { z, ZodError } from "zod";
 import {
@@ -679,7 +680,7 @@ async function assertRequirementsReadable(
   if (requirementIds.length === 0) return;
   const rows = await prisma.requirement.findMany({
     where: { id: { in: [...requirementIds] } },
-    select: { id: true, projectId: true, deletedAt: true },
+    select: { id: true, projectId: true, deletedAt: true, analysisId: true, sourceIds: true },
   });
   if (mode === "new-source") {
     const live = new Set(rows.filter((r) => !r.deletedAt).map((r) => r.id));
@@ -700,6 +701,19 @@ async function assertRequirementsReadable(
     }
   }
   await assertProjectsAccessible(actor, [...new Set(rows.map((r) => r.projectId))]);
+  // #2447 — a requirement resting on a source the caller cannot see is refused
+  // as an unreadable one is: the run would read its text for them.
+  const restricted = await restrictedIds(
+    userSourceReader(actor.id),
+    rows.filter((r) => !r.deletedAt),
+  );
+  if (restricted.size > 0) {
+    throw new AppError(
+      403,
+      "FORBIDDEN",
+      "You do not have access to one or more requested projects",
+    );
+  }
 }
 
 /**
@@ -1072,7 +1086,11 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
       // from the form). Its project must be in the run: a run id of a project the
       // caller did not ask about (or cannot read) is refused.
       const changeRequest = body.analysisId
-        ? await loadChangeRequestSource(body.analysisId, async (pid) => projectIds.includes(pid))
+        ? await loadChangeRequestSource(
+            body.analysisId,
+            async (pid) => projectIds.includes(pid),
+            userSourceReader(actor.id),
+          )
         : null;
       if (changeRequest) assertHasRequirements(changeRequest);
       const requirementIds = changeRequest

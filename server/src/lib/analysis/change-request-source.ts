@@ -13,6 +13,7 @@
 import { AppError } from "../../middleware/error-handler.js";
 import { prisma } from "../prisma.js";
 import { clampTitle, sourcelessRunTitle } from "./change-request.js";
+import { restrictedIds, type SourceReader } from "./source-redaction.js";
 
 /** A requirement of a change request, as a check reads it. */
 export interface ChangeRequestRequirement {
@@ -41,6 +42,11 @@ export const CHECKED_REVIEW_STATUSES = ["draft", "approved"] as const;
 export async function loadChangeRequestSource(
   analysisId: string,
   canReadProject: (projectId: string) => Promise<boolean>,
+  /**
+   * #2447 — who starts the check. A requirement resting on a source they
+   * cannot see is left out: its text would be sent to the check for them.
+   */
+  reader: SourceReader,
 ): Promise<ChangeRequestSource> {
   const run = await readableChangeRequest(analysisId, canReadProject);
   if (!run) throw new AppError(404, "NOT_FOUND", "Change request not found");
@@ -52,19 +58,30 @@ export async function loadChangeRequestSource(
       OR: [{ reviewStatus: null }, { reviewStatus: { in: [...CHECKED_REVIEW_STATUSES] } }],
     },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    select: { id: true, title: true, body: true, acceptanceCriteria: true, reviewStatus: true },
+    select: {
+      id: true,
+      title: true,
+      body: true,
+      acceptanceCriteria: true,
+      reviewStatus: true,
+      analysisId: true,
+      sourceIds: true,
+    },
   });
+  const restricted = await restrictedIds(reader, rows);
   return {
     id: run.id,
     projectId: run.projectId,
     title: run.title?.trim() ? clampTitle(run.title) : sourcelessRunTitle(run.startedAt),
-    requirements: rows.map((r) => ({
-      id: r.id,
-      title: r.title,
-      body: r.body,
-      acceptanceCriteria: r.acceptanceCriteria,
-      approved: r.reviewStatus === "approved",
-    })),
+    requirements: rows
+      .filter((r) => !restricted.has(r.id))
+      .map((r) => ({
+        id: r.id,
+        title: r.title,
+        body: r.body,
+        acceptanceCriteria: r.acceptanceCriteria,
+        approved: r.reviewStatus === "approved",
+      })),
   };
 }
 

@@ -282,6 +282,18 @@ reader (#2447) treats NULL on a run whose `sourceAccess` is set as "rests on the
 run as a whole, or not recorded" and fails closed: the row draws on every source
 the run read.
 
+**How they are read (#2447).** Every surface that shows analysis output passes
+its rows through one filter (`server/src/lib/analysis/source-redaction.ts`)
+before they leave the server. A row on a run with `sourceAccess` NULL is shown
+as before. A row with a list is shown when the reader can see every listed
+document under its access list *now* (`isVisibleTo`, the document-search rule);
+a document outside the run's project, or one that cannot be read, counts as one
+they cannot see. A row with NULL is shown when the reader can see everything
+its run could: for `shared`, every member; for any other marker, an admin only.
+A row that fails is replaced by a placeholder (`restricted: true`, title
+`Restricted`), never removed. Chunk ids are not checked on their own: a chunk's
+access list is written with its document's, in one transaction.
+
 ### `Finding.agentResultId` is nullable (Issue #1330, ADR 0011)
 
 A `Finding` has **exactly one** of two provenances, and they are mutually

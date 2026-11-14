@@ -20,12 +20,16 @@
  */
 import {
   REQUIREMENT_PRIORITIES,
+  RESTRICTED_SOURCE_BODY,
+  RESTRICTED_SOURCE_TITLE,
   type GapReport,
   type RequirementDiff,
   type RequirementPriority,
 } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { getGapReport } from "../analysis/gap-report-service.js";
+import { getAnalysisSnapshot } from "../analysis/analysis-service.js";
+import { restrictedIds, type SourceReader } from "../analysis/source-redaction.js";
 import { buildRequirementDiff, type RequirementDiffRequirementInput } from "./requirement-diff.js";
 
 const PRIORITY_SET = new Set<string>(REQUIREMENT_PRIORITIES);
@@ -119,6 +123,7 @@ async function defaultFindPreviousAnalysisId(
 
 async function defaultLoadRequirements(
   analysisId: string,
+  reader?: SourceReader,
 ): Promise<RequirementDiffRequirementInput[]> {
   const rows = await prisma.requirement.findMany({
     where: { analysisId, deletedAt: null },
@@ -135,15 +140,19 @@ async function defaultLoadRequirements(
       labels: true,
       storyPoints: true,
       parentId: true,
+      analysisId: true,
+      sourceIds: true,
     },
   });
+  // #2447 — a requirement the reader cannot see compares as its placeholder.
+  const restricted = reader ? await restrictedIds(reader, rows) : new Set<string>();
   return rows.map((r) => ({
     id: r.id,
-    title: r.title,
-    body: r.body,
+    ...(restricted.has(r.id)
+      ? { title: RESTRICTED_SOURCE_TITLE, body: RESTRICTED_SOURCE_BODY, labels: "[]" }
+      : { title: r.title, body: r.body, labels: r.labels }),
     type: r.type,
     priority: coercePriority(r.priority),
-    labels: r.labels,
     storyPoints: r.storyPoints,
     parentId: r.parentId,
   }));
@@ -162,13 +171,20 @@ export async function getRequirementDiff(
     projectId: string;
     headAnalysisId: string;
     baseAnalysisId?: string | null;
+    /** #2447 — who reads it: requirements and findings they cannot see are placeholders. */
+    reader?: SourceReader;
   },
   deps: RequirementDiffDeps = {},
 ): Promise<RequirementDiff | null> {
+  const { reader } = opts;
   const loadAnalysisMeta = deps.loadAnalysisMeta ?? defaultLoadAnalysisMeta;
   const findPreviousAnalysisId = deps.findPreviousAnalysisId ?? defaultFindPreviousAnalysisId;
-  const loadRequirements = deps.loadRequirements ?? defaultLoadRequirements;
-  const loadGapReport = deps.loadGapReport ?? getGapReport;
+  const loadRequirements =
+    deps.loadRequirements ?? ((id: string) => defaultLoadRequirements(id, reader));
+  const loadGapReport =
+    deps.loadGapReport ??
+    ((id: string) =>
+      getGapReport(id, reader ? { loadSnapshot: (a) => getAnalysisSnapshot(a, { reader }) } : {}));
 
   const head = await loadAnalysisMeta(opts.headAnalysisId, opts.projectId);
   if (!head) return null;

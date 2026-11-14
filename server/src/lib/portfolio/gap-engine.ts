@@ -46,6 +46,7 @@
  *   past {@link PORTFOLIO_MAX_REQUIREMENTS}, a repo the budget ran out before)
  *   is listed in `notChecked`, which is stored with the assessment.
  */
+import { restrictedIds, userSourceReader } from "../analysis/source-redaction.js";
 import { z } from "zod";
 import {
   PORTFOLIO_ASSESSMENT_MAX_PRODUCTS,
@@ -1438,6 +1439,8 @@ export async function loadReadableSourceRequirement(
       body: true,
       acceptanceCriteria: true,
       reviewStatus: true,
+      analysisId: true,
+      sourceIds: true,
     },
   });
   if (
@@ -1445,11 +1448,14 @@ export async function loadReadableSourceRequirement(
     !(await canAccessProjectDiscussions(
       { id: user.userId, role: user.role },
       requirement.projectId,
-    ))
+    )) ||
+    // #2447 — nor one resting on a source the starter cannot see.
+    (await restrictedIds(userSourceReader(user.userId), [requirement])).size > 0
   ) {
     throw new AppError(404, "NOT_FOUND", "Requirement not found");
   }
-  return requirement;
+  const { analysisId: _analysisId, sourceIds: _sourceIds, ...source } = requirement;
+  return source;
 }
 
 /** Evaluate a requirement across the portfolio and persist the assessment (#1621). */

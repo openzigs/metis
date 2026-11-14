@@ -19,10 +19,17 @@
  * wildcard).
  */
 
+import { RESTRICTED_SOURCE_BODY, RESTRICTED_SOURCE_TITLE } from "@metis/shared";
 import { Prisma, prisma, resolveDatabaseProvider } from "../prisma.js";
 import { resolveRequirementReviewStatus } from "../analysis/analysis-service.js";
 import { parseRequirementLabels } from "../analysis/requirement-labels.js";
 import { CHECKPOINT_EDITORS_KEY } from "../analysis/checkpoint-authorship.js";
+import {
+  restrictedIds,
+  sharedSourceReader,
+  userSourceReader,
+  type SourceReader,
+} from "../analysis/source-redaction.js";
 import { editedInCheckpoint, isAuthoringVersion } from "./requirement-version-service.js";
 
 export const REQUIREMENT_LIST_STATUSES = ["draft", "approved", "rejected", "deferred"] as const;
@@ -61,6 +68,11 @@ export interface ProjectRequirementRow {
    * Set only on a row the viewer could otherwise approve; omitted otherwise.
    */
   selfApprovalForbidden?: true;
+  /**
+   * #2447 — the viewer cannot see a source it draws on: `title` and `body` are
+   * the restricted placeholder. Omitted otherwise.
+   */
+  restricted?: true;
 }
 
 /** #2452 — who is reading the list, for {@link ProjectRequirementRow.selfApprovalForbidden}. */
@@ -150,6 +162,27 @@ async function idsMatchingTitle(
     ids: rows.slice(0, SEARCH_ID_CAP).map((r) => r.id),
     capped: rows.length > SEARCH_ID_CAP,
   };
+}
+
+/**
+ * #2447 — a title search answers only with requirements the reader can see:
+ * a restricted one listed as its placeholder would still tell them its hidden
+ * title holds the words they searched for.
+ */
+async function visibleMatches(
+  projectId: string,
+  search: { ids: string[]; capped: boolean },
+  reader: SourceReader,
+): Promise<{ ids: string[]; capped: boolean }> {
+  if (search.ids.length === 0) return search;
+  const rows = await prisma.requirement.findMany({
+    where: { projectId, id: { in: search.ids } },
+    select: { id: true, analysisId: true, sourceIds: true },
+  });
+  const hidden = await restrictedIds(reader, rows);
+  return hidden.size === 0
+    ? search
+    : { ...search, ids: search.ids.filter((id) => !hidden.has(id)) };
 }
 
 /**
@@ -249,7 +282,12 @@ export async function listProjectRequirements(
   viewer?: RequirementListViewer,
 ): Promise<ProjectRequirementsPage> {
   const q = query.q?.trim() ?? "";
-  const search = q ? await idsMatchingTitle(projectId, q) : null;
+  // #2447 — the reader the rows are redacted for. A list read with no viewer is
+  // read as the shared audience, which sees no restricted source.
+  const reader = viewer ? userSourceReader(viewer.userId) : sharedSourceReader();
+  const search = q
+    ? await visibleMatches(projectId, await idsMatchingTitle(projectId, q), reader)
+    : null;
   const where: Prisma.RequirementWhereInput = {
     projectId,
     deletedAt: null,
@@ -273,6 +311,7 @@ export async function listProjectRequirements(
         reviewStatus: true,
         labels: true,
         updatedAt: true,
+        sourceIds: true,
         analysis: { select: { id: true, title: true, startedAt: true } },
         reviewItems: {
           where: {
@@ -299,11 +338,20 @@ export async function listProjectRequirements(
         viewer.userId,
       )
     : new Set<string>();
+  const restricted = await restrictedIds(
+    reader,
+    rows.map((r) => ({ id: r.id, analysisId: r.analysis.id, sourceIds: r.sourceIds })),
+  );
   return {
     items: rows.map((r) => ({
       id: r.id,
-      title: r.title,
-      body: r.body,
+      ...(restricted.has(r.id)
+        ? {
+            title: RESTRICTED_SOURCE_TITLE,
+            body: RESTRICTED_SOURCE_BODY,
+            restricted: true as const,
+          }
+        : { title: r.title, body: r.body }),
       version: r.version,
       reviewStatus: statusOf(r),
       updatedAt: r.updatedAt.toISOString(),

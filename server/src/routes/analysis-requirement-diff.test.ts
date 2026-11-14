@@ -182,6 +182,8 @@ describe("GET /api/projects/:projectId/analyses/:id/requirement-diff", () => {
       projectId: "proj-1",
       headAnalysisId: "analysis-1",
       baseAnalysisId: "analysis-0",
+      // #2447 — redacted for the caller.
+      reader: expect.any(Function),
     });
   });
 
@@ -212,6 +214,7 @@ describe("GET /api/projects/:projectId/analyses/:id/requirement-diff", () => {
       projectId: "proj-1",
       headAnalysisId: "analysis-1",
       baseAnalysisId: null,
+      reader: expect.any(Function),
     });
   });
 });

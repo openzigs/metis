@@ -97,7 +97,10 @@ export async function getTraceabilityMatrix(
   }
 
   // (2) Deterministic-mapping spine (additive; usually empty for a fresh run).
-  const requirementIds = requirements.map((r) => r.id);
+  // #2447 — a requirement the reader cannot see is its placeholder: its code
+  // links and tests (file paths) are not read for it.
+  const restricted = new Set(snapshot.requirements.filter((r) => r.restricted).map((r) => r.id));
+  const requirementIds = requirements.map((r) => r.id).filter((id) => !restricted.has(id));
   const deterministicByRequirement = new Map<string, TraceabilityCodeLocation[]>();
   if (requirementIds.length > 0) {
     const mappingRows = await prisma.requirementCodeMapping.findMany({

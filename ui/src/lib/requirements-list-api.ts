@@ -22,6 +22,11 @@ export interface RequirementListRow {
    * self-approval, so their Approve would be refused. Omitted otherwise.
    */
   selfApprovalForbidden?: true;
+  /**
+   * #2447 — the viewer cannot see a source it draws on: `title` and `body` are
+   * the restricted placeholder, and every action on it is refused. Omitted otherwise.
+   */
+  restricted?: true;
 }
 
 export interface RequirementListPage {

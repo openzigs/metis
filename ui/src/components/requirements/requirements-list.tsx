@@ -118,6 +118,9 @@ function selfApprovalRefusal(err: unknown): string | null {
 export const APPROVE_HINT = `Approving needs the requirement.approve permission (${defaultRolesHolding("requirement.approve")} by default). You can still request a review.`;
 /** Why Edit is disabled for a role without `project.update`. */
 export const EDIT_HINT = "Editing needs a coordinator or admin role.";
+/** #2447 — every action on a requirement the viewer cannot see a source of. */
+export const RESTRICTED_REQUIREMENT_HINT =
+  "It draws on sources you don't have access to, so you can't open, edit or approve it.";
 
 /** What a 409 on a row's write means, and what to do next. */
 export const EDIT_CONFLICT_MESSAGE =
@@ -259,8 +262,15 @@ export function RequirementsList({ projectId }: { projectId: string }) {
   // #2452 — and a row the viewer wrote, in a project without self-approval,
   // says why before the click (the server marks it `selfApprovalForbidden`).
   const approveHintFor = (row: RequirementListRow): string | undefined =>
-    !canApprove ? APPROVE_HINT : row.selfApprovalForbidden ? SELF_APPROVAL_HINT : undefined;
-  const editHint = canEdit ? undefined : EDIT_HINT;
+    row.restricted
+      ? RESTRICTED_REQUIREMENT_HINT
+      : !canApprove
+        ? APPROVE_HINT
+        : row.selfApprovalForbidden
+          ? SELF_APPROVAL_HINT
+          : undefined;
+  const editHintFor = (row: RequirementListRow): string | undefined =>
+    row.restricted ? RESTRICTED_REQUIREMENT_HINT : canEdit ? undefined : EDIT_HINT;
 
   const [analysisId, setAnalysisId] = useState("");
   const [status, setStatus] = useState<RequirementListStatus | "">("");
@@ -420,7 +430,7 @@ export function RequirementsList({ projectId }: { projectId: string }) {
                 className="flex flex-wrap items-start gap-3 py-2 text-sm"
                 data-testid={`requirements-row-${row.id}`}
               >
-                {canRequestReview ? (
+                {canRequestReview && !row.restricted ? (
                   <input
                     type="checkbox"
                     className="mt-1"
@@ -474,11 +484,11 @@ export function RequirementsList({ projectId }: { projectId: string }) {
                       </Button>
                     </HoverHint>
                   )}
-                  <HoverHint hint={editHint}>
+                  <HoverHint hint={editHintFor(row)}>
                     <Button
                       size="sm"
                       variant="outline"
-                      disabled={!canEdit}
+                      disabled={editHintFor(row) !== undefined}
                       onClick={() => setEditing(row)}
                       data-testid={`requirements-edit-${row.id}`}
                     >

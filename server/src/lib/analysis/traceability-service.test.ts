@@ -152,6 +152,28 @@ describe("getTraceabilityMatrix", () => {
     );
   });
 
+  it("#2447 — reads no code link or test for a requirement the reader sees restricted", async () => {
+    const prisma = mockPrisma();
+    const resolveTests = resolver();
+    const base = snapshot();
+    const open = { ...base.requirements[0]!, id: "req-2" };
+    await getTraceabilityMatrix("an-1", {
+      prisma,
+      resolveTests,
+      loadSnapshot: vi
+        .fn()
+        .mockResolvedValue(
+          snapshot({ requirements: [{ ...base.requirements[0]!, restricted: true }, open] }),
+        ),
+    });
+    expect(prisma.requirementCodeMapping.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ requirementId: { in: ["req-2"] } }),
+      }),
+    );
+    expect(resolveTests).toHaveBeenCalledWith(base.projectId, ["req-2"], undefined, { prisma });
+  });
+
   it("#815 — fills tests from the Tested-by resolver for the analysis's requirements", async () => {
     const resolveTests = resolver({
       "req-1": [

@@ -164,10 +164,15 @@ vi.mock("../src/lib/prisma.js", () => ({
           .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
         return { ...row, agentResults: ars, requirements: reqs };
       }),
-      findMany: vi.fn(async ({ where }: { where: { projectId: string } }) =>
-        [...analyses.values()]
-          .filter((a) => a.projectId === where.projectId && !a.deletedAt)
-          .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime()),
+      findMany: vi.fn(async ({ where }: { where: { projectId?: string; id?: { in: string[] } } }) =>
+        // #2447 — the source guard reads its runs' markers by id.
+        where.id
+          ? [...analyses.values()]
+              .filter((a) => where.id!.in.includes(a.id))
+              .map((a) => ({ ...a, sourceAccess: null }))
+          : [...analyses.values()]
+              .filter((a) => a.projectId === where.projectId && !a.deletedAt)
+              .sort((a, b) => b.startedAt.getTime() - a.startedAt.getTime()),
       ),
     },
     agentResult: {
@@ -579,6 +584,7 @@ describe("loadFindingForDeepDive — agent attribution (#338)", () => {
       });
 
       const loaded = await loadFindingForDeepDive({
+        reader: { userId: "u-reader", role: "analyst" },
         projectId: "proj-abcdefghij",
         analysisId: a.id,
         findingId: ar.findingIds[0],
@@ -605,6 +611,7 @@ describe("loadFindingForDeepDive — agent attribution (#338)", () => {
       usage,
     });
     const loaded = await loadFindingForDeepDive({
+      reader: { userId: "u-reader", role: "analyst" },
       projectId: "proj-abcdefghij",
       analysisId: a.id,
       findingId: ar.findingIds[0],
@@ -624,6 +631,7 @@ describe("loadFindingForDeepDive — agent attribution (#338)", () => {
       usage,
     });
     const loaded = await loadFindingForDeepDive({
+      reader: { userId: "u-reader", role: "analyst" },
       projectId: "proj-abcdefghij",
       analysisId: a.id,
       findingId: ar.findingIds[0],
@@ -678,6 +686,7 @@ describe("loadFindingForDeepDive — agent attribution (#338)", () => {
       usage,
     });
     const loaded = await loadFindingForDeepDive({
+      reader: { userId: "u-reader", role: "analyst" },
       projectId: "proj-abcdefghij",
       analysisId: a.id,
       findingId: ar.findingIds[0],
@@ -701,6 +710,7 @@ describe("loadFindingForDeepDive — agent attribution (#338)", () => {
     });
     expect(
       await loadFindingForDeepDive({
+        reader: { userId: "u-reader", role: "analyst" },
         projectId: "proj-otherproject",
         analysisId: a.id,
         findingId: ar.findingIds[0],

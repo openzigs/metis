@@ -158,7 +158,12 @@ export function runRetrievalArm(
   corpus: RetrievalCorpus,
   semantic: SemanticRequirementSearch,
 ): Promise<ArmReport> {
-  const tool = createListRequirementsTool({ prisma: corpusPrisma(corpus), semantic });
+  const tool = createListRequirementsTool({
+    prisma: corpusPrisma(corpus),
+    semantic,
+    // #2447 — the corpus has no access lists and no runs: nothing is restricted.
+    restricted: async () => new Set(),
+  });
   return scoreArm(arm, corpus, async (question) => {
     const res = await tool.exec(
       { query: question, limit: 10 },

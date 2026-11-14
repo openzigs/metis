@@ -130,6 +130,11 @@ export const crossDocFindingSchema = z.object({
   evidence: z.array(resolvedEvidenceRefSchema).max(50).optional(),
   /** For contradictions only — `self` or `pairwise`; null otherwise. */
   scope: z.enum(CONTRADICTION_SCOPES).nullable().default(null),
+  /**
+   * #2447 — the reader cannot see a source this finding draws on: its title
+   * and detail are the restricted placeholder and it carries no evidence.
+   */
+  restricted: z.literal(true).optional(),
 });
 export type CrossDocFinding = z.infer<typeof crossDocFindingSchema>;
 

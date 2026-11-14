@@ -31,6 +31,7 @@
  * `lib/portfolio/interrupted-assessments.ts` fails one whose refreshes
  * stopped, so a restart never leaves an assessment `running` for ever (#1657).
  */
+import { userSourceReader } from "../lib/analysis/source-redaction.js";
 import { Router } from "express";
 import {
   PORTFOLIO_STATEMENT_MAX_CHARS,
@@ -272,8 +273,10 @@ async function gapInputFor(
   if (body.analysisId !== undefined) {
     // #2345 — the change request's own requirements, read with the caller's
     // project access (404 for an unreadable one), never taken from the form.
-    const changeRequest = await loadChangeRequestSource(body.analysisId, (projectId) =>
-      canAccessProjectDiscussions({ id: user.userId, role: user.role }, projectId),
+    const changeRequest = await loadChangeRequestSource(
+      body.analysisId,
+      (projectId) => canAccessProjectDiscussions({ id: user.userId, role: user.role }, projectId),
+      userSourceReader(user.userId),
     );
     assertHasRequirements(changeRequest);
     const criteria = boundedRequirements(

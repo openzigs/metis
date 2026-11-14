@@ -31,6 +31,7 @@ import { z } from "zod";
 import type { PrismaClient } from "@prisma/client";
 import {
   REQUIREMENT_REVIEW_STATUSES,
+  RESTRICTED_SOURCE_TITLE,
   SIMILAR_REQUIREMENT_SOURCE,
   parseAcceptanceCriteria,
   type RequirementReviewStatus,
@@ -47,6 +48,12 @@ import { getRequirementChain } from "../traceability/traceability-spine.js";
 import { reciprocalRankFusion } from "../rag/bm25-index.js";
 import { createChildLogger } from "../logger.js";
 import { findNearestRequirements } from "./requirement-embeddings.js";
+import {
+  restrictedIds,
+  sharedSourceReader,
+  userSourceReader,
+  type SourceReader,
+} from "../analysis/source-redaction.js";
 
 const log = createChildLogger("requirements-chat-tools");
 
@@ -86,6 +93,21 @@ export interface RequirementToolsDeps {
   chain?: (projectId: string, requirementId: string) => Promise<RequirementTraceabilityChain>;
   /** #1841 — meaning-based search over the requirement index. Defaults to #1835's. */
   semantic?: SemanticRequirementSearch;
+  /**
+   * #2447 — the ids among `rows` the reader cannot see a source of
+   * (`restrictedIds`). Defaults to the real filter over the database.
+   */
+  restricted?: typeof restrictedIds;
+}
+
+/**
+ * #2447 — who reads a tool's result: the session's user, or the whole audience
+ * of a shared surface (a discussion thread), which sees no restricted source.
+ */
+function toolReader(ctx: { userId: string; aclAudience?: "shared" }): SourceReader {
+  return ctx.aclAudience === "shared"
+    ? sharedSourceReader(ctx.userId)
+    : userSourceReader(ctx.userId);
 }
 
 const defaultSemantic: SemanticRequirementSearch = (projectId, query, limit) =>
@@ -265,6 +287,8 @@ export function createListRequirementsTool(
           priority: true,
           labels: true,
           reviewStatus: true,
+          analysisId: true,
+          sourceIds: true,
           _count: {
             select: {
               // #1913 — the requirement's own links: one borrowed from a similar
@@ -291,6 +315,10 @@ export function createListRequirementsTool(
         deferred: 0,
       };
       const label = args.label?.toLowerCase();
+      // #2447 — a requirement the reader cannot see a source of is listed as
+      // its placeholder, and never matched by words, meaning or label: a match
+      // would tell them what its hidden text holds.
+      const restricted = await (deps.restricted ?? restrictedIds)(toolReader(ctx), rows);
       const eligible: Eligible[] = [];
       for (const r of rows) {
         const status = resolveRequirementReviewStatus(
@@ -298,6 +326,23 @@ export function createListRequirementsTool(
           parseRequirementLabels(r.labels),
         );
         totals[status] += 1;
+        if (restricted.has(r.id)) {
+          if (args.status && status !== args.status) continue;
+          if (label || terms.length > 0) continue;
+          eligible.push({
+            id: r.id,
+            title: RESTRICTED_SOURCE_TITLE,
+            status,
+            type: r.type,
+            priority: r.priority,
+            labels: [],
+            codeLinks: 0,
+            dataMappings: 0,
+            termHits: 0,
+            keyHits: 0,
+          });
+          continue;
+        }
         const labels = visibleRequirementLabels(r.labels);
         if (args.status && status !== args.status) continue;
         if (label && !labels.some((l) => l.toLowerCase() === label)) continue;
@@ -405,6 +450,8 @@ export function createGetRequirementTool(
           labels: true,
           reviewStatus: true,
           acceptanceCriteria: true,
+          analysisId: true,
+          sourceIds: true,
           verdict: true,
           coverage: true,
           externalUrl: true,
@@ -423,6 +470,12 @@ export function createGetRequirementTool(
       if (!r) {
         return {
           text: notFoundText(args.requirementId),
+          isError: true,
+        };
+      }
+      if ((await (deps.restricted ?? restrictedIds)(toolReader(ctx), [r])).size > 0) {
+        return {
+          text: `ERROR: Requirement ${r.id} draws on sources the user does not have access to, so it cannot be read.`,
           isError: true,
         };
       }

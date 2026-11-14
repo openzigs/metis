@@ -76,6 +76,13 @@ vi.mock("../src/lib/prisma.js", () => {
       skill: { findMany: vi.fn(async () => []) },
       agent: { findFirst: vi.fn(async () => null), findMany: vi.fn(async () => []) },
       projectAgentAllowlist: { findMany: vi.fn(async () => []) },
+      // #2447 — every run predates source records: nothing is redacted.
+      analysis: {
+        findMany: vi.fn(async ({ where }: { where: { id: { in: string[] } } }) =>
+          where.id.in.map((id) => ({ id, projectId: "p1", sourceAccess: null })),
+        ),
+      },
+      document: { findMany: vi.fn(async () => []) },
       // The stub APPLIES the where the tool sends, so a query that dropped the
       // project scope would leak the other project's row into the result.
       requirement: {

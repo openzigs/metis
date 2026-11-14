@@ -104,6 +104,11 @@ import {
   analysisApprovalReopenRateLimiter,
   analysisApprovalReviewRateLimiter,
 } from "../middleware/analysis-approval-rate-limit.js";
+import {
+  restrictedIds,
+  userSourceReader,
+  type SourceReader,
+} from "../lib/analysis/source-redaction.js";
 import { AppError } from "../middleware/error-handler.js";
 import { documentFile } from "../middleware/document-file-upload.js";
 import {
@@ -298,6 +303,40 @@ const MAX_CELL_CHARS = 10000;
 function actorFromReq(req: Request) {
   if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
   return { id: req.user.userId, role: req.user.role };
+}
+
+/**
+ * #2447 — the reader every analysis read redacts for: the caller, whose role
+ * is read from durable state only when a source they cite is restricted.
+ */
+function readerOf(req: Request): SourceReader {
+  if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
+  return userSourceReader(req.user.userId);
+}
+
+/**
+ * #2447 — a requirement of run `analysisId` whose sources the caller cannot
+ * see answers 404, like an unknown one. An unknown one passes: the handler
+ * gives its own 404.
+ */
+async function ensureRequirementSourcesVisible(
+  req: Request,
+  analysisId: string,
+  requirementId: string,
+): Promise<void> {
+  const row = await prisma.requirement.findFirst({
+    where: { id: requirementId, analysisId, deletedAt: null },
+    select: { id: true, analysisId: true, sourceIds: true },
+  });
+  if (row && (await restrictedIds(readerOf(req), [row])).size > 0) {
+    throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+  }
+}
+
+/** #2447 — the snapshot loader of a report the caller reads: redacted for them. */
+function snapshotLoaderFor(req: Request): typeof getAnalysisSnapshot {
+  const reader = readerOf(req);
+  return (id) => getAnalysisSnapshot(id, { reader });
 }
 
 async function ensureProjectVisible(projectId: string): Promise<void> {
@@ -766,7 +805,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       const id = String(req.params.id);
       // #1099 — no path project here; authorize against the analysis's own.
       await ensureAnalysisAccessible(req, id);
-      const snapshot = await getAnalysisSnapshot(id);
+      const snapshot = await getAnalysisSnapshot(id, { reader: readerOf(req) });
       // Still reachable if the run is soft-deleted between the two queries.
       if (!snapshot) throw new AppError(404, "ANALYSIS_NOT_FOUND", "Analysis not found");
       // #2462 — a requirement the caller wrote or edited says so when the
@@ -944,6 +983,9 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
     // caller cannot reach.
     async (req: Request, _res: Response, next: NextFunction) => {
       await ensureAnalysisAccessible(req, String(req.params.id));
+      // #2447 — nor one whose sources the caller cannot see: the 409 diff and
+      // the edit itself would both show its text.
+      await ensureRequirementSourcesVisible(req, String(req.params.id), String(req.params.reqId));
       next();
     },
     // #865 — the optimistic-concurrency contract of `PUT /api/requirements/:id`:
@@ -1513,7 +1555,9 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       const projectId = String(req.params.projectId);
       await ensureAnalysisVisible(analysisId, projectId);
 
-      const matrix = await getTraceabilityMatrix(analysisId);
+      const matrix = await getTraceabilityMatrix(analysisId, {
+        loadSnapshot: snapshotLoaderFor(req),
+      });
       if (!matrix) throw new AppError(404, "ANALYSIS_NOT_FOUND", "Analysis not found");
 
       const format = typeof req.query.format === "string" ? req.query.format : "";
@@ -1567,6 +1611,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // requirements. The UI fetches them per requirement from the route below.
       const report = await getGapReport(analysisId, {
         ...(await resolveGapReportDeps(projectId)),
+        loadSnapshot: snapshotLoaderFor(req),
         loadSchemaImpact: undefined,
         page: parseListPageQuery(req.query as Record<string, unknown>),
       });
@@ -1599,9 +1644,10 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
 
       const requirement = await prisma.requirement.findFirst({
         where: { id: requirementId, analysisId, projectId, deletedAt: null },
-        select: { id: true },
+        select: { id: true, analysisId: true, sourceIds: true },
       });
-      if (!requirement) {
+      // #2447 — one the caller cannot see a source of answers like an unknown one.
+      if (!requirement || (await restrictedIds(readerOf(req), [requirement])).size > 0) {
         throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
       }
       res.json(ok(await getRequirementDatabaseChanges(analysisId, projectId, requirementId)));
@@ -1640,8 +1686,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // `databaseChanges` matches the /gap-report response (gated identically).
       // #856 — same resolver-driven gate as the /gap-report route above.
       const [gapReport, matrix] = await Promise.all([
-        getGapReport(analysisId, await resolveGapReportDeps(projectId)),
-        getTraceabilityMatrix(analysisId),
+        getGapReport(analysisId, {
+          ...(await resolveGapReportDeps(projectId)),
+          loadSnapshot: snapshotLoaderFor(req),
+        }),
+        getTraceabilityMatrix(analysisId, { loadSnapshot: snapshotLoaderFor(req) }),
       ]);
       if (!gapReport || !matrix) {
         throw new AppError(404, "ANALYSIS_NOT_FOUND", "Analysis not found");
@@ -1697,6 +1746,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         projectId,
         headAnalysisId: analysisId,
         baseAnalysisId: baseParam,
+        reader: readerOf(req),
       });
       if (!diff) throw new AppError(404, "ANALYSIS_NOT_FOUND", "Analysis not found");
       // #1137 — one page of the changed requirements (250 KB for 87 at once).
@@ -2343,7 +2393,12 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // sibling route rather than as a missing finding.
       await ensureAnalysisVisible(analysisId, projectId);
 
-      const finding = await loadFindingForDeepDive({ projectId, analysisId, findingId });
+      const finding = await loadFindingForDeepDive({
+        projectId,
+        analysisId,
+        findingId,
+        reader: readerOf(req),
+      });
       if (!finding) {
         throw new AppError(404, "FINDING_NOT_FOUND", "Finding not found");
       }
@@ -2472,7 +2527,12 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // path project so this WRITE cannot even be addressed at a foreign run.
       await ensureAnalysisVisible(analysisId, projectId);
 
-      const finding = await loadFindingForDeepDive({ projectId, analysisId, findingId });
+      const finding = await loadFindingForDeepDive({
+        projectId,
+        analysisId,
+        findingId,
+        reader: readerOf(req),
+      });
       if (!finding) {
         throw new AppError(404, "FINDING_NOT_FOUND", "Finding not found");
       }

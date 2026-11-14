@@ -145,6 +145,12 @@ export const SPEC_KIT_REQUIREMENTS_NOT_APPROVED_CODE = "SPECKIT_REQUIREMENTS_NOT
 /** #1616 — a named requirement is not in this project (404, `details.requirementIds`). */
 export const SPEC_KIT_REQUIREMENTS_NOT_FOUND_CODE = "SPECKIT_REQUIREMENTS_NOT_FOUND";
 /**
+ * #2447 — a named requirement draws on a source not everyone in the project
+ * can see (422, `details.requirementIds`). A Spec Kit artifact is read by the
+ * whole project (#2314), so it is built only from what all of them can see.
+ */
+export const SPEC_KIT_REQUIREMENTS_RESTRICTED_CODE = "SPECKIT_REQUIREMENTS_RESTRICTED";
+/**
  * #1616 — the named requirements hold more text than one `spec.md` can carry
  * beside the model's spec (413). Refused whole, before any model call (#1702).
  */

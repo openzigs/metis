@@ -57,6 +57,7 @@ import { DerivationBadge } from "@/components/findings/derivation-badge";
 import { PersonaTag } from "@/components/findings/persona-tag";
 import { agentSourcePersonas } from "@/components/findings/agent-source-persona";
 import { DeepDiveDialog, type DeepDiveDialogFinding } from "@/components/findings/deep-dive-dialog";
+import { RestrictedRequirementCard } from "@/components/requirements/restricted-requirement-card";
 import { ModelRecommendation } from "@/components/analysis/ModelRecommendation";
 import { RunStatusBadge, StatusBadge } from "@/components/analysis/analysis-status-badge";
 import { formatChangeRunLabels } from "@/lib/format-change-run-label";
@@ -1451,63 +1452,54 @@ export default function AnalysisPage(): React.ReactElement {
                           writeHint={requirementWriteHint}
                         />
                       ) : null}
-                      {requirementsView.items.map((req) => (
-                        <div
-                          key={req.id}
-                          id={`requirement-${req.id}`}
-                          data-deep-linked={req.id === requestedRequirementId ? "true" : undefined}
-                          className={`scroll-mt-4 rounded border border-border bg-muted/30 p-3 ${
-                            req.id === requestedRequirementId ? "ring-2 ring-primary" : ""
-                          }`}
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div>
-                              <div className="flex items-center gap-2">
-                                <input
-                                  type="checkbox"
-                                  className="h-4 w-4"
-                                  aria-label={`Select ${req.title} for a Spec Kit feature`}
-                                  data-testid={`req-speckit-select-${req.id}`}
-                                  checked={specKitPicked.has(req.id)}
-                                  onChange={(e) => toggleSpecKitPick(req.id, e.target.checked)}
-                                />
-                                <div className="text-sm font-medium">{req.title}</div>
-                                {/* Epic #726 (#736) — coverage classification badge. */}
-                                <CoverageBadge coverage={req.coverage} />
-                                {/* #1615 — functional / non-functional (#1612). */}
-                                <RequirementKindBadge
-                                  kind={req.kind}
-                                  nfrCategory={req.nfrCategory}
-                                />
-                              </div>
-                              <div className="text-xs text-muted-foreground">
-                                {req.type} · {req.priority} · {req.reviewStatus}
-                              </div>
-                              {/* #1063 — the imported item's own title and link, or
+                      {requirementsView.items.map((req) =>
+                        // #2447 — one the viewer cannot see a source of is its
+                        // placeholder, with no action that would be refused.
+                        req.restricted ? (
+                          <RestrictedRequirementCard key={req.id} requirement={req} />
+                        ) : (
+                          <div
+                            key={req.id}
+                            id={`requirement-${req.id}`}
+                            data-deep-linked={
+                              req.id === requestedRequirementId ? "true" : undefined
+                            }
+                            className={`scroll-mt-4 rounded border border-border bg-muted/30 p-3 ${
+                              req.id === requestedRequirementId ? "ring-2 ring-primary" : ""
+                            }`}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="checkbox"
+                                    className="h-4 w-4"
+                                    aria-label={`Select ${req.title} for a Spec Kit feature`}
+                                    data-testid={`req-speckit-select-${req.id}`}
+                                    checked={specKitPicked.has(req.id)}
+                                    onChange={(e) => toggleSpecKitPick(req.id, e.target.checked)}
+                                  />
+                                  <div className="text-sm font-medium">{req.title}</div>
+                                  {/* Epic #726 (#736) — coverage classification badge. */}
+                                  <CoverageBadge coverage={req.coverage} />
+                                  {/* #1615 — functional / non-functional (#1612). */}
+                                  <RequirementKindBadge
+                                    kind={req.kind}
+                                    nfrCategory={req.nfrCategory}
+                                  />
+                                </div>
+                                <div className="text-xs text-muted-foreground">
+                                  {req.type} · {req.priority} · {req.reviewStatus}
+                                </div>
+                                {/* #1063 — the imported item's own title and link, or
                                 "Added by the analysis"; nothing when not recorded. */}
-                              <RequirementSourceItems sourceItems={req.sourceItems} />
-                              {/* #1220 — re-sync kept this copy over a source change. */}
-                              <SourceDivergenceNotice
-                                requirementId={req.id}
-                                version={req.version}
-                                divergence={req.sourceDivergence}
-                                local={req}
-                                invalidateKeys={
-                                  selectedAnalysisId
-                                    ? [queryKeys.analyses.detail(selectedAnalysisId)]
-                                    : []
-                                }
-                                writeHint={requirementWriteHint}
-                              />
-                              {/* #1389 — a re-synthesis kept the approved criteria
-                                and suggested others; answered while reviewing them. */}
-                              {showProposals ? (
-                                <CriteriaProposalNotice
+                                <RequirementSourceItems sourceItems={req.sourceItems} />
+                                {/* #1220 — re-sync kept this copy over a source change. */}
+                                <SourceDivergenceNotice
                                   requirementId={req.id}
-                                  title={req.title}
                                   version={req.version}
-                                  proposal={req.criteriaProposal}
-                                  current={req.acceptanceCriteria ?? []}
+                                  divergence={req.sourceDivergence}
+                                  local={req}
                                   invalidateKeys={
                                     selectedAnalysisId
                                       ? [queryKeys.analyses.detail(selectedAnalysisId)]
@@ -1515,158 +1507,178 @@ export default function AnalysisPage(): React.ReactElement {
                                   }
                                   writeHint={requirementWriteHint}
                                 />
-                              ) : null}
-                            </div>
-                            <div className="flex gap-1">
-                              <HoverHint hint={requirementWriteHint}>
+                                {/* #1389 — a re-synthesis kept the approved criteria
+                                and suggested others; answered while reviewing them. */}
+                                {showProposals ? (
+                                  <CriteriaProposalNotice
+                                    requirementId={req.id}
+                                    title={req.title}
+                                    version={req.version}
+                                    proposal={req.criteriaProposal}
+                                    current={req.acceptanceCriteria ?? []}
+                                    invalidateKeys={
+                                      selectedAnalysisId
+                                        ? [queryKeys.analyses.detail(selectedAnalysisId)]
+                                        : []
+                                    }
+                                    writeHint={requirementWriteHint}
+                                  />
+                                ) : null}
+                              </div>
+                              <div className="flex gap-1">
+                                <HoverHint hint={requirementWriteHint}>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => setEditingReq(req)}
+                                    disabled={!canEditRequirements || editMutation.isPending}
+                                  >
+                                    Edit
+                                  </Button>
+                                </HoverHint>
+                                {/* Epic #34 (AC1) — open comments for this requirement. */}
                                 <Button
                                   size="sm"
-                                  variant="outline"
-                                  onClick={() => setEditingReq(req)}
-                                  disabled={!canEditRequirements || editMutation.isPending}
+                                  variant={commentsReqId === req.id ? "default" : "outline"}
+                                  onClick={() => setCommentsReqId(req.id)}
+                                  aria-label={`Comments for ${req.title}`}
+                                  data-testid={`req-comments-${req.id}`}
                                 >
-                                  Edit
+                                  <MessageSquare className="mr-1 h-3.5 w-3.5" aria-hidden />
+                                  Comments
                                 </Button>
-                              </HoverHint>
-                              {/* Epic #34 (AC1) — open comments for this requirement. */}
-                              <Button
-                                size="sm"
-                                variant={commentsReqId === req.id ? "default" : "outline"}
-                                onClick={() => setCommentsReqId(req.id)}
-                                aria-label={`Comments for ${req.title}`}
-                                data-testid={`req-comments-${req.id}`}
-                              >
-                                <MessageSquare className="mr-1 h-3.5 w-3.5" aria-hidden />
-                                Comments
-                              </Button>
-                              {/* #2350 — chat about this requirement, scoped to its project. */}
-                              <AskAboutThis kind="requirement" id={req.id} title={req.title} />
-                              <Button
-                                size="sm"
-                                variant={historyReqId === req.id ? "default" : "outline"}
-                                onClick={() =>
-                                  setHistoryReqId((cur) => (cur === req.id ? null : req.id))
-                                }
-                                aria-expanded={historyReqId === req.id}
-                              >
-                                History
-                              </Button>
-                              {/* #1749 — a state already set is not offered again. */}
-                              <RequirementReviewButtons
-                                status={effectiveReviewStatus(
-                                  req,
-                                  review.isSuccess ? review.variables : null,
-                                  { readAt: detail.dataUpdatedAt, sentAt: review.submittedAt },
-                                )}
-                                writeHint={requirementApproveHint}
-                                // #2462 — the author, in a project without
-                                // self-approval, is told before the click.
-                                approveHint={
-                                  req.selfApprovalForbidden ? SELF_APPROVAL_HINT : undefined
-                                }
-                                pending={review.isPending}
-                                onReview={(reviewStatus) =>
-                                  review.mutate({
-                                    reqId: req.id,
-                                    reviewStatus,
-                                    version: req.version,
-                                  })
-                                }
-                              />
-                              {/* #1626 — an approved requirement can be checked
-                                against every product in the portfolio. */}
-                              {req.reviewStatus === "approved" ? (
-                                <PortfolioCheckLink
-                                  from={{ requirementId: req.id, title: req.title }}
+                                {/* #2350 — chat about this requirement, scoped to its project. */}
+                                <AskAboutThis kind="requirement" id={req.id} title={req.title} />
+                                <Button
+                                  size="sm"
+                                  variant={historyReqId === req.id ? "default" : "outline"}
+                                  onClick={() =>
+                                    setHistoryReqId((cur) => (cur === req.id ? null : req.id))
+                                  }
+                                  aria-expanded={historyReqId === req.id}
+                                >
+                                  History
+                                </Button>
+                                {/* #1749 — a state already set is not offered again. */}
+                                <RequirementReviewButtons
+                                  status={effectiveReviewStatus(
+                                    req,
+                                    review.isSuccess ? review.variables : null,
+                                    { readAt: detail.dataUpdatedAt, sentAt: review.submittedAt },
+                                  )}
+                                  writeHint={requirementApproveHint}
+                                  // #2462 — the author, in a project without
+                                  // self-approval, is told before the click.
+                                  approveHint={
+                                    req.selfApprovalForbidden ? SELF_APPROVAL_HINT : undefined
+                                  }
+                                  pending={review.isPending}
+                                  onReview={(reviewStatus) =>
+                                    review.mutate({
+                                      reqId: req.id,
+                                      reviewStatus,
+                                      version: req.version,
+                                    })
+                                  }
                                 />
-                              ) : null}
+                                {/* #1626 — an approved requirement can be checked
+                                against every product in the portfolio. */}
+                                {req.reviewStatus === "approved" ? (
+                                  <PortfolioCheckLink
+                                    from={{ requirementId: req.id, title: req.title }}
+                                  />
+                                ) : null}
+                              </div>
                             </div>
-                          </div>
-                          {/* #2347 — what Approve does and how a formal review
+                            {/* #2347 — what Approve does and how a formal review
                             differs, at the point of choosing (not once approved). */}
-                          {req.reviewStatus !== "approved" ? (
-                            <ApprovalLadderNote className="mt-1" projectId={projectId} />
-                          ) : null}
-                          {/* Epic #34 (AC4) — assignee picker + SLA badge. */}
-                          <RequirementCollabRow
-                            requirementId={req.id}
-                            projectId={projectId}
-                            writeHint={requirementWriteHint}
-                          />
-                          {/* #979 — Markdown, sanitized, internal markers hidden. */}
-                          <RequirementBody body={req.body} />
-                          {/* Epic #1107 (#1110) — the panel's rolled-up confidence
+                            {req.reviewStatus !== "approved" ? (
+                              <ApprovalLadderNote className="mt-1" projectId={projectId} />
+                            ) : null}
+                            {/* Epic #34 (AC4) — assignee picker + SLA badge. */}
+                            <RequirementCollabRow
+                              requirementId={req.id}
+                              projectId={projectId}
+                              writeHint={requirementWriteHint}
+                            />
+                            {/* #979 — Markdown, sanitized, internal markers hidden. */}
+                            <RequirementBody body={req.body} />
+                            {/* Epic #1107 (#1110) — the panel's rolled-up confidence
                             for this requirement's evidence, with each dissenting
                             lens's reason. Rendered ABOVE the acceptance criteria
                             so the caution arrives before the work does. */}
-                          <RequirementConfidenceNote confidence={req.supportConfidence} />
-                          {/* #1096 — the real criteria, or an explicit note that
+                            <RequirementConfidenceNote confidence={req.supportConfidence} />
+                            {/* #1096 — the real criteria, or an explicit note that
                             none were derived. Never a placeholder. */}
-                          {/* #1203 — criteria one grouped item wrote for several
+                            {/* #1203 — criteria one grouped item wrote for several
                             requirements are marked, with links to the others. */}
-                          <RequirementCriteria
-                            metadata={detail.data.metadata}
-                            requirementId={req.id}
-                            criteria={req.acceptanceCriteria ?? []}
-                            projectId={projectId}
-                            analysisId={detail.data.id}
-                            titleOf={requirementTitleOf}
-                          />
-                          {/* #1204 — why there are none: the grouped items were too
+                            <RequirementCriteria
+                              metadata={detail.data.metadata}
+                              requirementId={req.id}
+                              criteria={req.acceptanceCriteria ?? []}
+                              projectId={projectId}
+                              analysisId={detail.data.id}
+                              titleOf={requirementTitleOf}
+                            />
+                            {/* #1204 — why there are none: the grouped items were too
                             close to call, listed so the criteria can be copied. */}
-                          <AmbiguousMatchNotice
-                            metadata={detail.data.metadata}
-                            requirementId={req.id}
-                            hasCriteria={(req.acceptanceCriteria ?? []).length > 0}
-                          />
-                          {req.labels.length > 0 ? (
-                            <div className="mt-2 flex flex-wrap gap-1">
-                              {req.labels.map((l) => (
-                                <span
-                                  key={l}
-                                  className="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground"
-                                >
-                                  {l}
-                                </span>
-                              ))}
-                            </div>
-                          ) : null}
-                          {/* #1591 — mapping writes are `connector.write`; link and
+                            <AmbiguousMatchNotice
+                              metadata={detail.data.metadata}
+                              requirementId={req.id}
+                              hasCriteria={(req.acceptanceCriteria ?? []).length > 0}
+                            />
+                            {req.labels.length > 0 ? (
+                              <div className="mt-2 flex flex-wrap gap-1">
+                                {req.labels.map((l) => (
+                                  <span
+                                    key={l}
+                                    className="rounded bg-muted px-1.5 py-0.5 text-xs text-foreground"
+                                  >
+                                    {l}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : null}
+                            {/* #1591 — mapping writes are `connector.write`; link and
                             duplicate-answer writes are `project.update`. */}
-                          <DataMappingsPanel
-                            projectId={projectId}
-                            requirementId={req.id}
-                            writeHint={dataMappingWriteHint}
-                          />
-                          <RequirementLinksPanel
-                            projectId={projectId}
-                            requirementId={req.id}
-                            workspaceId={project.data?.workspaceId ?? null}
-                            writeHint={requirementWriteHint}
-                          />
-                          {/* #1838 — similar requirements and the duplicate warning;
-                            #1840 — "Start from these citations" for an editor. */}
-                          <SimilarRequirementsPanel
-                            projectId={projectId}
-                            requirementId={req.id}
-                            canEdit={canEditRequirements}
-                            writeHint={requirementWriteHint}
-                          />
-                          <div className="mt-3 border-t border-border pt-3">
-                            <TraceabilityView
+                            <DataMappingsPanel
                               projectId={projectId}
                               requirementId={req.id}
-                              analysisId={selectedAnalysisId}
-                              canRerunEvaluation={canRunAnalysis}
+                              writeHint={dataMappingWriteHint}
                             />
-                          </div>
-                          {historyReqId === req.id ? (
+                            <RequirementLinksPanel
+                              projectId={projectId}
+                              requirementId={req.id}
+                              workspaceId={project.data?.workspaceId ?? null}
+                              writeHint={requirementWriteHint}
+                            />
+                            {/* #1838 — similar requirements and the duplicate warning;
+                            #1840 — "Start from these citations" for an editor. */}
+                            <SimilarRequirementsPanel
+                              projectId={projectId}
+                              requirementId={req.id}
+                              canEdit={canEditRequirements}
+                              writeHint={requirementWriteHint}
+                            />
                             <div className="mt-3 border-t border-border pt-3">
-                              <RequirementHistoryTab requirementId={req.id} version={req.version} />
+                              <TraceabilityView
+                                projectId={projectId}
+                                requirementId={req.id}
+                                analysisId={selectedAnalysisId}
+                                canRerunEvaluation={canRunAnalysis}
+                              />
                             </div>
-                          ) : null}
-                        </div>
-                      ))}
+                            {historyReqId === req.id ? (
+                              <div className="mt-3 border-t border-border pt-3">
+                                <RequirementHistoryTab
+                                  requirementId={req.id}
+                                  version={req.version}
+                                />
+                              </div>
+                            ) : null}
+                          </div>
+                        ),
+                      )}
                       <ListPager
                         page={requirementsView}
                         noun="requirements"
@@ -1834,25 +1846,28 @@ export default function AnalysisPage(): React.ReactElement {
                               loaded: "why is this low-confidence?" is one click,
                               not another request. */}
                             <SupportPanelDetails panel={f.supportPanel} />
-                            <div className="mt-3 flex justify-end">
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                data-testid="deep-dive-action"
-                                disabled={deepDive.disabled}
-                                title={deepDive.title}
-                                onClick={() => {
-                                  setDeepDiveFinding({
-                                    id: f.id,
-                                    title: f.title,
-                                    agentKey: f.agentKey,
-                                  });
-                                  setDeepDiveOpen(true);
-                                }}
-                              >
-                                Deep Dive → Issue
-                              </Button>
-                            </div>
+                            {/* #2447 — a restricted finding has nothing to dive into. */}
+                            {f.restricted ? null : (
+                              <div className="mt-3 flex justify-end">
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  data-testid="deep-dive-action"
+                                  disabled={deepDive.disabled}
+                                  title={deepDive.title}
+                                  onClick={() => {
+                                    setDeepDiveFinding({
+                                      id: f.id,
+                                      title: f.title,
+                                      agentKey: f.agentKey,
+                                    });
+                                    setDeepDiveOpen(true);
+                                  }}
+                                >
+                                  Deep Dive → Issue
+                                </Button>
+                              </div>
+                            )}
                           </div>
                         );
                       })}
