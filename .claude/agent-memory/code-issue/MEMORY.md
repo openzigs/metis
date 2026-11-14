@@ -109,13 +109,9 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Narrowed key unmasks uniqueness](project_review-heuristics-hidden-uniqueness-and-dead-claims.md) — fail-open reuse; no call site (#1508)
 - [Panel required? exit 2](project_adversarial-panel-trigger-and-gate-scripts.md) — review:adversarial-required; gate snippets fail open (#1482)
 - [Approved re-derived on re-save](project_approved-status-rederived-on-resave.md) — gate re-save paths, not routes only; stacked PR closes (#1588)
-- [Run 10 fix review lessons](project_run10-fix-review-lessons.md) — plain-text views; metadata writers; AbortError mocks; throttle (#1593-#1601)
 - [Portfolio epic lessons](project_portfolio-phase3a-review-lessons.md) — regex; caps; mocked filters; walk skips; redaction (#1608)
 - [Portfolio walkthrough fixtures](project_portfolio-walkthrough-fixtures.md) — 3 repos, 7 edges; umbrella product; host via API (#1724-#1728)
-- [Localization eval lessons](project_localization-eval-and-gap-retrieval-lessons.md) — cap spend; unpriced; stale DB=A7O; flags forced
 - [Lance filters after top-k](project_lance-filters-after-topk.md) — filtered search returns <k; test on real Lance (#1917)
-- [Stacked PR squash conflicts](project_stacked-pr-squash-conflicts.md) — keep HEAD; union scripts/exports
-- [Borrow/governing lessons](project_review-lessons-borrowed-and-governing.md) — filter before dedupe; regex FNs; sibling merged?
 - [Time keys, re-seed, CI misreads](project_time-window-keys-reseed-states-ci-signals.md) — now-window key reverts; test mid states; neutral CodeQL
 - [Gate and harness traps](project_gate-and-harness-traps-2026-11.md) — TEST_PLAN; lint heap; Playwright input dies; no git && in worktree
 - [Test doubles mirror reality](project_test-doubles-mirror-real-behaviour-2026-11.md) — developer lacks project.create; orchestrator stub forwards
@@ -124,3 +120,8 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Job toast de-dup per run](project_job-toast-dedup-keyed-per-run.md) — documents keep ids across regenerations (#2418)
 - [Status filters: label-aware](project_requirement-status-filters-must-be-label-aware.md) — legacy review:* labels (#1016, #2420)
 - [Node 22 req.destroyed](project_node22-req-destroyed-true-after-body-read.md) — true after body read; use res.closed (#2472)
+- [Redaction read-path pitfalls](project_source-redaction-read-path-pitfalls.md) — metadata blob; stored outputs; admin early return (#2475-#2507)
+- [CI signals 2026-11-14](project_ci-signals-2026-11-14.md) — api-outcome green on cancel; conflict = no CI; POSTGRES_PATTERNS
+- [Test harness pitfalls](project_test-harness-pitfalls-2026-11-14.md) — bare express; vi.mock actual; startedAt ties; conjuncts
+- [Ingest lifecycle, confidences](project_ingest-lifecycle-and-confidence-scales.md) — per-process lease; awaited hooks; Impact scales
+- [Repo chores 2026-11-14](project_repo-chores-and-fixtures-2026-11-14.md) — prettier root; gitignored images; findMentions; no npx
