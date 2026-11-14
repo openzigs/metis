@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { SkeletonText } from "@/components/ui/skeleton";
 import { sdkApi } from "@/lib/sdk-alignment-api";
 import { workspaceListQuery } from "@/lib/active-workspace";
+import { SCOPE_WORDS } from "@/components/scope/scope-picker";
 import { timeAgo } from "@/lib/time-ago";
 
 export const CHAT_HISTORY_KEY = ["chat", "history"] as const;
@@ -30,14 +31,16 @@ export function historyScopeLabel(
   workspaceName: (id: string) => string | null = () => null,
 ): string {
   if (s.projectId) return s.projectName || "A project";
+  // #2424 — the scope picker's own words (#2351), not "Every project in" and
+  // "All projects", which it retired.
   if (s.scopeWorkspaceId) {
     const name = workspaceName(s.scopeWorkspaceId);
-    return name ? `Every project in ${name}` : "Every project in a workspace";
+    return name ? `${SCOPE_WORDS.workspace}: ${name}` : SCOPE_WORDS.workspace;
   }
   if (s.scopeProjectIds && s.scopeProjectIds.length > 1) {
     return `${s.scopeProjectIds.length} projects`;
   }
-  return "All projects";
+  return SCOPE_WORDS.nothing;
 }
 
 interface Props {

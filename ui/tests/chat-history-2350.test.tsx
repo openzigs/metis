@@ -55,15 +55,15 @@ describe("historyScopeLabel", () => {
   it("names a project, a workspace, several projects, or none", () => {
     expect(historyScopeLabel(row("a", { projectId: "p", projectName: "Alpha" }))).toBe("Alpha");
     expect(historyScopeLabel(row("a", { projectId: "p", projectName: null }))).toBe("A project");
+    // #2424 — the scope picker's own words (#2351): "Whole workspace", and
+    // "No product chosen" for a chat that searches nothing, never "All projects".
     expect(historyScopeLabel(row("a", { scopeWorkspaceId: "ws-1" }), () => "Retail")).toBe(
-      "Every project in Retail",
+      "Whole workspace: Retail",
     );
-    expect(historyScopeLabel(row("a", { scopeWorkspaceId: "ws-9" }))).toBe(
-      "Every project in a workspace",
-    );
+    expect(historyScopeLabel(row("a", { scopeWorkspaceId: "ws-9" }))).toBe("Whole workspace");
     expect(historyScopeLabel(row("a", { scopeProjectIds: ["p1", "p2", "p3"] }))).toBe("3 projects");
-    expect(historyScopeLabel(row("a", { scopeProjectIds: ["p1"] }))).toBe("All projects");
-    expect(historyScopeLabel(row("a"))).toBe("All projects");
+    expect(historyScopeLabel(row("a", { scopeProjectIds: ["p1"] }))).toBe("No product chosen");
+    expect(historyScopeLabel(row("a"))).toBe("No product chosen");
   });
 });
 
@@ -84,7 +84,7 @@ describe("<ChatHistory /> (#2350)", () => {
     const second = screen.getByTestId("chat-history-s2");
     expect(second).not.toHaveAttribute("aria-current");
     expect(second).toHaveTextContent("Untitled chat");
-    await waitFor(() => expect(second).toHaveTextContent("Every project in Retail"));
+    await waitFor(() => expect(second).toHaveTextContent("Whole workspace: Retail"));
     // One row past the page is asked for, to know whether there are more.
     expect(fetchMock).toHaveBeenCalledWith(`/ai/sessions?limit=${CHAT_HISTORY_PAGE + 1}&offset=0`);
     expect(screen.queryByTestId("chat-history-more")).not.toBeInTheDocument();
