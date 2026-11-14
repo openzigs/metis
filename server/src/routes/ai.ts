@@ -2329,6 +2329,8 @@ export function aiRouter(): Router {
           ragCapture,
           chatToolRecords,
           priorToolEvidence(turn.historyRows ?? []),
+          // #2315 — only what the model's capped copy of each result showed.
+          { toolResultMaxChars: turn.build.toolResultMaxChars },
         ),
       );
 
@@ -2796,6 +2798,8 @@ export function aiRouter(): Router {
           ragCapture,
           streamToolRecords,
           priorToolEvidence(prepared?.historyRows ?? []),
+          // #2315 — only what the model's capped copy of each result showed.
+          { toolResultMaxChars: prepared?.build.toolResultMaxChars },
         ),
       );
       if (checked.length > 0) send("citations", { type: "citations", citations: checked });

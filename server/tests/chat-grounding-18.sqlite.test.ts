@@ -595,6 +595,77 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(await replyCitations(sessionId)).toEqual([expected]);
       });
 
+      // The tool's result is two lines: `Code version: indexed commit …` (42
+      // characters) and `class src/validator.ts::Validator — src/validator.ts:1-40 [ts]`
+      // (106 characters in all). 12 tokens keep the first line whole and cut
+      // the locator's; 40 keep both. Together they bracket the cap: a route
+      // that checked against a larger cap than `capForModel` applied (or none)
+      // fails the first, one that checked against a smaller cap (tokens taken
+      // for characters) fails the second.
+      it.each([
+        ["/api/ai/stream", "12", false],
+        ["/api/ai/chat", "12", false],
+        ["/api/ai/stream", "40", true],
+        ["/api/ai/chat", "40", true],
+      ] as const)(
+        "#2315 — %s with a %s-token cap: a locator is read only if the model's capped copy showed its line",
+        async (route, capTokens, shown) => {
+          process.env.CHAT_CODE_SEARCH_TOOLS = "true";
+          process.env.CHAT_TOOL_RESULT_MAX_TOKENS = capTokens;
+          try {
+            model.chatReplies = [SEARCH, "It is `src/validator.ts:5-12`."];
+            const sessionId = await newSession(PROJECT);
+            const res = await post(route, { sessionId, message: "where is validation?" });
+            // What the model was actually fed: the header line always, the locator only uncut.
+            const fed = JSON.stringify(model.prompts[1]);
+            expect(fed).toContain("Code version: indexed commit");
+            expect(fed.includes("src/validator.ts:1-40 [ts]")).toBe(shown);
+            const expected = [
+              shown
+                ? validatorAt([5, 12], "verified")
+                : {
+                    text: "src/validator.ts:5-12",
+                    path: "src/validator.ts",
+                    lines: [5, 12],
+                    status: "not-read",
+                  },
+            ];
+            if (route.endsWith("/chat")) expect(res.body.data.citations).toEqual(expected);
+            else expect(citationFrames(res.text)).toEqual([expected]);
+            expect(await replyCitations(sessionId)).toEqual([expected]);
+          } finally {
+            delete process.env.CHAT_TOOL_RESULT_MAX_TOKENS;
+          }
+        },
+      );
+
+      it("#2315 — a `path:line` a retrieved document mentions is not code the turn read", async () => {
+        // The non-loop stream path: retrieval is the only evidence.
+        process.env.CHAT_CODE_SEARCH_TOOLS = "false";
+        state.hits = [
+          {
+            filename: "FRD-7.md",
+            position: 0,
+            score: 0.9,
+            text: "Pinning lives in src/net/pin.ts:10-20.",
+          },
+        ];
+        model.streamText = "Pinned in `src/net/pin.ts:10-20`, per FRD-7.md.";
+        const sessionId = await newSession(PROJECT);
+        const res = await post("/api/ai/stream", { sessionId, message: "Where is pinning?" });
+        const expected = [
+          {
+            text: "src/net/pin.ts:10-20",
+            path: "src/net/pin.ts",
+            lines: [10, 20],
+            status: "not-read",
+          },
+          { text: "FRD-7.md", path: "FRD-7.md", status: "verified", source: "document" },
+        ];
+        expect(citationFrames(res.text)).toEqual([expected]);
+        expect(await replyCitations(sessionId)).toEqual([expected]);
+      });
+
       it.each(["/api/ai/stream", "/api/ai/chat"])(
         "%s: a follow-up re-citing lines an earlier turn's tool read is verified-earlier, not not-read",
         async (route) => {
