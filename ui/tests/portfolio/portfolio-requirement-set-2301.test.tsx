@@ -91,12 +91,13 @@ describe("#2301 — the links carry the set", () => {
       hostPickerHref(
         view({
           sourceRequirementIds: ["r-2", "r-1"],
+          sourceRequirementCount: 2,
           sourceProjectId: "proj-1",
           statement: '2 chosen requirements of project "Checkout"',
           scope: "product",
           productIds: ["p-billing"],
         }),
-      ),
+      )!,
       "http://x",
     );
     expect(url.searchParams.getAll("requirementIds")).toEqual(["r-2", "r-1"]);
@@ -107,8 +108,30 @@ describe("#2301 — the links carry the set", () => {
     expect(url.hash).toBe("#portfolio-host");
   });
 
+  it("offers no re-open link to a reader the set holds a requirement they cannot see for", () => {
+    // The server names only the requirements this reader can see, and counts the set.
+    const partial = view({
+      sourceRequirementIds: ["r-2"],
+      sourceRequirementCount: 2,
+      sourceProjectId: "proj-1",
+      statement: '2 chosen requirements of project "Checkout"',
+    });
+    expect(hostPickerHref(partial)).toBeNull();
+    expect(
+      hostPickerHref({ ...partial, sourceRequirementIds: [], sourceRequirementCount: 1 })!,
+    ).toBeNull();
+    // Every one visible: the link re-opens the set.
+    expect(
+      hostPickerHref({
+        ...partial,
+        sourceRequirementIds: ["r-2", "r-1"],
+        sourceRequirementCount: 2,
+      })!,
+    ).toContain("requirementIds=r-2&requirementIds=r-1");
+  });
+
   it("a check of one requirement or a typed statement is carried as before", () => {
-    const typed = new URL(hostPickerHref(view({ sourceRequirementIds: [] })), "http://x");
+    const typed = new URL(hostPickerHref(view({ sourceRequirementIds: [] }))!, "http://x");
     expect(typed.searchParams.has("requirementIds")).toBe(false);
     expect(typed.searchParams.get("statement")).toBe(view().statement);
   });

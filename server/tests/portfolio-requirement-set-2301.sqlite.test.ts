@@ -240,6 +240,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         scope: "all-accessible",
       });
       expect(unreadable.status).toBe(404);
+      // Worded for a set, the same whichever requirement it was.
+      expect(unreadable.body.error.message).toBe("One or more chosen requirements were not found");
       for (const other of ["req-nope-2301", R_DELETED]) {
         const res = await post("ana", {
           requirementIds: [R_APPROVED, other],

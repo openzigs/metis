@@ -489,6 +489,12 @@ export interface PortfolioAssessmentView extends PortfolioAssessment {
    * they stay in the verdict. Empty when none was.
    */
   neverAnalysed?: string[];
+  /**
+   * #2301 — how many requirements a chosen set holds. `sourceRequirementIds`
+   * names only those whose sources the reader can see now, so fewer ids than
+   * this means the set is not the reader's to re-open.
+   */
+  sourceRequirementCount?: number;
 }
 
 /** One row of `GET /api/portfolio-assessments`. */

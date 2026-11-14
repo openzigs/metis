@@ -434,10 +434,14 @@ function documentTitleOf(statement: string): string {
  * the host picker. A requirement it started from is carried by id (its title
  * is the statement's first line), and (#2272) a document by id with its title;
  * a typed statement is carried when it fits. #2301 — a chosen set of
- * requirements by every id, with its statement as the title. #2272 — every product a
- * product-scoped check chose is carried.
+ * requirements by every id, with its statement as the title — and null, no
+ * link, when the set holds a requirement this reader cannot see (the view
+ * names fewer ids than it counts): re-opening it would only be refused.
+ * #2272 — every product a product-scoped check chose is carried.
  */
-export function hostPickerHref(view: PortfolioAssessmentView): string {
+export function hostPickerHref(view: PortfolioAssessmentView): string | null {
+  const setIds = view.sourceRequirementIds ?? [];
+  const setSize = Math.max(view.sourceRequirementCount ?? 0, setIds.length);
   const params = new URLSearchParams();
   if (view.sourceRequirementId) {
     params.set("requirementId", view.sourceRequirementId);
@@ -445,9 +449,11 @@ export function hostPickerHref(view: PortfolioAssessmentView): string {
   } else if (view.sourceDocumentId) {
     params.set("documentId", view.sourceDocumentId);
     params.set("title", documentTitleOf(view.statement).slice(0, 200));
-  } else if ((view.sourceRequirementIds?.length ?? 0) > 0) {
-    // #2301 — a chosen set of requirements is re-opened on the same set.
-    for (const id of view.sourceRequirementIds ?? []) params.append("requirementIds", id);
+  } else if (setSize > 0) {
+    // #2301 — a chosen set of requirements is re-opened on the same set, and
+    // only by a reader who can see every one of it.
+    if (setIds.length < setSize) return null;
+    for (const id of setIds) params.append("requirementIds", id);
     params.set("title", view.statement.split("\n", 1)[0].slice(0, 200));
   } else if (view.statement.length <= HOST_LINK_STATEMENT_MAX) {
     params.set("statement", view.statement);

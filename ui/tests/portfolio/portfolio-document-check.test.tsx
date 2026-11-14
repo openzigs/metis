@@ -331,7 +331,7 @@ describe("#2272 — links carry a document and every chosen product", () => {
           scope: "product",
           productIds: ["p-billing", "p-crm"],
         }),
-      ),
+      )!,
       "http://x",
     );
     expect(url.searchParams.get("documentId")).toBe("doc-1");
@@ -347,7 +347,7 @@ describe("#2272 — links carry a document and every chosen product", () => {
       'Requirements read from "The "Pay" FRD": No requirement was found in the document.',
     ]) {
       const url = new URL(
-        hostPickerHref(view({ sourceDocumentId: "doc-1", statement })),
+        hostPickerHref(view({ sourceDocumentId: "doc-1", statement }))!,
         "http://x",
       );
       expect(url.searchParams.get("title")).toBe('The "Pay" FRD');
@@ -356,7 +356,7 @@ describe("#2272 — links carry a document and every chosen product", () => {
 
   it("names a document it cannot read the title of plainly", () => {
     const url = new URL(
-      hostPickerHref(view({ sourceDocumentId: "doc-1", statement: "Something else" })),
+      hostPickerHref(view({ sourceDocumentId: "doc-1", statement: "Something else" }))!,
       "http://x",
     );
     expect(url.searchParams.get("title")).toBe("Selected document");

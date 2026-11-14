@@ -1486,16 +1486,19 @@ export async function loadReadableSourceRequirements(
     },
   });
   const byId = new Map(rows.map((r) => [r.id, r]));
-  const notFound = () => new AppError(404, "NOT_FOUND", "Requirement not found");
+  // One message for every cause, naming no requirement: which one failed is not told.
+  const notFound = () =>
+    new AppError(404, "NOT_FOUND", "One or more chosen requirements were not found");
   if (requirementIds.some((id) => !byId.has(id))) throw notFound();
-  for (const projectId of new Set(rows.map((r) => r.projectId))) {
-    if (!(await canAccessProjectDiscussions({ id: user.userId, role: user.role }, projectId))) {
-      throw notFound();
-    }
-  }
+  const projects = new Set(rows.map((r) => r.projectId));
+  const readable = await Promise.all(
+    [...projects].map((projectId) =>
+      canAccessProjectDiscussions({ id: user.userId, role: user.role }, projectId),
+    ),
+  );
+  if (readable.some((ok) => !ok)) throw notFound();
   // #2447 — nor one resting on a source the starter cannot see.
   if ((await restrictedIds(userSourceReader(user.userId), rows)).size > 0) throw notFound();
-  const projects = new Set(rows.map((r) => r.projectId));
   if (projects.size > 1) {
     throw new AppError(
       400,

@@ -128,8 +128,14 @@ export async function resolveReaderAccess(user: AuthPayload): Promise<ReaderAcce
 async function hiddenSource(
   access: ReaderAccess,
   a: PortfolioAssessment,
-): Promise<{ all: boolean; any: boolean; hides: (text: string) => boolean }> {
-  const none = { all: false, any: false, hides: () => false };
+): Promise<{
+  all: boolean;
+  any: boolean;
+  hides: (text: string) => boolean;
+  /** #2301 — the ids of the source requirements resting on a source the reader cannot see. */
+  ids: ReadonlySet<string>;
+}> {
+  const none = { all: false, any: false, hides: () => false, ids: new Set<string>() };
   if (access.admin) return none;
   const where = a.sourceRequirementId
     ? { id: a.sourceRequirementId }
@@ -146,7 +152,7 @@ async function hiddenSource(
   });
   const hidden = await restrictedIds(userSourceReader(access.user.userId), rows);
   if (hidden.size === 0) return none;
-  if (a.sourceRequirementId) return { all: true, any: true, hides: () => true };
+  if (a.sourceRequirementId) return { all: true, any: true, hides: () => true, ids: hidden };
   const visible = rows
     .filter((r) => !hidden.has(r.id))
     .map((r) => normalized(`${r.title}: ${r.body}`));
@@ -160,7 +166,7 @@ async function hiddenSource(
   const any =
     criteria.length === 0 ||
     [...criteria, ...a.notChecked.filter(carriesText).map((n) => n.text)].some(hides);
-  return { all: false, any, hides };
+  return { all: false, any, hides, ids: hidden };
 }
 
 /** Whitespace collapsed, as a not-checked entry's opening is written (`oneLine`). */
@@ -657,6 +663,11 @@ export async function viewPortfolioAssessment(
   return {
     ...a,
     statement: hidden.all ? RESTRICTED_SOURCE_TITLE : a.statement,
+    // #2301 — a chosen set names only the requirements this reader can see; of
+    // the rest only how many there are, so the page can tell the set is not
+    // all theirs to re-open.
+    sourceRequirementIds: (a.sourceRequirementIds ?? []).filter((id) => !hidden.ids.has(id)),
+    sourceRequirementCount: (a.sourceRequirementIds ?? []).length,
     notChecked: a.notChecked.map((n) =>
       hidden.all || (carriesText(n) && fromHidden(n.text))
         ? { ...n, text: RESTRICTED_SOURCE_TITLE }

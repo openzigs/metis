@@ -232,7 +232,7 @@ describe("impactNeedsHost", () => {
 
 describe("hostPickerHref", () => {
   it("carries a typed statement to the picker", () => {
-    const href = hostPickerHref(nothingCovers());
+    const href = hostPickerHref(nothingCovers())!;
     const url = new URL(href, "http://x");
     expect(url.pathname).toBe("/portfolio");
     expect(url.hash).toBe("#portfolio-host");
@@ -246,7 +246,7 @@ describe("hostPickerHref", () => {
     const url = new URL(
       hostPickerHref(
         nothingCovers({ sourceRequirementId: "req-1", statement: "Phone numbers\n\nBody text" }),
-      ),
+      )!,
       "http://x",
     );
     expect(url.searchParams.get("requirementId")).toBe("req-1");
@@ -262,13 +262,13 @@ describe("hostPickerHref", () => {
           scope: "product",
           productIds: ["p-orders"],
         }),
-      ),
+      )!,
       "http://x",
     );
     expect(url.searchParams.has("statement")).toBe(false);
     expect(url.searchParams.get("productId")).toBe("p-orders");
     expect(
-      hostPickerHref(nothingCovers({ statement: "x".repeat(HOST_LINK_STATEMENT_MAX) })),
+      hostPickerHref(nothingCovers({ statement: "x".repeat(HOST_LINK_STATEMENT_MAX) }))!,
     ).toContain("statement=");
   });
 });
@@ -302,7 +302,7 @@ describe("the check page", () => {
     expect(screen.queryByTestId("portfolio-impact-none")).toBeNull();
     expect(
       within(note).getByRole("link", { name: "choose the product that will build it" }),
-    ).toHaveAttribute("href", hostPickerHref(nothingCovers()));
+    ).toHaveAttribute("href", hostPickerHref(nothingCovers())!);
     expect(await axeViolations(container)).toEqual([]);
   });
 

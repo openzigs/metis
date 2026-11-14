@@ -1106,12 +1106,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             RESTRICTED_SOURCE_TITLE,
             "Customers can pay: Customers can pay — body",
           ]);
-          expect(bob!.sourceRequirementIds).toEqual(["req-2447-open", "req-2447-secret"]);
+          // Nor its id: Bob is told only that the set holds one more he cannot see.
+          expect(bob!.sourceRequirementIds).toEqual(["req-2447-open"]);
+          expect(bob!.sourceRequirementCount).toBe(2);
+          expect(JSON.stringify(bob)).not.toContain("req-2447-secret");
           const root = await viewPortfolioAssessment(
             await resolveReaderAccess(payload("root")),
             "pa-2301-set",
           );
           expect(JSON.stringify(root)).toContain(SECRET);
+          expect(root!.sourceRequirementIds).toEqual(["req-2447-open", "req-2447-secret"]);
+          expect(root!.sourceRequirementCount).toBe(2);
         } finally {
           await db.portfolioAssessment.deleteMany({ where: { id: "pa-2301-set" } });
         }
