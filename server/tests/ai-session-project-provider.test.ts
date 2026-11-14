@@ -301,7 +301,7 @@ describe("POST /api/ai/sessions scope metadata (#607)", () => {
     });
   });
 
-  it("refuses (404) a multi-product scope naming a project the caller cannot reach, creating nothing", async () => {
+  it("degrades a multi-product scope naming a project the caller cannot reach, binding none of it (#2440)", async () => {
     seed("proj_a");
     projectsById.set("proj_x", {
       id: "proj_x",
@@ -315,8 +315,11 @@ describe("POST /api/ai/sessions scope metadata (#607)", () => {
         .post("/api/ai/sessions")
         .send({ title: "Demo", projectIds: ["proj_a", "proj_x"] }),
     );
-    expect(res.status).toBe(404);
-    expect(sessions).toHaveLength(0);
+    expect(res.status).toBe(201);
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].projectId).toBeNull();
+    expect(sessions[0].scopeProjectIds).toBeNull();
+    expect(res.body.data.scope).toMatchObject({ degraded: true, reason: "stale-project" });
   });
 
   it("scopes a session to a workspace the caller is in", async () => {
@@ -437,5 +440,85 @@ describe("POST /api/ai/sessions scope metadata (#607)", () => {
       appliedWorkspaceId: null,
       degraded: false,
     });
+  });
+});
+
+// #2440 — session create must not tell a caller whether a project id it holds
+// exists: an unknown id and another workspace's id give the same answer, on the
+// single-project path and the multi-product path alike.
+describe("POST /api/ai/sessions does not reveal whether an unreachable project exists (#2440)", () => {
+  const seedForeign = (id: string, extra: Partial<ProjectRow> = {}) =>
+    projectsById.set(id, {
+      id,
+      aiProviderId: "bedrock-gateway",
+      aiModel: "foreign-model",
+      deletedAt: null,
+      workspaceId: "w-other",
+      ...extra,
+    });
+  const seedMine = (id: string) =>
+    projectsById.set(id, { id, aiProviderId: null, aiModel: null, deletedAt: null });
+
+  /** The answer, with the per-row fields and the echoed request ids masked. */
+  async function answer(body: Record<string, unknown>) {
+    const res = await auth(request(makeApp()).post("/api/ai/sessions").send(body));
+    const data = res.body.data ?? {};
+    const { id: _id, createdAt: _c, updatedAt: _u, ...session } = data.session ?? {};
+    const { requestedProjectIds: _r, ...scope } = data.scope ?? {};
+    return { status: res.status, error: res.body.error ?? null, session, scope };
+  }
+
+  const shapes: Array<{ name: string; body: (id: string) => Record<string, unknown> }> = [
+    { name: "projectId", body: (id) => ({ title: "Demo", projectId: id }) },
+    { name: "a single projectIds entry", body: (id) => ({ title: "Demo", projectIds: [id] }) },
+    {
+      name: "a multi-product projectIds scope",
+      body: (id) => ({ title: "Demo", projectIds: ["proj_a", id] }),
+    },
+  ];
+  for (const shape of shapes) {
+    it(`answers an unknown id and another workspace's id identically via ${shape.name}`, async () => {
+      seedMine("proj_a");
+      seedForeign("proj_foreign");
+      const unknown = await answer(shape.body("proj_never_existed"));
+      const foreign = await answer(shape.body("proj_foreign"));
+      expect(foreign).toEqual(unknown);
+      expect(foreign.status).toBe(201);
+      expect(foreign.scope).toMatchObject({ degraded: true, reason: "stale-project" });
+      // #304 still holds: nothing of the foreign project is bound — not the
+      // project, not its scope, not its provider or model override.
+      expect(sessions).toHaveLength(2);
+      for (const row of sessions) {
+        expect(row.projectId).toBeNull();
+        expect(row.scopeProjectIds).toBeNull();
+        expect(row.provider).toBe("offline-stub");
+        expect(row.model).not.toBe("foreign-model");
+      }
+    });
+  }
+
+  it("answers a soft-deleted project of another workspace the same as an unknown id", async () => {
+    seedForeign("proj_foreign_gone", { deletedAt: new Date() });
+    const unknown = await answer({ title: "Demo", projectId: "proj_never_existed" });
+    const gone = await answer({ title: "Demo", projectId: "proj_foreign_gone" });
+    expect(gone).toEqual(unknown);
+  });
+
+  it("does not read the project row (provider / model override) of an unreachable project", async () => {
+    seedForeign("proj_foreign");
+    const { prisma } = await import("../src/lib/prisma.js");
+    await answer({ title: "Demo", projectId: "proj_foreign" });
+    expect(prisma.project.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("still fails loudly (500) when the access read itself errors, creating nothing", async () => {
+    seedMine("proj_a");
+    const { prisma } = await import("../src/lib/prisma.js");
+    vi.mocked(prisma.project.findUnique).mockRejectedValueOnce(new Error("db down"));
+    const res = await auth(
+      request(makeApp()).post("/api/ai/sessions").send({ title: "Demo", projectId: "proj_a" }),
+    );
+    expect(res.status).toBe(500);
+    expect(sessions).toHaveLength(0);
   });
 });

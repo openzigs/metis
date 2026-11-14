@@ -600,6 +600,25 @@ function userIdOrThrow(req: Request): string {
   return id;
 }
 
+/**
+ * #2440 — {@link assertLiveProjectAccess} as a yes/no: false for exactly the
+ * refusals it answers with one 404 (unknown, soft-deleted, or another
+ * workspace's project), so session create can treat them all alike. Any other
+ * error (a database failure) still propagates.
+ */
+async function canReachLiveProject(
+  user: NonNullable<Request["user"]>,
+  projectId: string,
+): Promise<boolean> {
+  try {
+    await assertLiveProjectAccess(user, projectId);
+    return true;
+  } catch (err) {
+    if (err instanceof AppError && err.statusCode === 404) return false;
+    throw err;
+  }
+}
+
 /** Epic #164 — fetch the project's current safetyMode (cached per request). */
 async function loadSafetyMode(projectId: string): Promise<"strict" | "standard" | "off"> {
   const row = await prisma.project.findUnique({
@@ -1458,15 +1477,18 @@ export function aiRouter(): Router {
     //  - #2238 — 2+ ids: a multi-product session. It binds no single project
     //    (the per-project provider / model override below reads exactly one
     //    row), keeps the ids in `scopeProjectIds`, and every turn searches each
-    //    of them. The caller must reach every one: no access reads as 404
-    //    NOT_FOUND and nothing is created (#304);
+    //    of them. The caller must reach every one;
     //  - #2238 — a `workspaceId`: a session scoped to that workspace's projects,
     //    resolved every turn. A non-member gets 404 and nothing is created.
-    // A stale id that no longer resolves (deleted project, reset local DB)
-    // degrades to an unscoped session with reason "stale-project" rather than
-    // being handed to Prisma and surfacing as a raw foreign-key error (HTTP
-    // 500) — reported back to the client explicitly (issue #607: never
-    // silently drop a requested scope).
+    // A project id the caller cannot use — gone (deleted, reset local DB) OR in
+    // a workspace they are not in — degrades to an unscoped session with reason
+    // "stale-project" rather than being handed to Prisma and surfacing as a raw
+    // foreign-key error (HTTP 500), reported back to the client explicitly
+    // (#607: never silently drop a requested scope). #2440 — the two answer
+    // the SAME degraded 201, so a caller holding an id cannot learn whether it
+    // exists; and #304 still holds: the session never binds a project the
+    // caller cannot reach, so it never reaches that workspace's knowledge base,
+    // code graph, skills or provider.
     const requestedProjectIds: string[] = parsed.data.projectId
       ? [parsed.data.projectId]
       : [...new Set(parsed.data.projectIds ?? [])];
@@ -1482,18 +1504,22 @@ export function aiRouter(): Router {
       requestedProjectIds.length === 1 ? requestedProjectIds[0] : null;
     let scopeProjectIds: string[] | null = null;
     if (requestedProjectIds.length > 1) {
+      // Every id is checked (no short-circuit), so an unknown id and an
+      // unreachable one cost the same reads.
+      const reachable: boolean[] = [];
+      for (const id of requestedProjectIds)
+        reachable.push(await canReachLiveProject(req.user!, id));
       const live = await prisma.project.findMany({
         where: { id: { in: requestedProjectIds }, deletedAt: null },
         select: { id: true },
       });
-      if (live.length !== requestedProjectIds.length) {
+      if (reachable.includes(false) || live.length !== requestedProjectIds.length) {
         log.warn("Session project scope not found; creating unscoped session", {
           userId,
           requestedProjectIds,
         });
         scopeDegradationReason = "stale-project";
       } else {
-        for (const id of requestedProjectIds) await assertLiveProjectAccess(req.user!, id);
         scopeProjectIds = requestedProjectIds;
       }
     }
@@ -1503,10 +1529,16 @@ export function aiRouter(): Router {
       await listMemberProjectsInWorkspace({ id: userId, role: req.user!.role }, scopeWorkspaceId);
     }
     if (effectiveProjectId) {
-      const project = await prisma.project.findFirst({
-        where: { id: effectiveProjectId, deletedAt: null },
-        select: { aiProviderId: true, aiModel: true },
-      });
+      // #304 / #2440 — reachability first, from the same single read whether
+      // the id is unknown or in another workspace; then the live row (an
+      // admin reaches a soft-deleted project, which still degrades here).
+      const reachable = await canReachLiveProject(req.user!, effectiveProjectId);
+      const project = reachable
+        ? await prisma.project.findFirst({
+            where: { id: effectiveProjectId, deletedAt: null },
+            select: { aiProviderId: true, aiModel: true },
+          })
+        : null;
       if (!project) {
         log.warn("Session project scope not found; creating unscoped session", {
           userId,
@@ -1515,11 +1547,6 @@ export function aiRouter(): Router {
         effectiveProjectId = null;
         scopeDegradationReason = "stale-project";
       } else {
-        // #304 — the project exists; the caller must also be able to reach it
-        // (the project routes' own check). No access reads as 404 NOT_FOUND
-        // and nothing is created — never a session bound to another
-        // workspace's knowledge base, code graph, skills or provider.
-        await assertLiveProjectAccess(req.user!, effectiveProjectId);
         if (project.aiProviderId && isRetiredProviderKey(project.aiProviderId)) {
           // #149 — a project still overriding to a removed provider. Refused by
           // name: binding the session to it would create a chat that can never
