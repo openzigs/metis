@@ -5120,8 +5120,12 @@ docs/DOCUMENT_UNDERSTANDING_BASELINE.md):
 inactive requester fails the agent), and each document's `aclSubjects` checked with
 `isVisibleTo`; a document the requester may not see is reported exactly as an id that is
 missing or not ready, and neither sends the agent back to retrieval (#2297). The denial writes
-an `analysis.document_reader.acl_denied` audit row, and an admin's read of a restricted
-document no subject names them in an `analysis.document_reader.acl_bypass` row. A scheduled
+an `analysis.document_reader.acl_denied` audit row (with none selected, only for the withheld
+uploads ranked within the bound, which would have been read had the requester seen them,
+#2321), and an `analysis.document_reader.acl_bypass` row names each restricted document no
+subject names an admin in that the admin is given only because they are an admin: one read,
+and, with none selected, one only listed as left out (its filename reaches the coverage
+report). A scheduled
 run (`SYSTEM_ACTOR_ID`) reads as no requester: unrestricted documents only. The operator's notes reach every
 statements call as fenced data (#1237). It loads the selected documents (or, with none
 selected, the `READER_IMPLICIT_MAX_DOCUMENTS` (5) most recently uploaded ones the requester may
@@ -5131,7 +5135,11 @@ business rules, each with its document and stored chunk), one cited finding per 
 and the full `reading`. The coverage report goes on the capability record
 (`AnalysisCapability.documentReading`) and the results page renders it
 (`DocumentCoveragePanel`). Retrieval stays for the code agent and the other specialists; if no
-selected document's file can be loaded or parsed, the document agent retrieves as before.
+selected document's file can be loaded or parsed, the document agent retrieves as before. With
+none selected it never retrieves (#2321): a project with no ready upload and one whose every
+upload the requester may not see give the same empty reading ("No document was read"), so the
+outcome says nothing of documents the requester cannot see, and retrieval, which checks no
+document ACL, never reads a withheld one in their place.
 
 Impact Analysis (#2231) reads a document source from its stored file, parsed as ingest parses
 it (`impact-analysis/document-source.ts` `loadImpactDocumentText`); only when the file cannot

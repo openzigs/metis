@@ -3637,8 +3637,8 @@ export class AnalysisOrchestrator {
    * #2230 — the document agent through the document reader: the selected
    * documents (with none selected, the most recent ready uploads, at most
    * `READER_IMPLICIT_MAX_DOCUMENTS`, #2262) read in full. Records the coverage
-   * report on the run's capability. `null` when no document could be loaded,
-   * so the caller retrieves instead.
+   * report on the run's capability. `null` when no selected document could be
+   * loaded, so the caller retrieves instead; #2321 — never with none selected.
    *
    * #2262 — only documents the requester may see are read. A requester who is
    * no longer active fails the agent (`InactiveAclActorError`): never read
