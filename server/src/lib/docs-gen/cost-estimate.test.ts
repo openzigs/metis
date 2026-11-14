@@ -7,10 +7,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const codeSymbolFindMany = vi.hoisted(() => vi.fn());
 const factCacheFindMany = vi.hoisted(() => vi.fn());
+const codeGraphFindMany = vi.hoisted(() => vi.fn());
 vi.mock("../prisma.js", () => ({
   prisma: {
     codeSymbol: { findMany: codeSymbolFindMany },
     docsGenFactCache: { findMany: factCacheFindMany },
+    codeGraph: { findMany: codeGraphFindMany },
   },
 }));
 
@@ -21,7 +23,9 @@ vi.mock("./phase1-chunking.js", async (importOriginal) => ({
 }));
 
 import {
+  COST_PLAN_TTL_MS,
   RANGE_HIGH_FACTOR,
+  clearCostPlanCache,
   RANGE_LOW_FACTOR,
   charsPerToken,
   estimateBrdGenerationCost,
@@ -55,6 +59,10 @@ beforeEach(() => {
   includeTests.value = true;
   codeSymbolFindMany.mockReset();
   factCacheFindMany.mockReset().mockResolvedValue([]);
+  codeGraphFindMany
+    .mockReset()
+    .mockResolvedValue([{ id: "graph-1", updatedAt: new Date(0), symbolCount: 9 }]);
+  clearCostPlanCache();
 });
 
 afterEach(() => {
@@ -256,9 +264,10 @@ describe("loadCostPlanModules", () => {
       { lines: 200, cached: false },
       { lines: 50, cached: true },
     ]);
-    // Scoped to the project (and the repository's graph).
+    // Scoped to the project: the plan is read once per project and narrowed
+    // to the repository's graph after grouping.
     expect(codeSymbolFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { projectId: "proj-1", codeGraphId: "graph-1" } }),
+      expect.objectContaining({ where: { projectId: "proj-1" } }),
     );
     // Only the project's own cache rows, for the model and prompt Phase 1 would use.
     expect(factCacheFindMany).toHaveBeenCalledWith(
@@ -303,6 +312,127 @@ describe("loadCostPlanModules", () => {
     });
     expect(modules).toEqual([]);
     expect(factCacheFindMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("loadCostPlanModules — several repositories (#2189 review)", () => {
+  const inGraph = (codeGraphId: string, s: ReturnType<typeof sym>) => ({
+    ...s,
+    id: `${codeGraphId}:${s.id}`,
+    codeGraphId,
+  });
+  /** Both repositories have a `src/orders`; only graph-1 has `src/billing`. */
+  const TWO_REPOS = [
+    ...SYMBOLS.slice(0, 3).map((s) => inGraph("graph-1", s)),
+    ...SYMBOLS.slice(5, 8).map((s) => inGraph("graph-1", s)),
+    ...SYMBOLS.slice(5, 8).map((s) => inGraph("graph-2", { ...s, endLine: s.endLine + 100 })),
+  ];
+  const load = (codeGraphId?: string) =>
+    loadCostPlanModules({
+      projectId: "proj-1",
+      ...(codeGraphId ? { codeGraphId } : {}),
+      phase1Model: "m",
+      phase1PromptVersion: 5,
+    });
+
+  beforeEach(() => {
+    codeGraphFindMany.mockResolvedValue([
+      { id: "graph-1", updatedAt: new Date(0), symbolCount: 6 },
+      { id: "graph-2", updatedAt: new Date(0), symbolCount: 3 },
+    ]);
+  });
+
+  it("does not count a directory cached when another repository has the same one", async () => {
+    codeSymbolFindMany.mockResolvedValue(TWO_REPOS);
+    // The cache row names no repository: it may be either repository's src/orders.
+    factCacheFindMany.mockResolvedValue([
+      { modulePath: "src/orders" },
+      { modulePath: "src/billing" },
+    ]);
+    expect(await load("graph-1")).toEqual([
+      { lines: 120, cached: true },
+      { lines: 50, cached: false },
+    ]);
+    expect(await load("graph-2")).toEqual([{ lines: 150, cached: false }]);
+    expect(await load()).toEqual([
+      { lines: 120, cached: true },
+      { lines: 50, cached: false },
+      { lines: 150, cached: false },
+    ]);
+  });
+
+  it("a repository-scoped estimate lists only that repository's modules", async () => {
+    codeSymbolFindMany.mockResolvedValue(TWO_REPOS);
+    expect((await load("graph-2")).map((m) => m.lines)).toEqual([150]);
+  });
+});
+
+describe("loadCostPlanModules — the plan is read once per project and index (#2189 review)", () => {
+  const load = (over: Partial<Parameters<typeof loadCostPlanModules>[0]> = {}) =>
+    loadCostPlanModules({ projectId: "proj-1", phase1Model: "m", phase1PromptVersion: 5, ...over });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("reuses the symbols across repeated estimates, path edits and repositories", async () => {
+    codeSymbolFindMany.mockResolvedValue(SYMBOLS);
+    const first = await load();
+    expect(await load()).toEqual(first);
+    expect(await load({ pathPrefixes: ["src/orders"] })).toEqual([{ lines: 50, cached: false }]);
+    expect(await load({ codeGraphId: "graph-1" })).toEqual(first);
+    expect(codeSymbolFindMany).toHaveBeenCalledTimes(1);
+    // The fact cache changes during a run, so it is read every time.
+    expect(factCacheFindMany).toHaveBeenCalledTimes(4);
+  });
+
+  it("selects only the columns the grouping reads", async () => {
+    codeSymbolFindMany.mockResolvedValue(SYMBOLS);
+    await load();
+    const select = codeSymbolFindMany.mock.calls[0]![0].select as Record<string, boolean>;
+    expect(Object.keys(select).sort()).toEqual(
+      ["codeGraphId", "endLine", "filePath", "kind", "language"].sort(),
+    );
+  });
+
+  it("concurrent estimates share one read", async () => {
+    codeSymbolFindMany.mockResolvedValue(SYMBOLS);
+    await Promise.all([load(), load(), load({ pathPrefixes: ["src/orders"] })]);
+    expect(codeSymbolFindMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads again once the project's index changes", async () => {
+    codeSymbolFindMany.mockResolvedValue(SYMBOLS);
+    await load();
+    codeGraphFindMany.mockResolvedValue([
+      { id: "graph-1", updatedAt: new Date(1), symbolCount: 9 },
+    ]);
+    await load();
+    expect(codeSymbolFindMany).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads again after the time-to-live, and for another project or test policy", async () => {
+    vi.useFakeTimers();
+    codeSymbolFindMany.mockResolvedValue(SYMBOLS);
+    await load();
+    vi.advanceTimersByTime(COST_PLAN_TTL_MS - 1);
+    await load();
+    expect(codeSymbolFindMany).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(2);
+    await load();
+    expect(codeSymbolFindMany).toHaveBeenCalledTimes(2);
+    await load({ projectId: "proj-2" });
+    expect(codeSymbolFindMany).toHaveBeenCalledTimes(3);
+    includeTests.value = false;
+    await load();
+    expect(codeSymbolFindMany).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not keep a failed read", async () => {
+    codeSymbolFindMany.mockRejectedValueOnce(new Error("db down")).mockResolvedValue(SYMBOLS);
+    await expect(load()).rejects.toThrow("db down");
+    expect(await load()).toHaveLength(2);
+    expect(codeSymbolFindMany).toHaveBeenCalledTimes(2);
   });
 });
 

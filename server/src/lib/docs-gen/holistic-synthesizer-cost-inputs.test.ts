@@ -26,7 +26,18 @@ vi.mock("../ai/index.js", () => ({
   loadAIConfig: () => loadAIConfigMock(),
 }));
 
-import { resolveDocsGenCostInputs } from "./holistic-synthesizer.js";
+const logged = vi.hoisted(() => ({
+  info: vi.fn(),
+  warn: vi.fn(),
+  debug: vi.fn(),
+  error: vi.fn(),
+}));
+vi.mock("../logger.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../logger.js")>()),
+  createChildLogger: () => logged,
+}));
+
+import { buildDocsGenProvider, resolveDocsGenCostInputs } from "./holistic-synthesizer.js";
 
 const KEYS = [
   "ANTHROPIC_MODEL",
@@ -43,6 +54,7 @@ const KEYS = [
 beforeEach(() => {
   for (const k of KEYS) vi.stubEnv(k, undefined as unknown as string);
   buildProviderMock.mockClear();
+  for (const fn of Object.values(logged)) fn.mockClear();
   loadAIConfigMock.mockReturnValue({
     provider: "anthropic",
     model: "claude-sonnet-5-5",
@@ -71,5 +83,19 @@ describe("resolveDocsGenCostInputs (#2189)", () => {
     });
     expect(inputs.factsCharCap).toBe(90_000);
     expect(inputs.phase1FactsMaxOutputTokens).toBeGreaterThan(0);
+  });
+
+  it("logs the providers it resolves at debug, never as a generation starting (review nit)", () => {
+    resolveDocsGenCostInputs();
+    const loud = [...logged.info.mock.calls, ...logged.warn.mock.calls].map((c) => String(c[0]));
+    expect(loud.filter((m) => /for docs-gen|falling back/.test(m))).toEqual([]);
+    expect(logged.debug.mock.calls.map((c) => String(c[0]))).toContain(
+      "Using native AnthropicProvider for docs-gen",
+    );
+    // A real run still says which provider it uses, at info.
+    buildDocsGenProvider(1, 1024);
+    expect(logged.info.mock.calls.map((c) => String(c[0]))).toContain(
+      "Using native AnthropicProvider for docs-gen",
+    );
   });
 });

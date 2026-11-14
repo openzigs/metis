@@ -1509,7 +1509,8 @@ function GenerateForm({
       {estimateEnabled && (
         <CostEstimateNote
           estimate={costEstimateQuery.data}
-          isLoading={costEstimateQuery.isLoading}
+          // Mid-debounce the range shown is the previous scope's: show it as loading.
+          isLoading={costEstimateQuery.isLoading || pathScope.trim() !== estimatePathScope}
           isError={costEstimateQuery.isError}
         />
       )}

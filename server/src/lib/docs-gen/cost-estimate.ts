@@ -46,7 +46,12 @@
  *
  * WHAT IT DOES NOT COUNT. Directories holding only `.sql` files, which the
  * generator finds on disk at run time; web-research grounding; a Phase-1
- * cache entry whose source has since changed (it is counted as cached); hybrid
+ * cache entry whose source has since changed (it is counted as cached), and a
+ * module of several chunks with only some of them cached (counted as cached:
+ * a cache row names its module's directory, not its chunk or repository). A
+ * directory two of the project's repositories share is never counted cached,
+ * since its row may be the other repository's; a row left by a repository the
+ * project no longer has can still mark a directory cached; hybrid
  * per-section routing (`DOCS_GEN_HYBRID_ROUTING`), which is priced as if every
  * section ran on the primary Phase-2 model; and prompt-cache discounts, so a
  * provider that caches prompts lands toward the low end.
@@ -342,6 +347,7 @@ export function moduleSourceLines(
   return lines;
 }
 
+/** The symbol columns the grouping and the line count read; the rest of the row is not loaded. */
 type CostPlanSymbol = {
   id: string;
   qualifiedName: string;
@@ -353,6 +359,101 @@ type CostPlanSymbol = {
   codeGraphId: string;
 };
 
+/** A module of the project's plan, before the request's repository and path scope. */
+type PlannedModule = { dir: string; codeGraphId: string; syms: CostPlanSymbol[] };
+
+/** The project's modules, grouped once per project, test policy and index. */
+interface ProjectPlan {
+  modules: PlannedModule[];
+  /**
+   * Module directories more than one repository of the project has. A fact
+   * cache row names its module's directory but not its repository, so a row
+   * for one of these may be another repository's: never counted as cached.
+   */
+  sharedDirs: ReadonlySet<string>;
+}
+
+/**
+ * How long a project's grouped plan is reused. The form asks for an estimate
+ * on open, on a repository change and on every debounced path edit; the
+ * symbols behind it change only when the project is re-indexed, which also
+ * changes the key. The fact cache is still read on every estimate: a run
+ * fills it.
+ */
+export const COST_PLAN_TTL_MS = 60_000;
+const COST_PLAN_CACHE_MAX = 32;
+const projectPlans = new Map<string, { at: number; plan: Promise<ProjectPlan> }>();
+
+/** Forget every cached plan (tests). */
+export function clearCostPlanCache(): void {
+  projectPlans.clear();
+}
+
+async function readProjectPlan(projectId: string, includeTests: boolean): Promise<ProjectPlan> {
+  const rows = await prisma.codeSymbol.findMany({
+    where: { projectId },
+    select: { kind: true, language: true, filePath: true, endLine: true, codeGraphId: true },
+  });
+  const symbols: CostPlanSymbol[] = [];
+  for (const r of rows) {
+    if (isJunkSourcePath(r.filePath)) continue;
+    // The grouping's other columns are not read by its rules (module-grouping.ts).
+    symbols.push({ ...r, id: "", qualifiedName: "", startLine: 0 });
+  }
+  const grouped = groupSymbolsIntoModules(
+    symbols,
+    (s) => ({ codeGraphId: s.codeGraphId, repoConnectorId: null }),
+    (repository, dir) => `${repository?.codeGraphId ?? ""}\u0000${dir}`,
+  );
+  const graphsOfDir = new Map<string, Set<string>>();
+  for (const m of grouped) {
+    const graphs = graphsOfDir.get(m.dir) ?? new Set<string>();
+    graphs.add(m.repository?.codeGraphId ?? "");
+    graphsOfDir.set(m.dir, graphs);
+  }
+  const kept = includeTests ? grouped : excludeTestFiles(grouped).modules;
+  return {
+    modules: kept.map((m) => ({
+      dir: m.dir,
+      codeGraphId: m.repository?.codeGraphId ?? "",
+      syms: m.syms,
+    })),
+    sharedDirs: new Set([...graphsOfDir].filter(([, g]) => g.size > 1).map(([dir]) => dir)),
+  };
+}
+
+/**
+ * The project's plan, reused while its index is unchanged (for at most
+ * {@link COST_PLAN_TTL_MS}). Concurrent estimates share one read; a failed
+ * read is not kept.
+ */
+async function projectPlan(projectId: string): Promise<ProjectPlan> {
+  const includeTests = resolvePhase1IncludeTests();
+  const graphs = await prisma.codeGraph.findMany({
+    where: { projectId },
+    select: { id: true, updatedAt: true, symbolCount: true },
+    orderBy: { id: "asc" },
+  });
+  const key = JSON.stringify([
+    projectId,
+    includeTests,
+    graphs.map((g) => [g.id, g.updatedAt.getTime(), g.symbolCount]),
+  ]);
+  const now = Date.now();
+  const held = projectPlans.get(key);
+  if (held && now - held.at < COST_PLAN_TTL_MS) return held.plan;
+  for (const [k, v] of projectPlans) if (now - v.at >= COST_PLAN_TTL_MS) projectPlans.delete(k);
+  while (projectPlans.size >= COST_PLAN_CACHE_MAX) {
+    projectPlans.delete(projectPlans.keys().next().value!);
+  }
+  const plan = readProjectPlan(projectId, includeTests);
+  projectPlans.set(key, { at: now, plan });
+  plan.catch(() => {
+    if (projectPlans.get(key)?.plan === plan) projectPlans.delete(key);
+  });
+  return plan;
+}
+
 /** The scope's documentable modules: the generator's grouping, test policy and path scope. */
 export async function loadCostPlanModules(input: {
   projectId: string;
@@ -361,35 +462,16 @@ export async function loadCostPlanModules(input: {
   phase1Model: string;
   phase1PromptVersion: number;
 }): Promise<CostPlanModule[]> {
-  const where = {
-    projectId: input.projectId,
-    ...(input.codeGraphId ? { codeGraphId: input.codeGraphId } : {}),
-  };
-  const rows = (await prisma.codeSymbol.findMany({
-    where,
-    select: {
-      id: true,
-      qualifiedName: true,
-      kind: true,
-      language: true,
-      filePath: true,
-      startLine: true,
-      endLine: true,
-      codeGraphId: true,
-    },
-  })) as CostPlanSymbol[];
-  const symbols = rows.filter((s) => !isJunkSourcePath(s.filePath));
-  let modules = groupSymbolsIntoModules(
-    symbols,
-    (s) => ({ codeGraphId: s.codeGraphId, repoConnectorId: null }),
-    (repository, dir) => `${repository?.codeGraphId ?? ""}\u0000${dir}`,
+  const plan = await projectPlan(input.projectId);
+  const modules = plan.modules.filter(
+    (m) => !input.codeGraphId || m.codeGraphId === input.codeGraphId,
   );
-  if (!resolvePhase1IncludeTests()) modules = excludeTestFiles(modules).modules;
-  if (input.pathPrefixes?.length) {
+  if (input.pathPrefixes?.length && modules.length > 0) {
     try {
+      // Narrows `modules` in place (a copy: the cached plan is never changed).
       restrictToPathScope(input.pathPrefixes, {
         modules,
-        symbols,
+        symbols: [],
         meta: { totalFiles: 0, totalSymbols: 0 },
       });
     } catch (err) {
@@ -410,7 +492,10 @@ export async function loadCostPlanModules(input: {
     distinct: ["modulePath"],
   });
   const cached = new Set(cachedRows.map((r) => r.modulePath));
-  return modules.map((m) => ({ lines: moduleSourceLines(m.syms), cached: cached.has(m.dir) }));
+  return modules.map((m) => ({
+    lines: moduleSourceLines(m.syms),
+    cached: cached.has(m.dir) && !plan.sharedDirs.has(m.dir),
+  }));
 }
 
 /** The plan's run-wide settings, as the generator resolves them. */

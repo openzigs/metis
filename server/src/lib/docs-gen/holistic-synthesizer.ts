@@ -837,6 +837,8 @@ export function docsGenTuning(kind: DocsGenProviderKind, configModel: string): D
 export function buildDocsGenProvider(
   phase: 1 | 2,
   defaultMaxTokens: number,
+  /** #2189 — a cost estimate resolves the providers without running: log at debug. */
+  opts: { quiet?: boolean } = {},
 ): {
   provider: AIProvider;
   supportsCaching: boolean;
@@ -844,7 +846,7 @@ export function buildDocsGenProvider(
   tuning: DocsGenTuning;
   effectiveConfigHash: string;
 } {
-  const bundle = buildDocsGenProviderBundle(phase, defaultMaxTokens);
+  const bundle = buildDocsGenProviderBundle(phase, defaultMaxTokens, opts.quiet === true);
   // #855 — every call carries the run's AbortSignal, so a cancel, delete or
   // ceiling stops an in-flight request instead of waiting for it.
   return { ...bundle, provider: scopedToGeneration(bundle.provider) };
@@ -853,8 +855,14 @@ export function buildDocsGenProvider(
 function buildDocsGenProviderBundle(
   phase: 1 | 2,
   defaultMaxTokens: number,
+  quiet: boolean,
 ): ReturnType<typeof buildDocsGenProvider> {
   const config = loadAIConfig();
+  // Which provider a RUN uses is worth an info line; an estimate's is not.
+  const note = (message: string, meta: Record<string, unknown>): void => {
+    if (quiet) log.debug(message, meta);
+    else log.info(message, meta);
+  };
 
   // First-class local-gemma (Ollama) path. Uses the LOCAL_* tuning so a
   // Bedrock/Claude model id can never leak into Ollama (it would 404).
@@ -863,7 +871,7 @@ function buildDocsGenProviderBundle(
     const model = phase === 1 ? tuning.phase1Model : tuning.phase2Model;
     // #177 — defaults follow the family of the model THIS phase serves.
     const { temperature, topP } = resolveLocalSampling(model);
-    log.info("Using local-gemma (Ollama) for docs-gen", {
+    note("Using local-gemma (Ollama) for docs-gen", {
       phase,
       model,
       baseUrl: config.sdkProvider.baseUrl.replace(/\/+$/, ""),
@@ -914,7 +922,7 @@ function buildDocsGenProviderBundle(
   if (config.provider === "anthropic") {
     const tuning = docsGenTuning("anthropic", config.model);
     const model = phase === 1 ? tuning.phase1Model : tuning.phase2Model;
-    log.info("Using native AnthropicProvider for docs-gen", {
+    note("Using native AnthropicProvider for docs-gen", {
       phase,
       model,
       defaultMaxTokens,
@@ -953,7 +961,7 @@ function buildDocsGenProviderBundle(
     process.env.OPENAI_API_KEY; // gateway uses OpenAI-compatible auth header
 
   if (baseUrl && apiKey) {
-    log.info("Using BedrockDirectProvider for docs-gen", {
+    note("Using BedrockDirectProvider for docs-gen", {
       phase,
       model,
       baseUrl: baseUrl.replace(/\/+$/, ""),
@@ -984,9 +992,10 @@ function buildDocsGenProviderBundle(
     };
   }
 
-  log.warn(
-    "BEDROCK_GATEWAY_URL not set; falling back to default provider (no prompt caching, no model pinning)",
-  );
+  const fallback =
+    "BEDROCK_GATEWAY_URL not set; falling back to default provider (no prompt caching, no model pinning)";
+  if (quiet) log.debug(fallback);
+  else log.warn(fallback);
   return {
     provider: buildProvider({ config }),
     supportsCaching: false,
@@ -1141,8 +1150,13 @@ function buildEscalationPhase2Bundle(defaultMaxTokens: number): Phase2ProviderBu
  * identical to the single-provider path. A clear log records why hybrid was or
  * was not enabled.
  */
-export function resolvePhase2Router(defaultMaxTokens: number): Phase2Router {
-  const single = buildDocsGenProvider(2, defaultMaxTokens);
+export function resolvePhase2Router(
+  defaultMaxTokens: number,
+  /** #2189 — a cost estimate: log at debug, as {@link buildDocsGenProvider}. */
+  opts: { quiet?: boolean } = {},
+): Phase2Router {
+  const single = buildDocsGenProvider(2, defaultMaxTokens, opts);
+  const note = opts.quiet ? log.debug.bind(log) : log.info.bind(log);
   const primary: Phase2ProviderBundle = {
     // The single-provider build reports its concrete provider only via logs; for
     // routing/telemetry we label it by the globally-configured provider family.
@@ -1160,14 +1174,14 @@ export function resolvePhase2Router(defaultMaxTokens: number): Phase2Router {
   const local = buildLocalPhase2Bundle(defaultMaxTokens);
   const escalation = buildEscalationPhase2Bundle(defaultMaxTokens);
   if (!local || !escalation) {
-    log.info("Hybrid doc-gen routing enabled but not both providers configured; using single", {
+    note("Hybrid doc-gen routing enabled but not both providers configured; using single", {
       localConfigured: local != null,
       escalationConfigured: escalation != null,
     });
     return { primary, hybrid: null };
   }
 
-  log.info("Hybrid doc-gen per-section routing ACTIVE", {
+  note("Hybrid doc-gen per-section routing ACTIVE", {
     localModel: local.tuning.phase2Model,
     escalationKind: escalation.kind,
     escalationModel: escalation.tuning.phase2Model,
@@ -1192,8 +1206,8 @@ export function resolveDocsGenCostInputs(): {
   factsCharCap: number;
   phase1FactsMaxOutputTokens: number;
 } {
-  const phase1 = buildDocsGenProvider(1, resolveFactsMaxOutputTokens());
-  const { primary } = resolvePhase2Router(resolveSectionMaxOutputTokens());
+  const phase1 = buildDocsGenProvider(1, resolveFactsMaxOutputTokens(), { quiet: true });
+  const { primary } = resolvePhase2Router(resolveSectionMaxOutputTokens(), { quiet: true });
   const provider = primary.provider.key;
   return {
     models: {

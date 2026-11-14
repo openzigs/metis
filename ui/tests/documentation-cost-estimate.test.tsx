@@ -175,6 +175,19 @@ describe("DocumentationPage — BRD cost estimate (#2189)", () => {
     );
   });
 
+  it("shows the estimate as loading while the path field differs from the estimated scope", async () => {
+    serve(PRICED);
+    await openForm();
+    await screen.findByTestId("cost-estimate");
+    fireEvent.change(screen.getByTestId("doc-path-scope-input"), {
+      target: { value: "packages/fit/" },
+    });
+    // Mid-debounce: the range shown would be the previous scope's.
+    expect(screen.queryByTestId("cost-estimate")).not.toBeInTheDocument();
+    expect(screen.getByTestId("cost-estimate-loading")).toBeInTheDocument();
+    await screen.findByTestId("cost-estimate", undefined, { timeout: 2_000 });
+  });
+
   it("does not estimate another document type", async () => {
     serve(PRICED);
     await openForm();

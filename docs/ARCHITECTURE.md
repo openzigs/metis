@@ -7195,7 +7195,12 @@ of CPU per response).
 model call: the scope's modules grouped by `groupSymbolsIntoModules` with the Phase-1 test
 policy and path scope applied, each module's indexed source lines, which modules already have
 facts in `docs_gen_fact_cache` under the Phase-1 model and `PHASE1_PROMPT_VERSION`, the section
-count from `sectionGroupsFor`, and `DOCS_GEN_DOCUMENT_MAX_CHARS`. It lays out the run's calls
+count from `sectionGroupsFor`, and `DOCS_GEN_DOCUMENT_MAX_CHARS`. A cache row names its module's
+directory but not its repository, so a directory two of the project's repositories share is
+never counted cached. The project's grouped modules are held in memory for up to 60 s, keyed
+on the project, the test policy and each code graph's `updatedAt` and symbol count, so the
+form's repeated estimates (open, repository change, each debounced path edit) read the
+symbols once; the fact cache is read every time. It lays out the run's calls
 (one per Phase-1 chunk, a write and a judge per section, extra batch pairs once the facts
 outgrow one facts cap, claim-extraction calls) and prices them through `RunUsage` →
 `estimateRunCost`, the same path as the after-run tally, so a prompt-length tier is applied per
