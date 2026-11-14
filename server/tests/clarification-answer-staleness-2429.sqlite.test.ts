@@ -481,6 +481,29 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(byId.get(b.record.id)).toBe("settled");
       });
 
+      it("finds the sibling the document still holds across two overlapping chunks", async () => {
+        const a = await recordFor("k-a", A);
+        const b = await recordFor("k-b", B);
+        // The chunker's carry-over: chunk 1 opens with chunk 0's end, and B,
+        // longer than that overlap, is whole in neither.
+        const cut = B.indexOf(" must be long");
+        const carried = B.slice(B.indexOf("for guest"), cut);
+        for (const [position, text] of [
+          [0, `# 4 Accounts\n\n${A_EDITED}\n\n${B.slice(0, cut)}`],
+          [1, `${carried}${B.slice(cut)}\n\nInvoices are sent monthly.`],
+        ] as const) {
+          await db.knowledgeChunk.create({
+            data: { projectId: PA, documentId: DOC, position, text, md5: `m${position}` },
+          });
+        }
+        const reopened = await askEdited();
+        expect(reopened.map((r) => r.id)).toEqual([a.record.id]);
+        const byId = new Map(
+          (await db.clarificationRecord.findMany()).map((r) => [r.id, r.status]),
+        );
+        expect(byId.get(b.record.id)).toBe("settled");
+      });
+
       it("reads the quarantined chunks when none is approved, and reopens nothing when both paragraphs remain", async () => {
         await recordFor("k-a", A);
         await recordFor("k-b", B);

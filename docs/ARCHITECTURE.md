@@ -5392,12 +5392,19 @@ then:
   `refreshing` ends). A re-decided entry records in `versions` the version of each stored
   requirement carrying its answers that no one edited by hand (`answeredOnlyVersions`, read
   before deciding), its findings record the same in `requirementVersions`, and
-  `editedWithoutFindings` reads it, so the re-decided findings are current for those rows.
+  `editedWithoutFindings` reads it, so the re-decided findings are current for those rows. A row
+  is stamped only when its clarifications block, read with that version, holds no answer the
+  run did not read: the version is read in the findings queue's turn, so an answer submitted
+  meanwhile can already be in it, unjudged, and that row is left to read stale.
 - **reopen** (#2429): a settled record whose quote the document's stored chunks still hold
-  (`currentDocumentTexts`, approved else quarantined, compared in `normaliseForKey` form) is
-  never reopened: its paragraph did not change, so a near-identical sibling of the edited
-  paragraph is not taken for it even when its own question is not raised again. A document with
-  no stored chunk leaves the word-overlap match (`paragraphSimilarity`) to decide, as before.
+  (`currentDocumentTexts`: the chunks the document reader quotes, `rag/stored-chunks.ts`,
+  approved else quarantined, joined with the chunker's overlaps dropped so a quote across a cut
+  is found whole, compared in `normaliseForKey` form) is never reopened: its paragraph did not
+  change, so a near-identical sibling of the edited paragraph is not taken for it even when its
+  own question is not raised again. A document with no stored chunk leaves the word-overlap
+  match (`paragraphSimilarity`) to decide, as before. Known limit: the quote is looked for
+  anywhere in the document, so when a paragraph appears twice and one copy is edited, the old
+  wording is still held and its record is kept, not reopened.
 
 Answers are untrusted text in every later prompt. The resolution prompt fences the Q&A
 (`<<<ANSWERS … ANSWERS>>>`, markers stripped from the text). `/specify`, `/plan` (both forms) and

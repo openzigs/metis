@@ -169,23 +169,36 @@ export async function answeredOnlyVersions(
   ids: readonly string[],
   analysisId: string,
   projectId: string,
-): Promise<Map<string, number>> {
+): Promise<Map<string, AnsweredOnlyVersion>> {
   if (ids.length === 0) return new Map();
+  // The body is read with the version, in one read, so the caller can tell
+  // which answers this version carries (#2429 review: an answer submitted
+  // after the caller read its answers bumps the version past what it judged).
   const rows = await prisma.requirement.findMany({
     where: { id: { in: [...ids] }, analysisId, projectId, deletedAt: null },
-    select: { id: true, version: true },
+    select: { id: true, version: true, body: true },
   });
   const edited = await editedByHand(rows.map((r) => r.id));
-  return new Map(rows.filter((r) => !edited.has(r.id)).map((r) => [r.id, r.version]));
+  return new Map(
+    rows
+      .filter((r) => !edited.has(r.id))
+      .map((r) => [r.id, { version: r.version, body: r.body }] as const),
+  );
 }
 
-/** The ids of `ids` with a version a person wrote by hand (with an actor). */
+/** One requirement's current version, and the body written at it. */
+export interface AnsweredOnlyVersion {
+  version: number;
+  body: string;
+}
+
+/** The ids of `ids` with any version a person wrote by hand (with an actor). */
 async function editedByHand(ids: readonly string[]): Promise<Set<string>> {
   if (ids.length === 0) return new Set();
-  const rows = await prisma.requirementVersion.groupBy({
-    by: ["requirementId"],
+  const rows = await prisma.requirementVersion.findMany({
     where: { requirementId: { in: [...ids] }, actorId: { not: null } },
-    _min: { version: true },
+    distinct: ["requirementId"],
+    select: { requirementId: true },
   });
   return new Set(rows.map((r) => r.requirementId));
 }

@@ -11,12 +11,13 @@ const db = vi.hoisted(() => ({
   requirementFindMany: vi.fn(),
   findingFindMany: vi.fn(),
   versionGroupBy: vi.fn(),
+  versionFindMany: vi.fn(),
 }));
 vi.mock("../prisma.js", () => ({
   prisma: {
     requirement: { findMany: db.requirementFindMany },
     finding: { findMany: db.findingFindMany },
-    requirementVersion: { groupBy: db.versionGroupBy },
+    requirementVersion: { groupBy: db.versionGroupBy, findMany: db.versionFindMany },
   },
 }));
 
@@ -215,13 +216,14 @@ describe("the reads", () => {
     expect(db.versionGroupBy).not.toHaveBeenCalled();
   });
 
-  it("#2429 — answeredOnlyVersions: the live requirements of the analysis and project no one edited by hand, at their version", async () => {
+  it("#2429 — answeredOnlyVersions: the live requirements of the analysis and project no one edited by hand, at their version and body", async () => {
     db.requirementFindMany.mockResolvedValue([
-      { id: "r1", version: 2 },
-      { id: "r2", version: 3 },
+      { id: "r1", version: 2, body: "b1" },
+      { id: "r2", version: 3, body: "b2" },
     ]);
-    db.versionGroupBy.mockResolvedValue([{ requirementId: "r2", _min: { version: 1 } }]);
+    db.versionFindMany.mockResolvedValue([{ requirementId: "r2" }]);
     const versions = await answeredOnlyVersions(["r1", "r2", "gone"], "ana-1", "proj-1");
+    // The body is read in the same read as the version, so it is the body at it.
     expect(db.requirementFindMany).toHaveBeenCalledWith({
       where: {
         id: { in: ["r1", "r2", "gone"] },
@@ -229,23 +231,23 @@ describe("the reads", () => {
         projectId: "proj-1",
         deletedAt: null,
       },
-      select: { id: true, version: true },
+      select: { id: true, version: true, body: true },
     });
     // Only versions with an actor are a hand edit here: the answers were judged.
-    expect(db.versionGroupBy).toHaveBeenCalledWith({
-      by: ["requirementId"],
+    expect(db.versionFindMany).toHaveBeenCalledWith({
       where: { requirementId: { in: ["r1", "r2"] }, actorId: { not: null } },
-      _min: { version: true },
+      distinct: ["requirementId"],
+      select: { requirementId: true },
     });
-    expect([...versions]).toEqual([["r1", 2]]);
+    expect([...versions]).toEqual([["r1", { version: 2, body: "b1" }]]);
 
     db.requirementFindMany.mockClear();
-    db.versionGroupBy.mockClear();
+    db.versionFindMany.mockClear();
     db.requirementFindMany.mockResolvedValue([]);
     expect((await answeredOnlyVersions([], "ana-1", "proj-1")).size).toBe(0);
     expect(db.requirementFindMany).not.toHaveBeenCalled();
     expect((await answeredOnlyVersions(["gone"], "ana-1", "proj-1")).size).toBe(0);
-    expect(db.versionGroupBy).not.toHaveBeenCalled();
+    expect(db.versionFindMany).not.toHaveBeenCalled();
   });
 
   it("reads the analysis's live requirements and their evidence within the analysis and project", async () => {

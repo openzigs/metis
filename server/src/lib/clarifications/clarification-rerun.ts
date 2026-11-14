@@ -63,7 +63,10 @@ import {
   type RecheckGoverningRequirementInput,
   type RecheckGoverningRequirementOutcome,
 } from "../governing/recheck.js";
-import { answeredOnlyVersions } from "../governing/requirement-staleness.js";
+import {
+  answeredOnlyVersions,
+  type AnsweredOnlyVersion,
+} from "../governing/requirement-staleness.js";
 import { mapRequirementToCode } from "../traceability/requirement-code-mapping.js";
 import type {
   GoverningAnalysisApplicability,
@@ -224,6 +227,11 @@ function answersByRequirement(
     for (const id of r.requirementIds) out.set(id, [...(out.get(id) ?? []), r]);
   }
   return out;
+}
+
+/** One answer as a clarifications block holds it (`clarificationBlockEntries`). */
+function blockEntryKey(question: string, answer: string): string {
+  return `${clarificationBlockQuestion(question)}\n${sanitizeClarificationText(answer)}`;
 }
 
 /** A stored requirement of the analysis and the changed answers its body carries. */
@@ -449,6 +457,20 @@ async function rerunGoverning(
     }
   }
   const judgedVersions = deps.judgedVersions ?? answeredOnlyVersions;
+  // Every answer this run read, as a clarifications block writes it. A row is
+  // stamped only at a version whose block carries none other: `prepare` runs
+  // in the findings queue's turn, so an answer submitted since this run read
+  // its answers can already be in the row, unjudged (#2429 review).
+  const read = new Set(
+    [...(input.settled ?? []), ...input.records.filter((r) => r.ambiguityField !== null)].map((a) =>
+      blockEntryKey(a.question, a.answer),
+    ),
+  );
+  const judgedAt = (version: AnsweredOnlyVersion | undefined): number | undefined =>
+    version &&
+    clarificationBlockEntries(version.body).every((e) => read.has(`${e.question}\n${e.answer}`))
+      ? version.version
+      : undefined;
   const produce = deps.produceFindings ?? produceGoverningFindingsForAnalysis;
   // The re-decided entries, in memory until the findings made from them are stored.
   let decided: GoverningRequirementApplicability[] = [];
@@ -490,7 +512,7 @@ async function rerunGoverning(
           // #2429 — the stored rows whose wording this judged, at that version.
           const judged = { ...entry?.versions };
           for (const id of rowsOf.get(requirementId) ?? []) {
-            const version = versions.get(id);
+            const version = judgedAt(versions.get(id));
             if (version !== undefined) judged[id] = version;
           }
           // The BA's governing answers on this requirement's pairs stand.

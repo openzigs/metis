@@ -13,6 +13,7 @@
  * and text are bound Prisma values, never interpolated into SQL.
  */
 import { prisma } from "../prisma.js";
+import { joinOverlappingChunks, storedChunksByDocument } from "../rag/stored-chunks.js";
 import { createChildLogger } from "../logger.js";
 import { isUniqueViolation } from "../db/prisma-errors.js";
 import {
@@ -361,37 +362,30 @@ export async function reopenChangedSources(
 
 /**
  * #2429 — the current text of each of `documentIds` (of `projectId`) as its
- * stored chunks hold it (approved, else quarantined, as the document reader
- * cites them), in {@link normaliseForKey} form. A document with no stored
- * chunk is absent: what it holds is unknown.
+ * stored chunks hold it (`storedChunksByDocument`: the chunks the document
+ * reader quotes), joined back with their overlaps dropped so a quote that
+ * straddles two chunks is found whole, in {@link normaliseForKey} form. A
+ * document with no stored chunk is absent: what it holds is unknown.
  */
 export async function currentDocumentTexts(
   projectId: string,
   documentIds: readonly string[],
 ): Promise<Map<string, string>> {
-  if (documentIds.length === 0) return new Map();
-  const parts = new Map<string, string[]>();
-  const approved = await prisma.knowledgeChunk.findMany({
-    where: { projectId, documentId: { in: [...documentIds] } },
-    select: { documentId: true, text: true },
-    orderBy: { position: "asc" },
-  });
-  for (const c of approved) parts.set(c.documentId, [...(parts.get(c.documentId) ?? []), c.text]);
-  const rest = documentIds.filter((id) => !parts.has(id));
-  if (rest.length > 0) {
-    const quarantined = await prisma.quarantineChunk.findMany({
-      where: { projectId, documentId: { in: rest }, ord: { gte: 0 } },
-      select: { documentId: true, text: true },
-      orderBy: { ord: "asc" },
-    });
-    for (const c of quarantined) {
-      parts.set(c.documentId, [...(parts.get(c.documentId) ?? []), c.text]);
-    }
-  }
-  return new Map([...parts].map(([id, texts]) => [id, normaliseForKey(texts.join("\n"))]));
+  const chunks = await storedChunksByDocument(projectId, documentIds);
+  return new Map(
+    [...chunks].map(([id, cs]) => [
+      id,
+      normaliseForKey(joinOverlappingChunks(cs.map((c) => c.text))),
+    ]),
+  );
 }
 
-/** Whether the document `source` cites still holds its quote, word for word. */
+/**
+ * Whether the document `source` cites still holds its quote, word for word.
+ * Anywhere in it: a paragraph the document holds twice, one copy edited, still
+ * holds the old wording, so that record is not reopened (the safe direction:
+ * an answer is kept rather than asked again).
+ */
 function holdsQuote(texts: ReadonlyMap<string, string>, source: ClarificationSource): boolean {
   const text = source.documentId ? texts.get(source.documentId) : undefined;
   const quote = normaliseForKey(source.quote);
