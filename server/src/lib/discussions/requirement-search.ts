@@ -25,6 +25,7 @@
  * Every value is a bound parameter.
  */
 import { Prisma, prisma, resolveDatabaseProvider, type DatabaseProvider } from "../prisma.js";
+import { restrictedIds, type SourceReader } from "../analysis/source-redaction.js";
 
 /** The picker answers at most this many requirements. */
 export const REQUIREMENT_PICKER_LIMIT = 20;
@@ -134,4 +135,23 @@ export async function searchProjectRequirements(
     orderBy,
     select,
   });
+}
+
+/**
+ * #2447 — the picks `reader` may see: a requirement resting on a source they
+ * cannot see is left out, so the picker never names it nor confirms a word of
+ * its title. One read of the picks' recorded sources, scoped to the project.
+ */
+export async function visibleRequirementPicks(
+  projectId: string,
+  picks: RequirementPick[],
+  reader: SourceReader,
+): Promise<RequirementPick[]> {
+  if (picks.length === 0) return picks;
+  const rows = await prisma.requirement.findMany({
+    where: { projectId, id: { in: picks.map((p) => p.id) } },
+    select: { id: true, analysisId: true, sourceIds: true },
+  });
+  const hidden = await restrictedIds(reader, rows);
+  return hidden.size === 0 ? picks : picks.filter((p) => !hidden.has(p.id));
 }

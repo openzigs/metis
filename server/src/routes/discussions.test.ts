@@ -82,6 +82,12 @@ vi.mock("../lib/prisma.js", async () => ({
 // lib/discussions/access.test.ts).
 const canAccessProjectDiscussions = vi.fn();
 const canAccessThread = vi.fn();
+// #2447 — the picker's source redaction is pinned over a real database in
+// tests/source-redaction-2447.sqlite.test.ts; here nothing is restricted.
+vi.mock("../lib/analysis/source-redaction.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/analysis/source-redaction.js")>()),
+  restrictedIds: async () => new Set<string>(),
+}));
 vi.mock("../lib/discussions/access.js", () => ({
   canAccessThread: (...a: unknown[]) => canAccessThread(...a),
   canAccessProjectDiscussions: (...a: unknown[]) => canAccessProjectDiscussions(...a),

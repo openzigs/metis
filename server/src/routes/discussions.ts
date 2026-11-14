@@ -41,7 +41,11 @@ import {
   MessageChangeError,
 } from "../lib/discussions/edit-message.js";
 import { promoteMessageToRequirement, PromoteError } from "../lib/discussions/promote.js";
-import { searchProjectRequirements } from "../lib/discussions/requirement-search.js";
+import {
+  searchProjectRequirements,
+  visibleRequirementPicks,
+} from "../lib/discussions/requirement-search.js";
+import { userSourceReader } from "../lib/analysis/source-redaction.js";
 import { AI_RESPONSE_MODES, shouldAIRespond } from "../lib/discussions/ai-gate.js";
 import {
   streamAIReply,
@@ -301,7 +305,13 @@ export function discussionsRouter(): Router {
     });
     if (!allowed) throw projectNotFound();
 
-    res.json({ success: true, data: await searchProjectRequirements(projectId, term) });
+    // #2447 — never a requirement resting on a source the caller cannot see.
+    const picks = await visibleRequirementPicks(
+      projectId,
+      await searchProjectRequirements(projectId, term),
+      userSourceReader(actor.id),
+    );
+    res.json({ success: true, data: picks });
   });
 
   // POST /api/discussions/threads — create a project-scoped thread.

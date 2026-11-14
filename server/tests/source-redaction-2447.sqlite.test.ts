@@ -91,6 +91,8 @@ const { requirementsCollaborationRouter } = await import("../src/routes/requirem
 const { projectRequirementsRouter } = await import("../src/routes/project-requirements.js");
 const { requirementSimilarityRouter } = await import("../src/routes/requirement-similarity.js");
 const { impactAnalysisRouter } = await import("../src/routes/impact-analysis.js");
+const { discussionsRouter } = await import("../src/routes/discussions.js");
+const { traceabilityRouter } = await import("../src/routes/traceability.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { getAnalysisSnapshot, loadFindingForDeepDive } =
@@ -144,6 +146,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       a.use("/api/analyses", analysis.topLevel);
       a.use("/api/requirements", requirementsCollaborationRouter());
       a.use("/api/impact-analyses", impactAnalysisRouter());
+      a.use("/api/discussions", discussionsRouter());
+      a.use("/api/projects/:projectId", traceabilityRouter());
       a.use(notFoundHandler);
       a.use(errorHandler);
       return a;
@@ -581,6 +585,39 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             data: { updatedAt: before.updatedAt },
           });
         }
+      });
+
+      it("the discussion requirement picker never offers Bob the restricted one", async () => {
+        const ids = async (who: Who, q: string) =>
+          (
+            (await get(who, `/api/discussions/requirements?projectId=${P}&q=${q}`)).body
+              .data as Array<{
+              id: string;
+            }>
+          ).map((r) => r.id);
+        expect(await ids("bob", "Payroll")).toEqual(["req-2447-legacy"]);
+        expect(await ids("bob", "")).not.toContain("req-2447-secret");
+        expect((await ids("alice", "Payroll")).sort()).toEqual([
+          "req-2447-legacy",
+          "req-2447-secret",
+        ]);
+      });
+
+      it("its traceability chain answers 404 to Bob, as for an unknown id", async () => {
+        const chain = (who: Who, id: string) =>
+          get(who, `/api/projects/${P}/requirements/${id}/traceability`);
+        const bob = await chain("bob", "req-2447-secret");
+        const unknown = await chain("bob", "req-2447-nope");
+        expect(bob.status).toBe(404);
+        expect(bob.body.error).toEqual(unknown.body.error);
+        expect(JSON.stringify(bob.body)).not.toContain("Payroll");
+        expect((await chain("bob", "req-2447-open")).status).toBe(200);
+        expect((await chain("alice", "req-2447-secret")).body.data.requirementTitle).toBe(SECRET);
+        const linked = await get(
+          "bob",
+          `/api/projects/${P}/requirements/req-2447-secret/traceability?includeLinked=true`,
+        );
+        expect(linked.status).toBe(404);
       });
 
       it("every /api/requirements/:id route answers 404 to Bob, as for an unknown id", async () => {
