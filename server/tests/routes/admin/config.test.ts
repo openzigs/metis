@@ -477,6 +477,42 @@ describe("PUT /api/admin/config/:key — tunables", () => {
     expect(res.status).toBe(200);
     expect(runtimeRows[0].value).toBe("github.com,gitlab.example.org");
   });
+
+  // #2493 — `z.coerce.boolean()` read the string "false" as true, so turning a
+  // flag off with "false" turned it on. Read back through GET, as the admin page does.
+  it.each([
+    ["false", "false"],
+    [false, "false"],
+    ["true", "true"],
+    [true, "true"],
+  ])("#2493: a bool tunable written as %j reads back %s", async (written, readBack) => {
+    const token = await login("admin");
+    const put = await request(app)
+      .put("/api/admin/config/SCHEDULER_ENABLED")
+      .set("Authorization", `Bearer ${token}`)
+      .send({ value: written });
+    expect(put.status).toBe(200);
+    expect(runtimeRows[0].value).toBe(readBack);
+    const get = await request(app)
+      .get("/api/admin/config/SCHEDULER_ENABLED")
+      .set("Authorization", `Bearer ${token}`);
+    expect(get.status).toBe(200);
+    expect(get.body.data.value).toBe(readBack);
+  });
+
+  it.each([[""], [" "], ["off"], ["no"], ["0"], ["FALSE"], [0]])(
+    "#2493: a bool tunable rejects %j instead of guessing",
+    async (written) => {
+      const token = await login("admin");
+      const res = await request(app)
+        .put("/api/admin/config/SCHEDULER_ENABLED")
+        .set("Authorization", `Bearer ${token}`)
+        .send({ value: written });
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("INVALID_VALUE");
+      expect(runtimeRows).toHaveLength(0);
+    },
+  );
 });
 
 describe("PUT /api/admin/config/:key — boundaries", () => {

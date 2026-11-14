@@ -77,6 +77,17 @@ const csvHostnameSchema = z
   })
   .pipe(z.array(hostnameSchema));
 
+/**
+ * #2493 — every `bool` key's write schema: a boolean, or the string "true" /
+ * "false". `z.coerce.boolean()` turned any non-empty string, "false" included,
+ * into true, so a client writing "false" switched the flag on. Anything else
+ * is refused rather than guessed at.
+ */
+const strictBoolSchema = z.union([
+  z.boolean(),
+  z.enum(["true", "false"]).transform((v) => v === "true"),
+]);
+
 /** Bootstrap-tier sentinel — every write attempt fails validation. */
 const neverWritable = z.never();
 
@@ -365,7 +376,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   DOCS_GEN_PHASE1_INCLUDE_TESTS: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Whether Phase-1 docs-gen fact extraction reads and mines test, spec and fixture files (default true — full coverage). When false, files matching the test-path rules are neither sent to the model nor mined, and the coverage log reports them as excluded by policy. The rules: *.test.* / *.spec.* files, test_*.py, *_test.go / *_test.py, *Test / *Tests classes (.java, .kt, .cs, .scala, .groovy; not SplitTest / AbTest / MultivariateTest, which model A/B tests) and *IT JVM integration tests; files under test, tests, __tests__, __mocks__, mocks, testing, spec, e2e, fixtures or __fixtures__ directories, C# test projects (Foo.Tests/, Foo.UnitTests/), *-fixtures / *_fixtures directories and fixture-corpus / fixture-data / fixture-files directories; testing.* and *-testing.* modules (not ab-testing, load-testing and similar features); double-extension fixtures (user.fixture.ts); test-harness.* files; and vitest / jest / playwright / karma / cypress configs. An ambiguous name — fixture.ts, harness.ts, a specs/ directory — is read as production. On onyourleft test files are about half the source, so turning this off roughly halves Phase-1 time.",
     sensitive: false,
@@ -394,7 +405,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   REPO_SOURCE_INCLUDE_TESTS: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Whether the repository RAG ingest embeds test, spec and fixture files (#182; default true). They are always taken LAST, after production code and configuration, so they only use budget REPO_SOURCE_MAX_FILES has left. When false they are not embedded at all and are reported as excluded by policy, not as skipped. Uses the same test-path rules as DOCS_GEN_PHASE1_INCLUDE_TESTS.",
     sensitive: false,
@@ -505,7 +516,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   CHAT_FUSED_CODE_RETRIEVAL: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Master enable for fused passive code-graph retrieval in chat + Spec-Kit RAG (#714). OFF by default. When on, project-scoped sessions additionally query the code graph / symbol index (HybridCodeSearch) and merge deduped symbol hits — each with a filePath:startLine-endLine locator — into the retrieved-knowledge system block (volatile tail; the byte-stable lead is untouched). When off, no code-graph query is issued and behaviour is byte-identical to today.",
     sensitive: false,
@@ -596,7 +607,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   ANALYSIS_FUSED_CODE_RETRIEVAL: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Master enable for fused passive code-graph retrieval in the analysis code agent (all three modes — single-shot retrieveContext, agentic seed, requirement-grounded fold) (#729, Epic #725 — parity with chat/Spec-Kit #714). ON by default (flipped on in #752 now that #750 restored the agentic/requirement-grounded modes this seeds); operators can still disable it. When on, the code agent queries the code graph / symbol index (HybridCodeSearch) and appends deduped, token-budgeted symbol chunks — each carrying filePath:startLine-endLine provenance for Epic #726 citations — after the requirements-half + source-code-half chunks. When off, no code-graph query is issued and the retrieved context is byte-identical to the pre-#729 behaviour.",
     sensitive: false,
@@ -604,7 +615,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   ANALYSIS_DOCUMENT_READER: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Requirements Analysis reads the selected documents in full instead of ten retrieved chunks (#2230, Epic #2227). The model reads the whole document (section by section when it is too long for the model's window), labels every statement (requirement, constraint, business rule, assumption, definition, background, example) with its verified source span, and the run reports what was read from every section. OFF by default: measured on four documents up to 60 KB (#2255), it finds every requirement but repeats many of them (precision 0.59 to 0.69 against 1.00 for a whole-document read; docs/DOCUMENT_UNDERSTANDING_BASELINE.md). Retrieval stays for the code agent and the other specialists. Impact Analysis (#2231) uses the same reader on a document source and on long pasted text: one change per requirement, constraint or business rule instead of one per paragraph.",
     sensitive: false,
@@ -662,7 +673,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   PORTFOLIO_GAP_PER_REPO_SEARCH: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Search each of a product's projects on its own in portfolio gap analysis, and give every repo its share of the excerpts (#1763), so a repo never reads could-not-verify (no-evidence-retrieved) only because a sibling repo took every hit of one shared search. Each repo keeps at most PORTFOLIO_GAP_HITS_PER_REPO excerpts, and the product's repos together at most PORTFOLIO_GAP_HITS_PER_PRODUCT (never less than one excerpt per repo). No extra model calls: the cost caps are unchanged. Default false (one shared search per product) until #1766 measures it.",
     sensitive: false,
@@ -757,7 +768,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   ANALYSIS_AFFECTED_CODE_MAPPING: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Master enable for the deterministic requirement→code mapping on the analysis 'Evaluate new requirements' path (#735, Epic #726). ON by default. When on and free-text new requirements are supplied, the code agent parses them into discrete candidates and reuses Impact Analysis's mapRequirementToCode + blastRadius over the project code graph, injecting the affected-code list into the gap prompt as fenced, token-budgeted context (and persisting it for the UI). When off — or with no new requirements / no code graph — it is a clean no-op and the prompt + budget are byte-identical to the pre-#735 behaviour.",
     sensitive: false,
@@ -774,7 +785,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   IMPACT_STORED_LINK_SEEDS: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Impact analysis: seed a change about a tracked requirement (a run started with requirementIds) from that requirement's stored code links (RequirementCodeMapping) as well as the hybrid search (#1754). OFF by default. The links are unioned after the hybrid edit candidates, manual links first, and never drop or re-score a hybrid seed; a link whose file has left the code graph is dropped and counted in the run summary. Off: the seeding and the result are exactly as before. The default flips only on a held-out gain measured by `pnpm eval:localization --arms A0,A2` (#1753).",
     sensitive: false,
@@ -783,7 +794,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   IMPACT_LLM_EDIT_VERIFY: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Impact analysis: one LLM call per changed requirement and project that looks at the hybrid candidate pool (about 30 files) and may PROMOTE a pool file to the files to edit, at a line checked against the code graph, or mark a deterministic candidate doubtful (#1756). OFF by default. Additive only, the #931 rule: every deterministic edit candidate stays, with its score; a promotion carries the file's own hybrid score, never a model score; an unverified line is dropped and counted in the run summary. Metered as impact.edit-verify under the 60-second impact deadline. The default flips only on a held-out gain measured by `pnpm eval:localization --arms A0,A4` (#1753).",
     sensitive: false,
@@ -792,7 +803,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   IMPACT_LLM_EDIT_RERANK: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Impact analysis: one LLM call per changed requirement and project that orders the hybrid candidate pool (about 30 files) by how likely the change edits each file, up to 10 picks, each at a line checked against the code graph (#1798). OFF by default. A bounded exception to the #931 rule: the model may re-order the head of the files to edit, never drop one. The final order fuses the deterministic order with the model's checked order (reciprocal-rank fusion); the top 5 of it plus every deterministic candidate are the files to edit; a pick's symbol carries the file's own hybrid score, never a model score; an unchecked pick is dropped and counted in the run summary, which also says how many files moved. Metered as impact.edit-rerank under the 60-second impact deadline. The default flips only on a significant held-out Recall@5 gain measured by `pnpm eval:localization --arms A0,A13` (#1753), shown on claude-sonnet-5-5 on 2026-11-05 (pooled 0.53 -> 0.70, about $0.02 per requirement), and once #1762 shows the analyst the re-ordered list.",
     sensitive: false,
@@ -801,7 +812,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   IMPACT_AGENT_SEEDS: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       'Impact analysis: for a change about a tracked requirement (a run started with requirementIds), put the files the Analysis code agent cited for that requirement in "Evaluate new requirements" at the TOP of the files to edit (#1759). ON by default since #1823; set it to 0 to turn it off. It reuses the citations that pass already stored (RequirementCodeMapping rows with source analysis-grounding), so it makes no model call and adds no time against the 60-second impact deadline. At most 5 cited files lead, the surer citation first and then in citation order; at most 5 further cited files follow the existing candidates, and any beyond that are listed as related, not seeded. Every file the search picked stays a file to edit, with its score; a cited file the code graph no longer holds is dropped and counted in the run summary. Runs after the LLM edit check and re-order, so they cannot push the citations down. A pasted request has no stored citations and is unchanged. Measured as arm A3A of `pnpm eval:localization` (#1755): Recall@5 +0.31 over the hybrid seeding pooled on 29 held-out items on claude-sonnet-5-5 (p < 0.001); the shipped path, arm A7 (#1818): Recall@5 +0.256 pooled on 39 held-out items on claude-sonnet-5-5 (p < 0.001). Table precision on impact-recall-01-jpetstore (#1823, claude-sonnet-5-5, 3 runs, live #936 filter): 0.367 with the flag against 0.374 without it on the same analyses, -0.007 [-0.043, +0.028]: the average is within 0.03 of A7O; the 95% interval\'s lower bound is -0.043. Off: the seeding and the result are exactly as before.',
     sensitive: false,
@@ -810,7 +821,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   IMPACT_DEMOTE_STALE_CITATIONS: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Impact analysis, with IMPACT_AGENT_SEEDS on: let the freshness of the code agent's stored citations decide which lead the files to edit (#1832). OFF by default since #1939. On: a citation re-validation found out of date (stale, #1831) seeds nothing and is counted as set aside, and the rest are ordered fresh, then moved, then never checked, before the surer-first order. Off: every citation seeds, the surer first and then in citation order; the run summary still counts the out-of-date ones. Measured as arms A7SD against A7S of `pnpm eval:localization` (#1915, claude-sonnet-5-5, 39 held-out items): after the code changed, demotion cost Recall@5 -0.097 [-0.17, -0.03] (p = 0.004) and MRR -0.255; after a routine re-ingest that changed nothing (A7RD against A7R) it changed nothing (+0.000), because every citation was fresh.",
     sensitive: false,
@@ -819,7 +830,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   IMPACT_REQUEST_EDIT_RANKING: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Impact analysis: rank the files to edit ONCE per request, across every extracted change and every project, against the request's single best file (#1776), instead of once per change per project. OFF by default. The existing cut is kept (at most 5 files, each scoring at least half the best); a file that falls out, including a project's best file when it is far below the request's best, moves to Related and still seeds the blast radius, so the callers reached do not change. No model. Off: each change names up to 5 files in each project, as before. Measured as arm A11 of `pnpm eval:localization --arms A0,A11` (#1753): Recall@5 fell 0.52 to 0.46 on the held-out Miniflux set, because fused RRF scores do not compare across searches. Since #1784 the ranking compares a cross-search score instead (a file's fused share of its seeding's best, times the seeding's best vector cosine; kept within 0.05 of the request's best). Arm A12: Recall@5 holds and edit precision rises 0.17 to 0.30 on Miniflux, but on the portfolio fixture a one-repository answer keeps its edit candidates in that repository on only 3 of 14 requirements, so it stays off.",
     sensitive: false,
@@ -870,7 +881,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   ANALYSIS_AFFECTED_SCHEMA_MAPPING: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Master enable for the deterministic AFFECTED SCHEMA block injected into the analysis database (Sally), code, and synthesis prompts (#824, Epic #820 Phase 1). When on, the impacted code symbols are crossed into the schema graph (#823) and the affected tables/columns/routines — with their live-schema reconciliation status and a TEXT-ONLY, never-executed suggested DDL — are rendered into the prompts as fenced, token-budgeted context. When off — or with no schema edges / no impacted symbols — it is a clean no-op and the prompts are byte-identical to the pre-#824 behaviour. ON by default since #849 (the crossing is deterministic and issues no LLM calls of its own). Since Epic #852 the effective gate is the per-project `Project.databaseAwareAnalysis` setting; this key is the PLATFORM DEFAULT behind that setting's `auto` value — explicitly setting it false (env or admin UI) is the fleet-wide kill-switch and resolves `auto` projects to `auto->platform-disabled`, while a per-project explicit `on` still wins.",
     sensitive: false,
@@ -895,7 +906,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   ANALYSIS_SCHEMA_IMPACT: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Master enable for the per-requirement `databaseChanges` section of the analysis gap report (#847, Epic #820). When on, the gap-report route supplies a real `loadSchemaImpact` producer that, per requirement, crosses the requirement's impacted code into the schema graph (reusing #823's `crossToSchema`) and enumerates its cross-project shared-database consumers (reusing #822's `enumerateSchemaConsumers`) — read-only, TEXT-ONLY suggested DDL, never executed. ON by default since #849 — the crossing is deterministic graph traversal with no LLM calls, and it short-circuits for projects with no schema data. Since Epic #852 the effective gate is the per-project `Project.databaseAwareAnalysis` setting; this key is the PLATFORM DEFAULT behind that setting's `auto` value — explicitly setting it false (env or admin UI) is the fleet-wide kill-switch and resolves `auto` projects to `auto->platform-disabled`, while a per-project explicit `on` still wins. When off the gap report is byte-identical to the pre-#847 shape (no `databaseChanges`).",
     sensitive: false,
@@ -912,7 +923,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   ANALYSIS_ESCALATION_POLICY: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Master enable for the requirement escalation policy on the agentic analysis path (#739, Epic #727). OFF by default. When on, each extracted requirement is scored for ambiguity (deterministic text heuristics) + impact (blast-radius size, reusing #726/#735), and high scorers (score ≥ ANALYSIS_ESCALATION_SCORE_THRESHOLD, capped at ANALYSIS_ESCALATION_MAX_REQUIREMENTS) are routed to a DEEPER multi-hop agentic pass (ANALYSIS_ESCALATION_DEEP_MAX_TURNS) while the rest stay at the normal turn cap. The two passes SPLIT the existing per-run token budget proportionally, so escalation reallocates — never grows — spend. When off, the agentic pass runs with uniform depth exactly as before and nothing is persisted.",
     sensitive: false,
@@ -953,7 +964,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   ANALYSIS_SCHEMA_CONTEXT: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Master enable for schema-aware context in the analysis database agent's (Sally's) retrieveContext (#732, Epic #725). ON by default (flipped on in #752); operators can still disable it. When on, the database agent's context additionally introspects the project's primary DB connector (read-only — never DDL, never a routine body) and appends a token-budgeted schema summary (tables/entities, key columns, relationships, and where a usage classification exists, used/unreferenced tags) after the document-RAG chunks, as a synthetic `live-schema:<projectId>` chunk the model can cite. When off — or when the project has no introspectable schema — no introspection is issued and the retrieved context is byte-identical to the pre-#732 docs-only behaviour.",
     sensitive: false,
@@ -986,7 +997,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   CHAT_CODE_SEARCH_TOOLS: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Master enable for agentic code-search TOOLS in chat + stream (#713). ON by default since #2243, measured on the #2237 BA question set (single-product questions: facts stated 51% → 73–84%, citation precision 28% → 80–83%, about 4x the input tokens per question; eval-data/README.md); set false to turn them off. When on, project-scoped sessions may call search_code_graph (exact graph traversal), search_code_symbols (hybrid BM25+vector symbol search) and read_file_slice (up to 200 lines from the project's own repo clones, #736) — offered as native tools to a tool-capable model, even without loaded skills. A model without native tool calls gets them through the text-protocol loop, which does not stream, and only when this key is set to true (#2295). Tool schemas render deterministically into the byte-stable prompt lead, so the flag flips the cached prefix ONCE per deploy (expected); the per-turn latency cost is one extra bounded model round-trip per executed tool call (loop capped at a few turns). When off, no code tools are offered and, with CHAT_TOOLS also off or the model not tool-capable, no loop runs. Distinct from CHAT_FUSED_CODE_RETRIEVAL (#714), which is PASSIVE per-request retrieval into the volatile tail.",
     sensitive: false,
@@ -998,7 +1009,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   CHAT_CODE_SEARCH_PRIMITIVES: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "With CHAT_CODE_SEARCH_TOOLS on, also offer chat grep_files (a literal, case-insensitive text search over the project's repository clones: at most 50 lines of 200 characters and 5,000 characters shown, 5,000 files of at most 512 KB and 64 MB read, with totals when cut), list_files (a glob over the same clones: at most 100 paths shown, with the total) and search_code_symbols's fileGlob / symbolKind / language filters (#2327). Every path is repository-relative (absolute paths, '..' and symlinks out of a clone refused; .git, .env* and credential files never read) and every result is filtered on the caller's document ACLs. OFF by default (#2327, eval-data/README.md): paired against the tools alone on the #2237 BA question set (2 runs each) it stated 85–87% of facts vs 81–84%, citation precision 63–76% vs 60–76%, but used about 25% more input tokens per question (32,600 vs 26,100) and 0.45 more model calls; the model called grep_files instead of the graph and symbol tools. On the localization held-out corpus (A3P vs A3A, 24 items) no metric moved measurably and edit precision fell 0.57 → 0.51 (Δ −0.06, 95% CI [−0.19, +0.05]) at 39% more cost per item. Turn it on to give chat literal search over the source.",
     sensitive: false,
@@ -1007,7 +1018,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   CHAT_CODE_CONTEXT_TOOL: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Offer search_code_context in chat beside the other code tools (#2329): one call returns up to 6 whole functions/classes for a question by default (up to 12 when the model asks for more), adjacent matches in a file merged into one span, ranked exactly as search_code_symbols ranks them, read from the project's clones under the same path and access checks as read_file_slice. OFF by default: measured with the paired `pnpm eval:ba-qa` arms tools-only and tools-context (#2412), it did not improve facts stated or citation precision beyond run-to-run spread, nor cut turns per answer. Needs CHAT_CODE_SEARCH_TOOLS on.",
     sensitive: false,
@@ -1016,7 +1027,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   CHAT_CHANGE_HISTORY_TOOL: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Offer get_change_history in chat beside the other code tools (#2338): the commits that changed a file, a line range or a symbol (up to 20 per call, newest first, with date, subject, a message excerpt and a link), and whether older history exists. While on, each code-graph ingest of a GitHub or GitLab connector also fetches a separate bare, blobless history repository at the indexed commit with the file contents of the REPO_HISTORY_WINDOW_DAYS (365) days before that commit (docs/decisions/0023), capped by REPO_HISTORY_MAX_BYTES; turning it off deletes that history at once. Commit text is redacted (secrets and e-mail addresses) and every read is local: no network, no credential. Local-folder and uploaded-archive sources have no history. OFF by default until measured with the `tools-history` arm of `pnpm eval:ba-qa`. Needs CHAT_CODE_SEARCH_TOOLS on.",
     sensitive: false,
@@ -1025,7 +1036,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   CHAT_FILE_OUTLINE_TOOL: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Offer get_file_outline in chat beside the other code tools (#2346): the symbols one file declares (functions, classes, methods, types; at most 200), each with its kind, path:start-end span and the symbol it is declared in, from the project's code graph, without reading the file, and with the commit they describe. A file the code graph does not hold (a language it does not parse, or a file the indexing skipped) is said to be so; a file whose document is restricted from the caller reads the same way. OFF by default until it is measured on the BA question set. Needs CHAT_CODE_SEARCH_TOOLS on.",
     sensitive: false,
@@ -1050,7 +1061,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   CHAT_INDEX_STATUS: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Tell the chat model when a project's index cannot be trusted (#2326). ON by default. With the code-search tools on, chat is offered `get_index_status` (per repository: last indexed commit and time, how the last indexing run ended with a classified error, symbol and document counts, files indexed and skipped), and a project whose index is failed, never built, partial or still being built gets one status line in the retrieved-knowledge block on every turn, telling the model not to conclude the project lacks what a search did not find. Off: neither. The reply's grounding label (last indexed commit, last run, a warning), the classified retrieval-failure statement and the partial-coverage note do not depend on this key.",
     sensitive: false,
@@ -1059,7 +1070,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   CHAT_SEARCH_GUIDANCE: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Tell the chat model how to search, not only what each tool is for (#2324). OFF by default: on the #2237 BA question set (tools-only arm, two paired runs, Sonnet 5.5) it left facts stated unchanged (83%/83%, 76%/76%), lowered citation precision (88% → 80%, 84% → 81%) and added about 9,000 input tokens per question (eval-data/README.md). When a turn offers a code or knowledge tool (search_code_symbols, search_code_graph, read_file_slice, search-knowledge), the byte-stable prompt lead gets one block: turn the question into identifiers, run two or three wordings before concluding something is absent, fall back symbol → text → file listing → read, verify a call or data-flow claim by reading the code, and say what was searched when nothing turns up. Those four tools' descriptions say when to use each, what a good query looks like and what to try after an empty result, and each of their results carries a fixed instruction after its data fence (an empty result's prompts a reworded search). About 250 tokens for the block and 320 for the four descriptions, both in the cached prompt lead, plus about 50 per grounding tool result. Off (the default): the prompt, descriptions and results are as before #2324.",
     sensitive: false,
@@ -1068,7 +1079,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   CHAT_TOOLS: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Offer METIS and MCP tools to the model in chat and stream (#140). ON by default. Applies only to project-scoped sessions on a model the catalog marks tool-capable: the tools go as NATIVE tool definitions, only MCP servers the project may use are offered, and EVERY call passes the session's approval gate (#142) before it runs — its low/medium/high policy, its agent's tool allowlist, and a prompt to the session's owner when the policy asks for one. Off: no METIS/MCP tools are offered (the code-search tools still follow CHAT_CODE_SEARCH_TOOLS).",
     sensitive: false,
@@ -1078,7 +1089,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   CHAT_PROGRESSIVE_SKILLS: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Load a chat's skills progressively (#146). ON by default. On a tool-capable model the prompt carries each available skill's name and description only, and the model calls `load_skill` to read a skill's full instructions (or one of its supporting files) when the task needs it; the call passes the session's approval gate and re-checks the project's skill allow-list. Off, or on a model that cannot take tools: the whole skill bodies are pasted into the prompt as before.",
     sensitive: false,
@@ -1087,7 +1098,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   CHAT_SUBAGENTS: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Offer a project's agents to its chats as tools (#147). ON by default. Each custom agent the project owns or has enabled, and each library agent explicitly enabled for it, becomes a tool the chat's agent may delegate a task to; the sub-agent runs in a fresh context with its own persona, skills and tool allowlist (never more tools than its caller), and every tool it calls passes the same session's approval gate. Requires CHAT_TOOLS.",
     sensitive: false,
@@ -1167,7 +1178,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   ONLINE_EVAL_ENABLED: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Kill switch for online eval — scoring a sampled fraction of completed production runs with the RagasJudge seam. OFF by default. The scorer is a read-only observer: it adds no latency, changes no user-visible output, and a scoring failure never affects the run. Keep it OFF until a real judge lands (#1317); the only implementation today is the lexical StubRagasJudge.",
     sensitive: false,
@@ -1215,7 +1226,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   ONLINE_EVAL_DRIFT_ALERTS_ENABLED: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Enable webhook drift alerts for online-eval windows (reuses EVAL_ALERT_WEBHOOK_URL). Gated independently of ONLINE_EVAL_ENABLED and OFF by default. Alerts are additionally suppressed whenever the configured judge is a stub, so this cannot page on StubRagasJudge output (#1317).",
     sensitive: false,
@@ -1296,7 +1307,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   SCHEDULER_ENABLED: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description: "Master enable for the background scheduler.",
     sensitive: false,
   },
@@ -1310,7 +1321,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   MCP_HEALTH_ALLOW_PARTIAL: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description: "Allow partially-degraded MCP servers to report ready.",
     sensitive: false,
   },
@@ -1318,7 +1329,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   MCP_REQUIRE_CATALOG: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "When true, project- and user-scoped MCP registrations must originate from the federated catalog or an admin-approved template.",
     sensitive: false,
@@ -1326,7 +1337,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   MCP_REQUIRE_VAULT_ENV: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "When true, every MCP env value must be a ${vault:label} reference. Plaintext is rejected at the registration boundary.",
     sensitive: false,
@@ -1347,7 +1358,7 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
   MCP_ALLOW_USER_SCOPE: {
     tier: "tunable",
     valueType: "bool",
-    schema: z.coerce.boolean(),
+    schema: strictBoolSchema,
     description:
       "Feature flag for per-user MCP registrations (scope='user'). Off by default — keeps the legacy global/project model.",
     sensitive: false,

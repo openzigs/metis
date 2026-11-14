@@ -121,8 +121,23 @@ describe("CONFIG_KEYS — per-key Zod validators", () => {
     const def = CONFIG_KEYS.SCHEDULER_ENABLED;
     expect(def.schema.safeParse(true).success).toBe(true);
     expect(def.schema.safeParse(false).success).toBe(true);
-    // z.coerce.boolean accepts almost anything; we only validate the type.
     expect(def.schema.safeParse("true").success).toBe(true);
+  });
+
+  // #2493 — every bool key: "false" is false, and a string that is neither
+  // "true" nor "false" is refused rather than read as true.
+  it("every bool key parses true/false strictly and rejects other strings", () => {
+    const boolKeys = Object.entries(CONFIG_KEYS).filter(([, d]) => d.valueType === "bool");
+    expect(boolKeys.length).toBeGreaterThan(0);
+    for (const [key, def] of boolKeys) {
+      expect([key, def.schema.safeParse("false").data]).toEqual([key, false]);
+      expect([key, def.schema.safeParse(false).data]).toEqual([key, false]);
+      expect([key, def.schema.safeParse("true").data]).toEqual([key, true]);
+      expect([key, def.schema.safeParse(true).data]).toEqual([key, true]);
+      for (const bad of ["", " ", "0", "1", "no", "off", "TRUE", "False", 0, 1, null]) {
+        expect([key, bad, def.schema.safeParse(bad).success]).toEqual([key, bad, false]);
+      }
+    }
   });
 
   it("SCHEDULER_TICK_INTERVAL_MS requires a positive integer", () => {
