@@ -854,11 +854,13 @@ production hybrid search (dense + BM25 + RRF), `Alibaba-NLP/gte-modernbert-base`
 | 4096 / 256 | 0.845 | −0.001 | [−0.003, +0.002] | 0.375 | NOT-ESTABLISHED |
 
 No arm clears the pre-registered +0.04 floor, and at 226 queries every arm is resolved at that
-floor, so 2048 stays. Smaller chunks retrieve worse on these documents, and chunks larger than
+floor, so 2048 stays. Smaller chunks retrieve worse at 768 (direction established) and probably at 1024 (not
+established: the interval spans zero), and chunks larger than
 2048 change almost nothing, because analyst documents are short sections that already fit.
 The earlier METIS-docs measurements (#1160 to #1184) also ran on `gte-modernbert-base`. Nothing
 changes for an operator: there is no new default and nothing to re-index. Detail and the
-decision rule: [ARCHITECTURE.md](ARCHITECTURE.md), "Document-retrieval eval".
+Content coverage is 99.71% at every arm (100% of non-whitespace; the rest is trimmed
+whitespace), under the pre-registered 99.8% read literally; see ARCHITECTURE.md. decision rule: [ARCHITECTURE.md](ARCHITECTURE.md), "Document-retrieval eval".
 
 The runs did not use the committed CLI itself but a scratch copy, for the reason given under
 contextual chunks below: `pushSchema`'s `prisma db push --accept-data-loss` is refused under an

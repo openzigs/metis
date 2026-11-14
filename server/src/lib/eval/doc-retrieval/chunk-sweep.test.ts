@@ -193,6 +193,7 @@ describe("extra size arms (#2527)", () => {
     expect(() => parseExtraSizes("4k")).toThrow(/whole numbers, not "4k"/);
     expect(() => parseExtraSizes("")).toThrow(/whole numbers/);
     expect(() => parseExtraSizes("4096,4096")).toThrow(/names a size twice/);
+    expect(() => parseExtraSizes("4096,04096")).toThrow(/names a size twice/);
   });
 });
 

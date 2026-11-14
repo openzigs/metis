@@ -116,6 +116,11 @@ async function main(): Promise<void> {
 
     const contextualModes = parseContextualModes(argv);
     if (contextualModes) {
+      if (parseFlag(argv, "extra-sizes") !== undefined) {
+        throw new Error(
+          "--extra-sizes applies to the size sweep only; drop it or drop --contextual",
+        );
+      }
       let generator;
       if (contextualModes.includes("model")) {
         const { buildProvider, loadAIConfig } = await import("../src/lib/ai/index.js");

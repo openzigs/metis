@@ -2342,7 +2342,14 @@ each document's committed source and pins the text it yields by sha256. The quer
 `pnpm eval:doc-retrieval --corpus docretrieval-03-analyst-docs --extra-sizes 4096` on
 `Alibaba-NLP/gte-modernbert-base` (the default; recorded in the artefact), `RAG_RERANK` unset
 and contextual chunks off. Every arm keeps span coverage at 1.000 with no span dropped or
-straddled.
+straddled. Content coverage, read as the pre-registered union of aligned chunks over every
+corpus character, is 99.71% at every arm, short of the 99.8% written in `PREREGISTRATION.md`.
+The gap is whitespace `chunkMarkdown` trims at chunk edges: 100% of non-whitespace characters
+are covered at every arm, so nothing substantive is lost and the arms are not confounded.
+`analyst-corpus.test.ts` pins that, and the copy-discipline audits of the corpus (the
+`PREREGISTRATION.md` names `corpus.test.ts`; they live there). The committed corpus holds 226
+queries against the registered 220 (`docunderstanding-01` 34 for 30, `docunderstanding-02` 34
+for 32), inside the 200 to 250 band, so the decision is unaffected.
 
 | arm | chunks | nDCG@10 | Δ vs 2048 | 95% paired CI | sign p | w/l/t | verdict | n for ±0.04 |
 |---|---:|---:|---:|---|---:|---|---|---:|

@@ -312,14 +312,17 @@ export function extraSizeArm(chunkSize: number): ChunkArmSpec {
 
 /** `--extra-sizes 4096,6144` → one {@link extraSizeArm} per distinct size, in order. */
 export function parseExtraSizes(raw: string): ChunkArmSpec[] {
-  const sizes = raw.split(",").map((s) => s.trim());
+  const sizes = raw.split(",").map((s) => {
+    const trimmed = s.trim();
+    if (!/^\d+$/.test(trimmed)) {
+      throw new Error(`--extra-sizes takes whole numbers, not "${trimmed}"`);
+    }
+    return Number(trimmed);
+  });
   if (new Set(sizes).size !== sizes.length) {
     throw new Error(`--extra-sizes names a size twice: "${raw}"`);
   }
-  return sizes.map((s) => {
-    if (!/^\d+$/.test(s)) throw new Error(`--extra-sizes takes whole numbers, not "${s}"`);
-    return extraSizeArm(Number(s));
-  });
+  return sizes.map(extraSizeArm);
 }
 
 /**

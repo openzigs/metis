@@ -212,6 +212,40 @@ describe("the analyst corpus", () => {
   });
 
   /**
+   * The pre-registered "content coverage >= 99.8%" is read literally as the union of
+   * aligned chunks over every corpus character. That is 99.71% at every arm: the
+   * missing 0.29% is whitespace `chunkMarkdown` trims at chunk edges. No other
+   * character is lost, so non-whitespace coverage is pinned at exactly 1.
+   */
+  it("covers every non-whitespace character at every arm; only trimmed whitespace is uncovered", async () => {
+    const corpus = await loadDocRetrievalCorpus(ANALYST_DOC_CORPUS_ID);
+    for (const arm of ARMS) {
+      let total = 0;
+      let covered = 0;
+      let nonWs = 0;
+      let nonWsCovered = 0;
+      for (const doc of corpus.docs) {
+        const aligned = alignChunksToSource(
+          doc.text,
+          chunkMarkdown(doc.text, { chunkSize: arm.chunkSize, overlap: arm.overlap }),
+        );
+        const hit = new Uint8Array(doc.text.length);
+        for (const c of aligned) hit.fill(1, c.start, c.end);
+        for (let i = 0; i < doc.text.length; i += 1) {
+          total += 1;
+          covered += hit[i];
+          if (!/\s/.test(doc.text[i])) {
+            nonWs += 1;
+            nonWsCovered += hit[i];
+          }
+        }
+      }
+      expect(nonWsCovered, `${arm.id} non-whitespace characters not in any chunk`).toBe(nonWs);
+      expect(covered / total, `${arm.id} content coverage`).toBeGreaterThan(0.997);
+    }
+  });
+
+  /**
    * Analyst documents are short-sectioned: `chunkMarkdown` splits on headings first, so
    * almost every section already fits in 2048 characters and the larger arms barely differ
    * from the control (240 chunks at 3072 and 4096 against 242 at 2048). The small arms
