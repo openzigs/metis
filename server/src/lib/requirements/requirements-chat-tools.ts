@@ -87,6 +87,8 @@ export interface RequirementToolsDeps {
   chain?: (projectId: string, requirementId: string) => Promise<RequirementTraceabilityChain>;
   /** #1841 — meaning-based search over the requirement index. Defaults to #1835's. */
   semantic?: SemanticRequirementSearch;
+  /** #2331 — each trace symbol's repository, to judge its link against that repository's ACLs. */
+  symbolRepos?: SymbolRepoLookup;
 }
 
 const defaultSemantic: SemanticRequirementSearch = (projectId, query, limit) =>
@@ -381,19 +383,49 @@ function lineRange(start: number | null, end: number | null): string {
   return end !== null && end !== start ? `:${start}-${end}` : `:${start}`;
 }
 
+/** #2331 — each symbol's repository connection (`null`: a legacy graph with none). */
+export type SymbolRepoLookup = (
+  projectId: string,
+  symbolIds: string[],
+) => Promise<Map<string, string | null>>;
+
+const defaultSymbolRepos: SymbolRepoLookup = async (projectId, symbolIds) => {
+  const rows = await defaultPrisma.codeSymbol.findMany({
+    where: { projectId, id: { in: symbolIds } },
+    select: { id: true, graph: { select: { repoConnectionId: true } } },
+  });
+  return new Map(rows.map((r) => [r.id, r.graph.repoConnectionId]));
+};
+
 /**
  * #2331 — `chain` without a code location in a file hidden from the caller
- * (`code-access.ts`), and how many it left out. A trace node carries no
- * repository, so a path is matched against every repository's restrictions.
- * A test is dropped when its own file or the code it was linked through is
- * hidden. `groundedFiles` is filtered too but not counted: it is not printed.
+ * (`code-access.ts`), and how many it left out. A node is judged in its
+ * symbol's own repository, so a path restricted in one repository stays
+ * readable in another; a node with no symbol (or a symbol row that is gone)
+ * cannot be placed, so it is matched against every repository's restrictions,
+ * as a legacy graph is. A test is dropped when its own file or the code it was
+ * linked through is hidden. `groundedFiles` is filtered too but not counted:
+ * it is not printed.
  */
-function visibleChain(
+async function visibleChain(
+  projectId: string,
   chain: RequirementTraceabilityChain,
   access: CodeAccessFilter,
-): { chain: RequirementTraceabilityChain; hidden: number } {
+  symbolRepos: SymbolRepoLookup,
+): Promise<{ chain: RequirementTraceabilityChain; hidden: number }> {
   if (access.unrestricted) return { chain, hidden: 0 };
-  const visible = (filePath: string) => !access.isHidden(null, filePath);
+  const ids = [
+    ...new Set(
+      [...chain.directCode, ...chain.specs.flatMap((s) => s.code), ...chain.testedBy]
+        .map((n) => n.codeSymbolId)
+        .filter((id): id is string => id !== null),
+    ),
+  ];
+  const repos = ids.length ? await symbolRepos(projectId, ids) : new Map<string, string | null>();
+  const repoOf = (symbolId: string | null | undefined): string | null =>
+    (symbolId ? repos.get(symbolId) : undefined) ?? null;
+  const visible = (filePath: string, symbolId?: string | null) =>
+    !access.isHidden(repoOf(symbolId), filePath);
   let hidden = 0;
   const keep = <T>(items: T[], ok: (item: T) => boolean): T[] => {
     const kept = items.filter(ok);
@@ -402,14 +434,19 @@ function visibleChain(
   };
   const filtered: RequirementTraceabilityChain = {
     ...chain,
-    directCode: keep(chain.directCode, (c) => visible(c.filePath)),
-    specs: chain.specs.map((s) => ({ ...s, code: keep(s.code, (c) => visible(c.filePath)) })),
+    directCode: keep(chain.directCode, (c) => visible(c.filePath, c.codeSymbolId)),
+    specs: chain.specs.map((s) => ({
+      ...s,
+      code: keep(s.code, (c) => visible(c.filePath, c.codeSymbolId)),
+    })),
     testedBy: keep(
       chain.testedBy,
-      (t) => visible(t.filePath) && (!t.subject || visible(t.subject.filePath)),
+      (t) => visible(t.filePath, t.codeSymbolId) && (!t.subject || visible(t.subject.filePath)),
     ),
   };
-  if (chain.groundedFiles) filtered.groundedFiles = chain.groundedFiles.filter(visible);
+  if (chain.groundedFiles) {
+    filtered.groundedFiles = chain.groundedFiles.filter((f) => visible(f));
+  }
   return { chain: filtered, hidden };
 }
 
@@ -472,13 +509,15 @@ export function createGetRequirementTool(
       // #2331 — the code links name files and line ranges, so they pass the
       // caller's document ACLs as the code tools do. A filter that cannot be
       // loaded (an inactive user) fails the call rather than show them unfiltered.
-      const { chain, hidden } = visibleChain(
+      const { chain, hidden } = await visibleChain(
+        projectId,
         fullChain,
         await loadCodeAccessFilter({
           projectId,
           userId: ctx.userId,
           ...(ctx.aclAudience ? { aclAudience: ctx.aclAudience } : {}),
         }),
+        deps.symbolRepos ?? defaultSymbolRepos,
       );
 
       const status = resolveRequirementReviewStatus(

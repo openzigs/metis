@@ -551,6 +551,44 @@ describe("get_requirement (#1030)", () => {
     expect(JSON.stringify(res.data)).not.toContain("secret");
   });
 
+  it("#2331 — judges a link by its symbol's own repository: a path restricted in one repo stays readable in another", async () => {
+    const { prisma } = stubPrisma([row({ id: "r1" })]);
+    access.load.mockResolvedValue(
+      codeAccessFilterOf([{ connectorId: "rc-a", path: "src/secret.ts" }]),
+    );
+    const link = (codeSymbolId: string | null, startLine: number) => ({
+      codeSymbolId,
+      filePath: "src/secret.ts",
+      startLine,
+      endLine: startLine,
+      confidence: 0.9,
+      source: "manual" as const,
+      isTest: false,
+    });
+    const symbolRepos = vi.fn(
+      async () =>
+        new Map<string, string | null>([
+          ["sym-a", "rc-a"],
+          ["sym-b", "rc-b"],
+        ]),
+    );
+    const tool = createGetRequirementTool({
+      prisma,
+      symbolRepos,
+      chain: async (_p, id) => ({
+        ...emptyChain(id),
+        // In repo a (hidden), in repo b (readable), and with no symbol: unplaceable, so hidden.
+        directCode: [link("sym-a", 7), link("sym-b", 20), link(null, 30)],
+      }),
+    });
+    const res = await tool.exec({ requirementId: "r1" }, ctx);
+    expect(symbolRepos).toHaveBeenCalledWith("p1", ["sym-a", "sym-b"]);
+    expect(res.text).toContain("src/secret.ts:20");
+    expect(res.text).not.toContain("src/secret.ts:7");
+    expect(res.text).not.toContain("src/secret.ts:30");
+    expect(res.text).toMatch(/2 linked code locations are in files you cannot read/);
+  });
+
   it("#2331 — fails rather than show the links unfiltered when the filter cannot load", async () => {
     const { prisma } = stubPrisma([row({ id: "r1" })]);
     access.load.mockRejectedValue(new Error("inactive user"));

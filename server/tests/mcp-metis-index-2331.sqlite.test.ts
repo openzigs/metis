@@ -285,21 +285,6 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           body: "Fees are charged.",
         },
       });
-      for (const [filePath, startLine] of [
-        ["src/secret.ts", 2],
-        ["src/public.ts", 1],
-      ] as const) {
-        await db.requirementCodeMapping.create({
-          data: {
-            requirementId: REQUIREMENT,
-            projectId: PROJECT,
-            filePath,
-            startLine,
-            endLine: startLine + 2,
-            source: "manual",
-          },
-        });
-      }
       await db.codeGraph.create({
         data: {
           id: GRAPH,
@@ -338,6 +323,24 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           line: 3,
         },
       });
+      // The requirement's restricted link through its symbol (placed in rc-app
+      // by the symbol's graph), the open one by path alone.
+      for (const [filePath, startLine, codeSymbolId] of [
+        ["src/secret.ts", 2, "s-secret"],
+        ["src/public.ts", 1, null],
+      ] as const) {
+        await db.requirementCodeMapping.create({
+          data: {
+            requirementId: REQUIREMENT,
+            projectId: PROJECT,
+            codeSymbolId,
+            filePath,
+            startLine,
+            endLine: startLine + 2,
+            source: "manual",
+          },
+        });
+      }
       const doc = (id: string, file: string, aclSubjects = "[]") =>
         db.document.create({
           data: {
