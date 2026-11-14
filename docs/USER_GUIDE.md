@@ -5318,6 +5318,8 @@ The budget is `SPEC_KIT_PLAN_LOCALISATION_TOKEN_BUDGET` (default 2,500 tokens). 
 }
 ```
 
+**`metis-index-mcp`: query the METIS index from your own agent (#2331).** A second stdio MCP server lets Claude Code, Cursor or Claude Desktop search a project's code context, symbols and call graph, read file slices and requirements, and check index status, through eight read-only `metis_*` tools. Your agent does the reasoning: METIS makes no model call. It runs on a host that runs METIS, and it authenticates with **your own** METIS API token (`metis_…` with `acp:read`, from **Settings → ACP tokens** or `POST /api/acp/tokens`), never a shared secret. Every call runs as you: you see only the projects you can read, and a file restricted from you is not read, listed or counted. Each call is audit-logged without its results. Setup and client configuration: [docs/integrations/metis-index-mcp.md](integrations/metis-index-mcp.md).
+
 **Codex host (`--ai codex`).** The installer (`POST /api/projects/:projectId/spec-kit/install`) now accepts `"codex"` alongside Copilot/Claude/Cursor. It writes `speckit-{cmd}.md` skill files under `.codex/skills/speckit/` and merges a `<!-- speckit:start --> / <!-- speckit:end -->`-bounded section into the workspace `AGENTS.md` listing every `$speckit-*` alias and its REST endpoint. The merge is idempotent (re-runs replace only the marked block) and `AGENTS.md` is preserved across `mode: "skip"` runs.
 
 **GitHub issues → `tasks.md` sync.** Configure a webhook on the repository your issues are published to, sending `Issues` events to METIS, one of two ways (#1483):

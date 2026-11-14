@@ -173,6 +173,18 @@ export const ARMS = {
     CHAT_CODE_SEARCH_PRIMITIVES: "0",
     CHAT_CODE_CONTEXT_TOOL: "1",
   },
+  /**
+   * #2331 — `tools-only`'s flags, with the session's tools replaced by
+   * `metis-index-mcp`'s, called through an MCP client (`mcp-arm.ts`): paired
+   * with `tools-only`, it measures the MCP surface.
+   */
+  mcp: {
+    CHAT_CODE_SEARCH_TOOLS: "1",
+    CHAT_FUSED_CODE_RETRIEVAL: "0",
+    RAG_RERANK: "0",
+    CHAT_CODE_SEARCH_PRIMITIVES: "0",
+    CHAT_CODE_CONTEXT_TOOL: "0",
+  },
 } as const satisfies Record<string, Partial<Record<ArmFlag, string>>>;
 export type BaQaArm = keyof typeof ARMS;
 
