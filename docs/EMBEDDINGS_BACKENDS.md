@@ -825,7 +825,14 @@ Projects needing re-ingest: 1/2 (chunker drift — a reindex does NOT fix this)
   identity is exactly what it was before. A repository file is never prefixed and is
   tagged `;ctx=none`, which counts as current under every mode. One known
   over-report: repository files ingested while the flag was off carry the plain
-  identity and are listed once when the flag is first turned on.
+  identity and are listed once when the flag is first turned on. A `model`-mode
+  document whose calls were stopped is tagged `;ctx=model-partial` (#2355): the
+  project's token budget ran out, the failure limit tripped, no provider was
+  configured, or the generator failed. It is listed as re-ingest work, and that
+  re-ingest reuses the contexts the document already has and asks only for the rest.
+  A document over the model-context size cap is tagged `;ctx=model-oversize`
+  instead: it keeps deterministic prefixes, no re-ingest can change that, and so it
+  counts as current under `model` rather than as re-ingest work that never clears.
 - Nothing is excluded from retrieval on this signal, ever. See
   [ADR 0006](decisions/0006-chunker-drift-serve-degraded-but-observable.md) for why
   excluding would be strictly worse than the gaps.

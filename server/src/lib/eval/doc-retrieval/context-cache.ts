@@ -38,7 +38,9 @@ export function cachedChunkContextGenerator(
   persist: (cache: Record<string, string>) => Promise<void> = async () => {},
 ): ChunkContextGenerator {
   return async (input) => {
-    const out = await inner({ ...input, saved: new Map(Object.entries(cache)) });
+    // #2355 — merged with, never in place of, the contexts the caller already saved.
+    const saved = new Map([...(input.saved ?? []), ...Object.entries(cache)]);
+    const out = await inner({ ...input, saved });
     let added = 0;
     for (const context of out) {
       if (context && cache[context.key] !== context.text) {

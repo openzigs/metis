@@ -10,8 +10,13 @@ import type { AIProvider, ChatResponse } from "../ai/types.js";
 
 const m = vi.hoisted(() => ({
   provider: null as unknown as AIProvider,
-  assertWithinBudget: vi.fn(async (_projectId: string) => ({})),
-  recordUsage: vi.fn((_input: unknown) => ({ persisted: Promise.resolve() })),
+  assertWithinBudget: vi.fn(
+    async (_projectId: string): Promise<{ budget: number | null; remainingTokens: number }> => ({
+      budget: null,
+      remainingTokens: 0,
+    }),
+  ),
+  recordUsage: vi.fn((_input: unknown) => ({ totalTokens: 916, persisted: Promise.resolve() })),
 }));
 
 vi.mock("../ai/project-provider.js", () => ({
@@ -56,10 +61,11 @@ describe("defaultModelChunkContextGenerator (#2268)", () => {
     chunks: ["a", "b"],
   };
 
-  it("checks the project's budget before each call and writes one ledger row per reply", async () => {
+  it("reads the project's budget once per document and writes one ledger row per reply", async () => {
     const out = await defaultModelChunkContextGenerator()(input);
     expect(out.map((c) => c?.text)).toEqual(["Situated.", "Situated."]);
-    expect(m.assertWithinBudget).toHaveBeenCalledTimes(2);
+    // #2355 — the budget read sums the month's ledger: once per document, not per chunk.
+    expect(m.assertWithinBudget).toHaveBeenCalledTimes(1);
     expect(m.assertWithinBudget).toHaveBeenCalledWith("p1");
     expect(m.recordUsage).toHaveBeenCalledTimes(2);
     expect(m.recordUsage).toHaveBeenCalledWith({
@@ -81,5 +87,14 @@ describe("defaultModelChunkContextGenerator (#2268)", () => {
     expect(out).toEqual([null, null]);
     expect(chat).not.toHaveBeenCalled();
     expect(m.recordUsage).not.toHaveBeenCalled();
+  });
+
+  it("stops once the ledger totals of the document's replies reach what the budget had left (#2355)", async () => {
+    m.assertWithinBudget.mockResolvedValue({ budget: 10_000, remainingTokens: 900 });
+    const out = await defaultModelChunkContextGenerator()({ ...input, chunks: ["a", "b", "c"] });
+    // The first call runs alone; the 916 tokens its reply was billed spend the 900 left.
+    expect(out.map((c) => c?.text ?? null)).toEqual(["Situated.", null, null]);
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(m.assertWithinBudget).toHaveBeenCalledTimes(1);
   });
 });

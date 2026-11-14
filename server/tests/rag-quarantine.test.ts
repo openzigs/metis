@@ -727,6 +727,62 @@ describe("rejectDocument", () => {
     expect(quarantine.size).toBe(0);
   });
 
+  it("#2355 — takes the live chunks out of SQL, the vectors and BM25, journalled first", async () => {
+    seedDocument({ id: "d1", projectId: "p1", indexState: "quarantined" });
+    await writeQuarantine({
+      documentId: "d1",
+      projectId: "p1",
+      filename: "doc.md",
+      chunks: [{ ord: 0, text: "alpha", md5: "m0", embedding: [0.1] }],
+      embeddingModel: "metis-offline-hash-v1",
+      aclSubjects: [],
+    });
+    await approveDocument("d1", { id: "u1" }, { vectorStore: stubVector, bm25: stubBm25 });
+    const live = [...chunks.keys()];
+    expect(live).toHaveLength(1);
+    stubVector.deleteByChunkIds.mockClear();
+    stubBm25.removeChunkIds.mockClear();
+
+    await rejectDocument("d1", { id: "u1" }, undefined, {
+      vectorStore: stubVector,
+      bm25: stubBm25,
+    });
+
+    expect(docs.get("d1")?.indexState).toBe("rejected");
+    expect(chunks.size).toBe(0);
+    expect(stubVector.deleteByChunkIds).toHaveBeenCalledWith("p1", live);
+    expect(stubBm25.removeChunkIds).toHaveBeenCalledWith("p1", "d1", live);
+    const journal = [...quarantine.values()].find(
+      (q) => q.ord === -1 && q.metadata === JSON.stringify({ approvalChunkIds: live }),
+    );
+    expect(journal).toBeDefined();
+  });
+
+  it("#2355 — still rejects when the index delete fails: SQL no longer holds the chunks", async () => {
+    seedDocument({ id: "d1", projectId: "p1", indexState: "indexed" });
+    chunks.set("c1", {
+      id: "c1",
+      projectId: "p1",
+      documentId: "d1",
+      position: 0,
+      text: "alpha",
+      md5: "m0",
+      embeddingModel: "m",
+      chunkerIdentity: null,
+      vectorRef: "c1",
+      metadata: null,
+      aclSubjects: "[]",
+    });
+    stubVector.deleteByChunkIds.mockRejectedValueOnce(new Error("lance down"));
+
+    await rejectDocument("d1", { id: "u1" }, undefined, {
+      vectorStore: stubVector,
+      bm25: stubBm25,
+    });
+    expect(docs.get("d1")?.indexState).toBe("rejected");
+    expect(chunks.size).toBe(0);
+  });
+
   it("is idempotent on already-rejected documents", async () => {
     seedDocument({ id: "d1", projectId: "p1", indexState: "rejected" });
     await rejectDocument("d1", { id: "u1" });

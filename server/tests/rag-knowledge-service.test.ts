@@ -507,6 +507,96 @@ describe("KnowledgeService.ingestDocument", () => {
     expect(await store.count("p1")).toBe(b.chunkCount);
   });
 
+  it("#2355 — a re-ingest that throws retires the old chunks, journalled for reconciliation", async () => {
+    await seedDocument("d-throw", "p1", "para one\n\npara two");
+    await svc.ingestDocument("d-throw");
+    const old = [...chunks.values()].filter((c) => c.documentId === "d-throw").map((c) => c.id);
+    expect(old.length).toBeGreaterThan(0);
+
+    // Not auto-approved at the document level, so the project is asked — and that read fails.
+    documents.set("d-throw", { ...documents.get("d-throw")!, autoApproveTrusted: false });
+    vi.mocked(prisma.project.findFirst).mockRejectedValueOnce(new Error("db down"));
+    await expect(svc.ingestDocument("d-throw")).rejects.toThrow("db down");
+
+    expect([...chunks.values()].filter((c) => c.documentId === "d-throw")).toEqual([]);
+    expect(await store.count("p1")).toBe(0);
+    const journal = [...quarantine.values()].find(
+      (q) => q.documentId === "d-throw" && q.ord === -1 && q.metadata.includes(old[0]),
+    );
+    expect(JSON.parse(journal!.metadata)).toEqual({ approvalChunkIds: old });
+  });
+
+  it("#2355 — an approval that lands before a parked re-ingest retires anything keeps its own chunks", async () => {
+    await seedDocument("d-race", "p1", "para one\n\npara two");
+    await svc.ingestDocument("d-race");
+    documents.set("d-race", { ...documents.get("d-race")!, autoApproveTrusted: false });
+
+    // The project read comes after the new chunks are parked and before the old ones
+    // are retired: a reviewer approves the parked generation in exactly that window.
+    vi.mocked(prisma.project.findFirst).mockImplementationOnce((async () => {
+      await approveDocument("d-race", { id: "u1" }, { vectorStore: store });
+      return { id: "p1", autoApproveTrustedSources: false };
+    }) as unknown as typeof prisma.project.findFirst);
+    await svc.ingestDocument("d-race");
+
+    const live = [...chunks.values()].filter((c) => c.documentId === "d-race");
+    expect(live.length).toBeGreaterThan(0);
+    expect(await store.count("p1")).toBe(live.length);
+  });
+
+  it("#2355 — a parked re-ingest superseded by a newer one leaves the old chunks to it", async () => {
+    await seedDocument("d-super", "p1", "para one\n\npara two");
+    await svc.ingestDocument("d-super");
+    const old = [...chunks.values()].filter((c) => c.documentId === "d-super").map((c) => c.id);
+    expect(old.length).toBeGreaterThan(0);
+    documents.set("d-super", { ...documents.get("d-super")!, autoApproveTrusted: false });
+
+    // After A parks its chunks and before it retires the old ones, ingest B starts,
+    // exactly as `runIngest`'s opening transaction does: A's generation marker is
+    // revoked, B's is written and the document is `pending` again.
+    vi.mocked(prisma.project.findFirst).mockImplementationOnce((async () => {
+      for (const [id, q] of quarantine) {
+        if (q.documentId === "d-super" && q.ord === -4) quarantine.set(id, { ...q, ord: -1 });
+      }
+      quarantine.set("gen-b", {
+        id: "gen-b",
+        documentId: "d-super",
+        projectId: "p1",
+        ord: -4,
+        text: "",
+        embedding: "[]",
+        metadata: JSON.stringify({ approvalChunkIds: [] }),
+      });
+      documents.set("d-super", { ...documents.get("d-super")!, indexState: "pending" });
+      return { id: "p1", autoApproveTrustedSources: false };
+    }) as unknown as typeof prisma.project.findFirst);
+    await svc.ingestDocument("d-super");
+
+    // B is still running: the chunks it keeps answering are untouched.
+    expect([...chunks.values()].filter((c) => c.documentId === "d-super").map((c) => c.id)).toEqual(
+      old,
+    );
+    expect(await store.count("p1")).toBe(old.length);
+  });
+
+  it("#2355 — a re-ingest whose bytes no longer parse retires the old chunks", async () => {
+    await seedDocument("d-unparsed", "p1", "para one\n\npara two");
+    await svc.ingestDocument("d-unparsed");
+    expect(await store.count("p1")).toBeGreaterThan(0);
+
+    // The same bytes, now declared a PDF: the parser router refuses them.
+    documents.set("d-unparsed", {
+      ...documents.get("d-unparsed")!,
+      filename: "x.pdf",
+      mimeType: "application/pdf",
+    });
+    const r = await svc.ingestDocument("d-unparsed");
+    expect(r.status).toBe("failed");
+    expect(r.errorMessage).toMatch(/^CONTENT_TYPE_MISMATCH/);
+    expect([...chunks.values()].filter((c) => c.documentId === "d-unparsed")).toEqual([]);
+    expect(await store.count("p1")).toBe(0);
+  });
+
   it("marks document as failed when storage read fails", async () => {
     documents.set("ghost", {
       id: "ghost",

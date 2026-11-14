@@ -12,6 +12,7 @@
  * filesystem or model loader.
  */
 import { randomUUID } from "node:crypto";
+import type { Prisma } from "@prisma/client";
 import {
   type CoverageWarning,
   DEFAULT_RAG_CHUNK_OVERLAP,
@@ -27,6 +28,8 @@ import { prisma } from "../prisma.js";
 import { readDerivedLabel } from "./derived-label.js";
 import { withVectorSql, type ProjectVectorWrite } from "./project-vector-write.js";
 import {
+  CHUNK_CONTEXT_MODEL_OVERSIZE,
+  CHUNK_CONTEXT_MODEL_PARTIAL,
   CHUNK_CONTEXT_NONE,
   chunkMarkdown,
   chunkerIdentity,
@@ -67,6 +70,7 @@ import {
   defaultModelChunkContextGenerator,
   indexedTextOf,
   isContextualDocument,
+  MODEL_CONTEXT_TOO_LARGE,
   prefixedText,
   resolveContextualChunksMode,
   savedChunkContexts,
@@ -504,8 +508,37 @@ export class KnowledgeService {
    * Epic #157 — chunks are computed + embedded and then routed to the
    * quarantine table by default. Auto-approve flags (per-doc or per-project)
    * cause an immediate transition to `indexed`.
+   *
+   * #2355 — the document's live chunks are NOT deleted when the ingest starts. They
+   * stay searchable while the new generation is parsed, its images described, its
+   * model contexts written and its chunks embedded (minutes, in `model` mode), and
+   * are replaced when the new chunks commit: atomically, by approval's winner
+   * selection. Every other way this generation can end — a failure, a throw, chunks
+   * parked for review — retires them ({@link retireLiveChunks}), leaving the document
+   * as each of those outcomes always has: with no live chunks.
    */
   async ingestDocument(documentId: string): Promise<IngestResult> {
+    const started: { projectId?: string; generation?: string } = {};
+    try {
+      return await this.runIngest(documentId, started);
+    } catch (err) {
+      if (started.projectId && started.generation) {
+        await this.retireLiveChunks(started.projectId, documentId, started.generation).catch(
+          (retireErr: unknown) =>
+            log.warn("live chunks of a failed ingest could not be retired", {
+              documentId,
+              error: (retireErr as Error).message,
+            }),
+        );
+      }
+      throw err;
+    }
+  }
+
+  private async runIngest(
+    documentId: string,
+    started: { projectId?: string; generation?: string },
+  ): Promise<IngestResult> {
     const doc = await prisma.document.findFirst({
       where: { id: documentId, deletedAt: null },
     });
@@ -514,10 +547,11 @@ export class KnowledgeService {
     this.emitStatus(doc.projectId, documentId, "processing");
     const ingestGeneration = randomUUID();
     // #2268 — the model contexts the outgoing chunks carry, read before they are
-    // deleted, so re-ingesting an unchanged document reuses them instead of paying
-    // for every chunk again (and indexes sooner, with no calls to wait on).
+    // replaced, so re-ingesting an unchanged document reuses them instead of paying
+    // for every chunk again (and indexes sooner, with no calls to wait on). Read from
+    // the live chunks and from chunks parked in quarantine awaiting review.
     let savedContexts: Map<string, string> | undefined;
-    const obsolete = await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx) => {
       if (this.contextualMode === "model") {
         const approved = await tx.knowledgeChunk.findMany({
           where: { documentId },
@@ -537,7 +571,7 @@ export class KnowledgeService {
         where: { documentId, ord: { in: [-2, -3, -4] } },
         data: { ord: -1 },
       });
-      const old = await tx.knowledgeChunk.findMany({ where: { documentId }, select: { id: true } });
+      // #2355 — the generation marker journals no chunk ids: nothing live is deleted here.
       await tx.quarantineChunk.createMany({
         data: [
           {
@@ -547,17 +581,14 @@ export class KnowledgeService {
             ord: -4,
             text: "",
             embedding: "[]",
-            metadata: JSON.stringify({ approvalChunkIds: old.map((row) => row.id) }),
+            metadata: JSON.stringify({ approvalChunkIds: [] }),
           },
         ],
       });
-      await tx.knowledgeChunk.deleteMany({ where: { documentId } });
       await tx.quarantineChunk.deleteMany({ where: { documentId, ord: { gte: 0 } } });
-      return old.map((row) => row.id);
     });
-    // Never document-wide deletion: another generation may write while IO waits.
-    await this.store.deleteByChunkIds(doc.projectId, obsolete);
-    await this.bm25.removeChunkIds(doc.projectId, documentId, obsolete);
+    started.projectId = doc.projectId;
+    started.generation = ingestGeneration;
 
     let buffer: Buffer;
     try {
@@ -585,6 +616,7 @@ export class KnowledgeService {
       const fatal =
         parsed.reason === "MIME_UNSUPPORTED" || parsed.reason.startsWith(CONTENT_TYPE_MISMATCH);
       const status = fatal ? "failed" : "pending";
+      await this.retireLiveChunks(doc.projectId, documentId, ingestGeneration);
       await prisma.document.update({
         where: { id: documentId },
         data: { status, errorMessage: parsed.reason, chunkCount: 0 },
@@ -619,7 +651,12 @@ export class KnowledgeService {
     // stored display text stays the chunker's. All "" when the mode is off. Never
     // throws: a model failure leaves that chunk its deterministic prefix. #2268 — a
     // saved context is reused, calls are billed to this document, and they stop once
-    // the document is deleted or a newer ingest supersedes this one.
+    // the document is deleted or a newer ingest supersedes this one. #2355 — a stop
+    // (the budget was spent) leaves chunks without a model context, so the rows are
+    // tagged `model-partial` below and read as needing a re-ingest, not as current.
+    // #2355 — a document over the size cap is tagged `model-oversize` instead: no
+    // re-ingest can give it model contexts, so it must not read as re-ingest work.
+    let contextsStopped: string | undefined;
     const contextual = await contextPrefixesFor({
       mode: this.contextualMode,
       projectId: doc.projectId,
@@ -630,6 +667,9 @@ export class KnowledgeService {
       documentId,
       ...(savedContexts ? { saved: savedContexts } : {}),
       shouldContinue: () => this.ingestIsCurrent(documentId, ingestGeneration),
+      onStopped: (reason) => {
+        contextsStopped = reason;
+      },
     });
     const contextPrefixes = contextual.map((c) => c.prefix);
 
@@ -699,9 +739,13 @@ export class KnowledgeService {
       // With the flag off, nothing is appended: the identity is what it was before.
       chunkerIdentity: chunkerIdentity(
         this.chunkOptions,
-        this.contextualMode === "off" || isContextualDocument(doc.filename)
-          ? this.contextualMode
-          : CHUNK_CONTEXT_NONE,
+        contextsStopped === MODEL_CONTEXT_TOO_LARGE
+          ? CHUNK_CONTEXT_MODEL_OVERSIZE
+          : contextsStopped !== undefined
+            ? CHUNK_CONTEXT_MODEL_PARTIAL
+            : this.contextualMode === "off" || isContextualDocument(doc.filename)
+              ? this.contextualMode
+              : CHUNK_CONTEXT_NONE,
       ),
       aclSubjects: docAcl,
     });
@@ -733,7 +777,10 @@ export class KnowledgeService {
     }
 
     // Quarantined — surface a non-failure status so the UI can show a
-    // pending-review badge.
+    // pending-review badge. #2355 — the earlier generation leaves the index now:
+    // review gates what is searchable, so a re-ingest parked for review is not
+    // answered from the version it replaces.
+    await this.retireLiveChunks(doc.projectId, documentId, ingestGeneration);
     await prisma.document.update({
       where: { id: documentId },
       data: {
@@ -1768,8 +1815,9 @@ export class KnowledgeService {
    * swap a STALE vector into the live index — silently, with the Prisma tag updated
    * to say it is current.
    *
-   * It holds because re-ingest is delete + create, never update: `ingestDocument()`
-   * (and `quarantine.ts`) `deleteMany` a document's chunks and `create` new ones, so
+   * It holds because re-ingest is delete + create, never update: the approval a
+   * re-ingest commits through (`quarantine.ts`) `deleteMany`s a document's chunks and
+   * `create`s new ones, and an ingest that ends otherwise only deletes (#2355), so
    * changed text always arrives under a BRAND-NEW id and the old id becomes an
    * orphan that case 3 above prunes. If that ever stops being true, THIS is the code
    * that breaks, and it breaks quietly.
@@ -2296,23 +2344,95 @@ export class KnowledgeService {
     message: string,
     ingestGeneration: string,
   ): Promise<IngestResult> {
-    await prisma.$transaction(async (tx) => {
+    const obsolete = await prisma.$transaction(async (tx) => {
       await tx.document.updateMany({ where: { id: documentId }, data: { id: documentId } });
       const held = await tx.quarantineChunk.updateMany({
         where: { id: ingestGeneration, documentId, ord: -4 },
         data: { ord: -4 },
       });
-      if (!held.count) return;
+      if (!held.count) return [];
       // A selected winner owns its cleanup status/count, even when this worker
       // lost the race or the commit acknowledgement. Do not overwrite it.
-      await tx.document.updateMany({
+      const failed = await tx.document.updateMany({
         where: { id: documentId, deletedAt: null, indexState: { in: ["pending", "quarantined"] } },
         data: { status: "failed", errorMessage: message, chunkCount: 0 },
       });
+      return failed.count ? this.retireLiveChunksIn(tx, projectId, documentId) : [];
     });
+    await this.dropFromIndexes(projectId, documentId, obsolete);
     this.emitStatus(projectId, documentId, "failed", 0, message);
     log.warn("document ingest failed", { projectId, documentId, message });
     return { documentId, status: "failed", chunkCount: 0, errorMessage: message };
+  }
+
+  /**
+   * #2355 — take the document's live chunks (an earlier generation's) out of every
+   * index, when this ingest ends without its own chunks replacing them. Fenced like
+   * {@link markFailed}: nothing happens once this ingest no longer holds the document
+   * (it was deleted, or a newer ingest started) or once an approval has selected a
+   * winner, whose chunks are then the live ones.
+   */
+  private async retireLiveChunks(
+    projectId: string,
+    documentId: string,
+    ingestGeneration: string,
+  ): Promise<void> {
+    const obsolete = await prisma.$transaction(async (tx) => {
+      await tx.document.updateMany({ where: { id: documentId }, data: { id: documentId } });
+      const held = await tx.quarantineChunk.updateMany({
+        where: { id: ingestGeneration, documentId, ord: -4 },
+        data: { ord: -4 },
+      });
+      return held.count ? this.retireLiveChunksIn(tx, projectId, documentId) : [];
+    });
+    await this.dropFromIndexes(projectId, documentId, obsolete);
+  }
+
+  /**
+   * The SQL half of {@link retireLiveChunks}, inside a transaction that holds the
+   * document's row lock and this ingest's generation. The retired ids are journalled
+   * first (`ord` -1, as approval journals the generation it replaces), so a crash
+   * before the vector and BM25 deletes leaves them for reconciliation to finish.
+   */
+  private async retireLiveChunksIn(
+    tx: Prisma.TransactionClient,
+    projectId: string,
+    documentId: string,
+  ): Promise<string[]> {
+    const open = await tx.document.updateMany({
+      where: { id: documentId, indexState: { in: ["pending", "quarantined"] } },
+      data: { id: documentId },
+    });
+    if (!open.count) return [];
+    const live = await tx.knowledgeChunk.findMany({ where: { documentId }, select: { id: true } });
+    const ids = live.map((row) => row.id);
+    if (ids.length === 0) return [];
+    await tx.quarantineChunk.createMany({
+      data: [
+        {
+          id: randomUUID(),
+          documentId,
+          projectId,
+          ord: -1,
+          text: "",
+          embedding: "[]",
+          metadata: JSON.stringify({ approvalChunkIds: ids }),
+        },
+      ],
+    });
+    await tx.knowledgeChunk.deleteMany({ where: { documentId, id: { in: ids } } });
+    return ids;
+  }
+
+  /** Delete retired chunk ids from the vector store and BM25 — by id, never document-wide. */
+  private async dropFromIndexes(
+    projectId: string,
+    documentId: string,
+    chunkIds: string[],
+  ): Promise<void> {
+    if (chunkIds.length === 0) return;
+    await this.store.deleteByChunkIds(projectId, chunkIds);
+    await this.bm25.removeChunkIds(projectId, documentId, chunkIds);
   }
 
   private emitStatus(

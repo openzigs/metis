@@ -681,17 +681,28 @@ function metaVectorMetadata(
   return rest;
 }
 
-/** Drop quarantined chunks and mark the document `rejected`. Audit-logged. */
+/**
+ * Drop quarantined chunks and mark the document `rejected`. Audit-logged.
+ *
+ * #2355 — and take its live chunks out of every index. A re-ingest keeps the earlier
+ * generation live until its own chunks commit, and once this revokes the ingest's
+ * generation marker that ingest can no longer retire anything, so a rejection that
+ * lands mid-ingest must do it here. It also covers rejecting an `indexed` document
+ * through the API. The retired ids are journalled (`ord` -1) in the same transaction
+ * as the SQL delete; search reads only SQL-live chunks, so the document stops
+ * answering at commit even if the vector or BM25 delete after it fails.
+ */
 export async function rejectDocument(
   documentId: string,
   actor: ApprovalActor,
   reason?: string,
+  deps: Pick<ApprovalDeps, "vectorStore" | "bm25"> = {},
 ): Promise<void> {
   const doc = await prisma.document.findFirst({
     where: { id: documentId, deletedAt: null },
   });
   if (!doc) throw new Error(`Document ${documentId} not found`);
-  await prisma.$transaction(async (tx) => {
+  const retired = await prisma.$transaction(async (tx) => {
     await tx.document.update({
       where: { id: documentId },
       data: {
@@ -707,7 +718,37 @@ export async function rejectDocument(
       data: { ord: -1 },
     });
     await tx.quarantineChunk.deleteMany({ where: { documentId, ord: { gte: 0 } } });
+    const live = await tx.knowledgeChunk.findMany({ where: { documentId }, select: { id: true } });
+    const ids = live.map((row) => row.id);
+    if (ids.length === 0) return ids;
+    await tx.quarantineChunk.createMany({
+      data: [
+        {
+          id: randomUUID(),
+          documentId,
+          projectId: doc.projectId,
+          ord: -1,
+          text: "",
+          embedding: "[]",
+          metadata: JSON.stringify({ approvalChunkIds: ids }),
+        },
+      ],
+    });
+    await tx.knowledgeChunk.deleteMany({ where: { documentId, id: { in: ids } } });
+    return ids;
   });
+  if (retired.length > 0) {
+    try {
+      await (deps.vectorStore ?? getVectorStore()).deleteByChunkIds(doc.projectId, retired);
+      await (deps.bm25 ?? getBM25Index()).removeChunkIds(doc.projectId, documentId, retired);
+    } catch (err) {
+      // SQL already holds no live row for these ids, so search no longer returns them.
+      log.warn("rejected document's chunks could not be dropped from the indexes", {
+        documentId,
+        error: (err as Error).message,
+      });
+    }
+  }
   audit({
     actor: { id: actor.id },
     action: "document.reject",

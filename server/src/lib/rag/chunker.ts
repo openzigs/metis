@@ -362,6 +362,22 @@ const CONTEXT_SEGMENT = ";ctx=";
 export const CHUNK_CONTEXT_NONE = "none";
 
 /**
+ * #2355 — the context tag of a `model`-mode document whose model calls were stopped
+ * (the project's budget was spent) before every chunk had a context. It never
+ * matches the active `model` identity, so the document reads as needing a re-ingest
+ * instead of as current.
+ */
+export const CHUNK_CONTEXT_MODEL_PARTIAL = "model-partial";
+
+/**
+ * #2355 — the context tag of a `model`-mode document over the model-context size cap:
+ * it has deterministic prefixes only, and no re-ingest can change that while the cap
+ * stands. The row records it; it counts as current under `model` (when cut the way
+ * the active chunker cuts), so it is not listed as re-ingest work that never clears.
+ */
+export const CHUNK_CONTEXT_MODEL_OVERSIZE = "model-oversize";
+
+/**
  * The identity of the chunking a call with these options would produce:
  * producer, algorithm version and EFFECTIVE parameters — e.g. `doc:v2:2048/256`.
  *
@@ -441,7 +457,16 @@ export function classifyChunkerIdentity(
   // #2268 — a row never prefixed in any mode is current under every mode, provided
   // it was cut the way the active chunker cuts.
   const row = splitContextSegment(stored);
-  if (row.context === CHUNK_CONTEXT_NONE && row.cut === splitContextSegment(active).cut) {
+  const now = splitContextSegment(active);
+  if (row.context === CHUNK_CONTEXT_NONE && row.cut === now.cut) {
+    return "current";
+  }
+  // #2355 — over the size cap: what a re-ingest under `model` would write again.
+  if (
+    row.context === CHUNK_CONTEXT_MODEL_OVERSIZE &&
+    now.context === "model" &&
+    row.cut === now.cut
+  ) {
     return "current";
   }
   return "drifted";
