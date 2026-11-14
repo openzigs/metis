@@ -15,9 +15,20 @@
  *   - a finding: the sources its citations name, and each citation's own, in
  *     the order of `evidence.citations` ({@link FindingSourceIds});
  *   - a requirement or a cross-document finding: the union of the findings it
- *     cites as evidence ({@link sourceIdsOfFindings}). If any of those findings
- *     cannot be read, or carries no record, the row gets none (`null`): a
- *     partial union would claim to be complete.
+ *     cites as evidence ({@link sourceIdsOfFindingSets}). If any of those
+ *     findings cannot be read, or carries no record, the row gets none
+ *     (`null`): a partial union would claim to be complete.
+ *   - a requirement, elicited NFR or cross-document finding that cites NO
+ *     finding: none (`null`), never an empty set. Synthesis, elicitation and
+ *     the completeness check each read every finding of the run, so such a row
+ *     is derived from the run's whole corpus, not from nothing.
+ *
+ * How a reader (#2447) must read the column:
+ *   - a list (even an empty one, which only a finding citing nothing has):
+ *     exactly the sources the row's citations name;
+ *   - `null` on a row of a run whose `Analysis.sourceAccess` is set: "rests on
+ *     the run as a whole, or not recorded" — fail closed, treating the row as
+ *     drawing on every source the run read (its audience), never as on none.
  *
  * A row's uncited context (what its pass read without citing) is not on the
  * row: it is the run's audience, `Analysis.sourceAccess`. A run from before
@@ -133,7 +144,14 @@ export async function resolveFindingSourceIds(
       ? await db.document.findMany({
           where: {
             projectId,
-            OR: [{ id: { in: [...docIds] } }, { filename: { in: [...filenames] } }],
+            OR: [
+              // A document citation names its row exactly.
+              { id: { in: [...docIds] } },
+              // A code citation names the live repository file, on the same
+              // filters as the ACL loader (`loadCodeAccessFilterFor`): not a
+              // soft-deleted copy of it, and not an upload named like it (#474).
+              { filename: { in: [...filenames] }, source: "repo", deletedAt: null },
+            ],
           },
           select: { id: true, filename: true },
         })
@@ -243,30 +261,46 @@ export function evidenceFindingIds(labels: readonly string[]): string[] {
 }
 
 /**
- * The stored sources of a row that rests on `findingIds` (a requirement's
- * evidence findings, a cross-document finding's evidence): the union of
- * theirs, from the analysis `analysisId` only. `null` when any of them cannot
- * be read there or carries no record (a finding from before #2446), so the
- * row is never recorded as resting on less than it does. A row citing no
- * finding rests on none of them: an empty record.
+ * The stored sources of each row that rests on `findingIds` (a requirement's
+ * evidence findings, a cross-document finding's evidence), index-aligned with
+ * `sets`: the union of theirs, from the analysis `analysisId` only, read in
+ * one query for every row of a write site. A row's record is `null` when any
+ * of its findings cannot be read there or carries no record (a finding from
+ * before #2446), so it is never recorded as resting on less than it does; and
+ * `null` when it cites no finding, because the pass that wrote it read every
+ * finding of the run (see the module header).
  */
+export async function sourceIdsOfFindingSets(
+  db: Pick<Prisma.TransactionClient, "finding">,
+  analysisId: string,
+  sets: ReadonlyArray<readonly string[]>,
+): Promise<Array<string | null>> {
+  const all = sorted(sets.flat());
+  if (all.length === 0) return sets.map(() => null);
+  const rows = await db.finding.findMany({
+    where: { id: { in: all }, agentResult: { analysisId } },
+    select: { id: true, sourceIds: true },
+  });
+  const byId = new Map(rows.map((r) => [r.id, parseSourceIds(r.sourceIds)]));
+  return sets.map((set) => {
+    const ids = sorted(set);
+    if (ids.length === 0) return null;
+    const parts: SourceIds[] = [];
+    for (const id of ids) {
+      const parsed = byId.get(id);
+      if (!parsed) return null;
+      parts.push(parsed);
+    }
+    return serializeSourceIds(unionSourceIds(parts));
+  });
+}
+
+/** {@link sourceIdsOfFindingSets} for one row. */
 export async function sourceIdsOfFindings(
   db: Pick<Prisma.TransactionClient, "finding">,
   analysisId: string,
   findingIds: readonly string[],
 ): Promise<string | null> {
-  const ids = sorted(findingIds);
-  if (ids.length === 0) return serializeSourceIds(EMPTY);
-  const rows = await db.finding.findMany({
-    where: { id: { in: ids }, agentResult: { analysisId } },
-    select: { id: true, sourceIds: true },
-  });
-  if (rows.length !== ids.length) return null;
-  const parts: SourceIds[] = [];
-  for (const row of rows) {
-    const parsed = parseSourceIds(row.sourceIds);
-    if (!parsed) return null;
-    parts.push(parsed);
-  }
-  return serializeSourceIds(unionSourceIds(parts));
+  const [stored] = await sourceIdsOfFindingSets(db, analysisId, [findingIds]);
+  return stored ?? null;
 }

@@ -268,16 +268,19 @@ Which sources an analysis row drew on, recorded at write time as ids only
 | Column | Holds | NULL means |
 |---|---|---|
 | `findings.sourceIds` | JSON `{ documentIds, chunkIds, citations: [{ documentIds, chunkIds }] }`: the `Document` and `KnowledgeChunk` ids the finding's citations name, and each citation's own in `evidence.citations` order | not recorded (before #2446, a code-ingest or scan-materialised finding, or the read failed) |
-| `requirements.sourceIds` | JSON `{ documentIds, chunkIds }`: the union of the sources of the findings its `finding:` labels cite | not recorded (before #2446, not written by an analysis, or an evidence finding has no record) |
+| `requirements.sourceIds` | JSON `{ documentIds, chunkIds }`: the union of the sources of the findings its `finding:` labels cite | rests on the whole run (it cites no finding: synthesis and elicitation read every finding of the run), or not recorded (before #2446, not written by an analysis, or an evidence finding has no record) |
 | `cross_doc_findings.sourceIds` | the same, over the findings in `evidenceIds` | as for a requirement |
 | `analyses.sourceAccess` | `shared`: the run read code as the shared audience (#2314) and records sources on what it writes | a run from before #2446 (or a synthetic import, discussion or code-ingest run): it keeps the shared-audience rule. Nothing is backfilled |
 
 A document citation names its document and the chunk at its index; a code
-citation names the repository file's `Document` row (`connector:repo:<id>:src/<path>`,
+citation names the live repository file's `Document` row (`source = 'repo'`, not soft-deleted) (`connector:repo:<id>:src/<path>`,
 or `connector:repo:<id>:<path>` for a root manifest) in its repository, or in
 every repository of the project when it carries none. Only rows of the
 analysis's own project are recorded. An empty list is "drew on nothing
-recorded"; NULL is never that.
+recorded", and only a finding citing nothing has one; NULL is never that. A
+reader (#2447) treats NULL on a run whose `sourceAccess` is set as "rests on the
+run as a whole, or not recorded" and fails closed: the row draws on every source
+the run read.
 
 ### `Finding.agentResultId` is nullable (Issue #1330, ADR 0011)
 

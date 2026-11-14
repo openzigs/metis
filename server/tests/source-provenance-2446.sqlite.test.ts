@@ -170,6 +170,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await doc("d-a-r1", PROJECT, `connector:repo:${R1}:src/src/a.ts`);
       await doc("d-a-r2", PROJECT, `connector:repo:${R2}:src/src/a.ts`);
       await doc("d-manifest", PROJECT, `connector:repo:${R1}:package.json`);
+      // The same repository file, removed and re-added (\`ingestUnit\` makes a
+      // new row): the soft-deleted row is not the file any more.
+      await doc("d-a-r1-deleted", PROJECT, `connector:repo:${R1}:src/src/a.ts`);
+      await db.document.update({
+        where: { id: "d-a-r1-deleted" },
+        data: { deletedAt: new Date() },
+      });
+      // A user upload named like the repository file (#474): not the file.
+      await doc("d-a-r1-upload", PROJECT, `connector:repo:${R1}:src/src/a.ts`, "upload");
       await doc("d-spec", PROJECT, "spec.md", "upload");
       await chunk("k-spec-0", PROJECT, "d-spec", 0);
       await chunk("k-spec-1", PROJECT, "d-spec", 1);
@@ -413,17 +422,22 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           synthesis,
           findingIdsByIndex,
           elicited: {
-            requirements: [requirement("elicited NFR", [0])],
-            coverages: ["no_evidence"],
-            verdicts: [null],
+            requirements: [
+              requirement("elicited NFR", [0]),
+              requirement("elicited NFR, no evidence", []),
+            ],
+            coverages: ["no_evidence", "no_evidence"],
+            verdicts: [null, null],
           },
         });
         expect(await requirementSources(ANALYSIS)).toEqual({
           both: { documentIds: ["d-a-r2", "d-spec"], chunkIds: ["k-spec-0"] },
           one: { documentIds: ["d-a-r2"], chunkIds: [] },
-          "no evidence": NOTHING,
+          // Derived from the whole run (synthesis read every finding): no record.
+          "no evidence": null,
           "rests on a legacy finding": null,
           "elicited NFR": { documentIds: ["d-spec"], chunkIds: ["k-spec-0"] },
+          "elicited NFR, no evidence": null,
         });
       });
 
@@ -462,7 +476,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         );
         expect(byTitle).toEqual({
           "cdf-0": { documentIds: ["d-a-r2", "d-spec"], chunkIds: ["k-spec-0"] },
-          "cdf-1": NOTHING,
+          // The completeness check read every finding of the run: no record.
+          "cdf-1": null,
           "cdf-2": null,
           "cdf-3": null,
         });

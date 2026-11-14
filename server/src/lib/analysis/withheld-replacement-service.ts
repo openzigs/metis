@@ -386,11 +386,6 @@ export async function applyWithheldReplacement(input: {
 }
 
 /**
- * Write the fields a reviewed requirement's restatement changes, as one
- * version with the analyst as author. Only the fields that differ, so an
- * unchanged one is not rewritten. Returns whether anything changed.
- */
-/**
  * #2446 — the stored sources of a proposed row: those of the findings its
  * labels cite. A finding a later run replaced no longer reads, so the row
  * records none (`sourceIdsOfFindings`).
@@ -407,6 +402,11 @@ function proposedSourceIds(
   );
 }
 
+/**
+ * Write the fields a reviewed requirement's restatement changes, as one
+ * version with the analyst as author. Only the fields that differ, so an
+ * unchanged one is not rewritten. Returns whether anything changed.
+ */
 async function updateReviewed(
   tx: Prisma.TransactionClient,
   current: CurrentRequirementRow,

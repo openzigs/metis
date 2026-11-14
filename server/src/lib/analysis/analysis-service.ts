@@ -24,7 +24,7 @@ import {
   evidenceFindingIds,
   resolveFindingSourceIds,
   serializeSourceIds,
-  sourceIdsOfFindings,
+  sourceIdsOfFindingSets,
 } from "./source-ids.js";
 import {
   analysisFailedAgents,
@@ -1072,7 +1072,6 @@ async function deleteAgentResultsInScope(
   });
 }
 
-/** The row and its findings, through `db` (the client, or a transaction). */
 /**
  * #2446 — the stored sources of each finding in `input`, index-aligned, read
  * once per result and outside the write's transaction. Every path that
@@ -1100,6 +1099,7 @@ async function findingSourceIds(input: PersistAgentResultInput): Promise<Array<s
   }
 }
 
+/** The row and its findings, through `db` (the client, or a transaction). */
 async function writeAgentResult(
   db: Prisma.TransactionClient,
   input: PersistAgentResultInput,
@@ -1590,6 +1590,15 @@ async function replaceRequirementSet(
   // #1063 — the imported items this run was started from; `[]` on any other run,
   // which leaves every row's `sourceCandidateIds` null.
   const runSources = readSourceRequirements(metadata);
+  const labelsByIdx = input.synthesis.requirements.map((r) =>
+    evidenceLabels(r, input.findingIdsByIndex),
+  );
+  // #2446 — the sources of the findings each row rests on, in one read.
+  const sourceIdsByIdx = await sourceIdsOfFindingSets(
+    tx,
+    input.analysisId,
+    labelsByIdx.map(evidenceFindingIds),
+  );
   const ids: string[] = [];
   for (let idx = 0; idx < input.synthesis.requirements.length; idx++) {
     const r = input.synthesis.requirements[idx];
@@ -1608,9 +1617,7 @@ async function replaceRequirementSet(
     // of their own (below), so accepting the proposal leaves a version holding
     // them for Restore to return to.
     const anchored = plan.proposed !== null && plan.criteria.length > 0;
-    const labels = evidenceLabels(r, input.findingIdsByIndex);
-    // #2446 — the sources of the findings it rests on.
-    const sourceIds = await sourceIdsOfFindings(tx, input.analysisId, evidenceFindingIds(labels));
+    const labels = labelsByIdx[idx]!;
     // #2436 — awaiting review when an author of it signed it off.
     const rowStatus = structuredId && held.has(structuredId) ? "draft" : input.reviewStatus;
     const row = await tx.requirement.create({
@@ -1622,7 +1629,7 @@ async function replaceRequirementSet(
         body: r.body,
         priority: r.priority,
         labels: JSON.stringify(labels),
-        sourceIds,
+        sourceIds: sourceIdsByIdx[idx] ?? null,
         // Issue #1096 — the synthesis agent's own criteria, kept as structured
         // data instead of being collapsed into `body`. An empty array is
         // preserved as-is: downstream says "none were derived" rather than
@@ -1701,9 +1708,16 @@ async function writeElicitedRequirements(
 ): Promise<string[]> {
   const elicited = input.elicited;
   if (!elicited) return [];
+  const labelsByIdx = elicited.requirements.map((r) => evidenceLabels(r, input.findingIdsByIndex));
+  // #2446 — the sources of the findings each row rests on, in one read.
+  const sourceIdsByIdx = await sourceIdsOfFindingSets(
+    tx,
+    input.analysisId,
+    labelsByIdx.map(evidenceFindingIds),
+  );
   const ids: string[] = [];
   for (const [idx, r] of elicited.requirements.entries()) {
-    const labels = evidenceLabels(r, input.findingIdsByIndex);
+    const labels = labelsByIdx[idx]!;
     const row = await tx.requirement.create({
       data: {
         analysisId: input.analysisId,
@@ -1713,8 +1727,7 @@ async function writeElicitedRequirements(
         body: r.body,
         priority: r.priority,
         labels: JSON.stringify(labels),
-        // #2446 — the sources of the findings it rests on.
-        sourceIds: await sourceIdsOfFindings(tx, input.analysisId, evidenceFindingIds(labels)),
+        sourceIds: sourceIdsByIdx[idx] ?? null,
         acceptanceCriteria: JSON.stringify(r.acceptanceCriteria ?? []),
         coverage: elicited.coverages[idx] ?? null,
         verdict: elicited.verdicts[idx] ?? null,
@@ -2006,9 +2019,17 @@ export async function persistCrossDocFindings(input: {
   analysisId: string;
   findings: CrossDocFinding[];
 }): Promise<string[]> {
+  // #2446 — its evidence ids are the run's finding ids (one segment per
+  // finding): the union of their sources, read for every row at once. A row
+  // citing none was still derived from every finding of the run: NULL.
+  const sourceIdsByIdx = await sourceIdsOfFindingSets(
+    prisma,
+    input.analysisId,
+    input.findings.map((f) => f.evidenceIds ?? []),
+  );
   await prisma.crossDocFinding.deleteMany({ where: { analysisId: input.analysisId } });
   const ids: string[] = [];
-  for (const f of input.findings) {
+  for (const [idx, f] of input.findings.entries()) {
     const row = await prisma.crossDocFinding.create({
       data: {
         analysisId: input.analysisId,
@@ -2017,9 +2038,7 @@ export async function persistCrossDocFindings(input: {
         title: f.title.slice(0, 255),
         detail: f.detail,
         evidenceIds: JSON.stringify(f.evidenceIds ?? []),
-        // #2446 — its evidence ids are the run's finding ids (one segment per
-        // finding): the union of their sources.
-        sourceIds: await sourceIdsOfFindings(prisma, input.analysisId, f.evidenceIds ?? []),
+        sourceIds: sourceIdsByIdx[idx] ?? null,
         scope: f.scope ?? null,
       },
     });

@@ -10,6 +10,7 @@ import {
   parseSourceIds,
   resolveFindingSourceIds,
   serializeSourceIds,
+  sourceIdsOfFindingSets,
   sourceIdsOfFindings,
   unionSourceIds,
   unionStoredSourceIds,
@@ -120,12 +121,47 @@ describe("#2446 — stored sources", () => {
     ).rejects.toThrow(/an-gone/);
   });
 
-  it("a row citing no finding rests on none of them, and reads nothing", async () => {
+  it("a row citing no finding rests on the run as a whole: no record (NULL), and reads nothing", async () => {
+    // Synthesis, elicitation and the completeness check read every finding of
+    // the run, so a derived row with no evidence is not "drew on nothing" (#2447).
     const db = { finding: { findMany: vi.fn() } };
-    expect(JSON.parse((await sourceIdsOfFindings(db as never, "an-1", []))!)).toEqual({
-      documentIds: [],
-      chunkIds: [],
-    });
+    expect(await sourceIdsOfFindings(db as never, "an-1", [])).toBeNull();
+    expect(await sourceIdsOfFindingSets(db as never, "an-1", [[], []])).toEqual([null, null]);
     expect(db.finding.findMany).not.toHaveBeenCalled();
+  });
+
+  it("reads every row's evidence findings in one query, and unions per row", async () => {
+    const stored = (documentIds: string[]) => JSON.stringify({ documentIds, chunkIds: [] });
+    const db = {
+      finding: {
+        findMany: vi.fn(async () => [
+          { id: "f-1", sourceIds: stored(["d-1"]) },
+          { id: "f-2", sourceIds: stored(["d-2"]) },
+          { id: "f-legacy", sourceIds: null },
+        ]),
+      },
+    };
+    const out = await sourceIdsOfFindingSets(db as never, "an-1", [
+      ["f-2", "f-1", "f-2"],
+      [],
+      ["f-1", "f-legacy"],
+      ["f-1", "f-missing"],
+      ["f-2"],
+    ]);
+    expect(db.finding.findMany).toHaveBeenCalledTimes(1);
+    expect(db.finding.findMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ["f-1", "f-2", "f-legacy", "f-missing"] },
+        agentResult: { analysisId: "an-1" },
+      },
+      select: { id: true, sourceIds: true },
+    });
+    expect(out.map((v) => (v === null ? null : JSON.parse(v)))).toEqual([
+      { documentIds: ["d-1", "d-2"], chunkIds: [] },
+      null,
+      null,
+      null,
+      { documentIds: ["d-2"], chunkIds: [] },
+    ]);
   });
 });
