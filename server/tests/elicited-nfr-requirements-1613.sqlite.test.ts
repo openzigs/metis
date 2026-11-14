@@ -42,6 +42,15 @@ vi.mock("../src/lib/prisma.js", async (importOriginal) => ({
     return state.db;
   },
 }));
+// #2427 review — passthrough, so one test can make the best-effort offer fail.
+vi.mock("../src/lib/analysis/offer-synthesis-items.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../src/lib/analysis/offer-synthesis-items.js")>();
+  return {
+    ...actual,
+    offerElicitedNfrsForReview: vi.fn(actual.offerElicitedNfrsForReview),
+  };
+});
 vi.mock("../src/lib/audit/audit-service.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/audit/audit-service.js")>()),
   audit: vi.fn(),
@@ -56,6 +65,7 @@ const {
   MAX_ELICITED_NFRS_PER_RUN,
   readElicitedNfrsAwaitingPromotion,
 } = await import("../src/lib/analysis/elicited-nfr-requirements.js");
+const { offerElicitedNfrsForReview } = await import("../src/lib/analysis/offer-synthesis-items.js");
 const { buildRerankMessages } = await import("../src/lib/traceability/requirement-code-mapping.js");
 const { initAnalysisRouter } = await import("../src/routes/analysis.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
@@ -142,7 +152,38 @@ const NFRS = [
   },
 ];
 
-type Elicitation = "nfrs" | "empty" | "unreadable" | "many";
+/**
+ * #2427 review — the same three NFRs as a model words them on another run:
+ * no title, target or subject restates one of {@link NFRS}, so each is new.
+ */
+const REWORDED_NFRS = [
+  {
+    category: "performance",
+    title: "Feed listing responds quickly",
+    description: "Listing feeds responds within 250 ms for most requests.",
+    metric: "p90 < 250 ms",
+    priority: "must-have",
+    evidenceIds: [],
+  },
+  {
+    category: "security",
+    title: "Stored credentials are protected",
+    description: "Credentials kept by the reader are protected in storage.",
+    metric: "",
+    priority: "should-have",
+    evidenceIds: [],
+  },
+  {
+    category: "availability",
+    title: "Service availability target",
+    description: "The service stays available almost all the time.",
+    metric: "99.5% availability",
+    priority: "nice-to-have",
+    evidenceIds: [],
+  },
+];
+
+type Elicitation = "nfrs" | "reworded" | "empty" | "unreadable" | "many";
 
 /** #1705 — more NFRs than one run may add (`MAX_ELICITED_NFRS_PER_RUN`). */
 const MANY_NFRS = Array.from({ length: 25 }, (_, i) => ({
@@ -162,6 +203,8 @@ function scriptedProvider(elicitation: Elicitation, synthesis: unknown = SYNTHES
       if (elicitation === "empty") return JSON.stringify({ nfrs: [], acceptanceCriteria: [] });
       if (elicitation === "many")
         return JSON.stringify({ nfrs: MANY_NFRS, acceptanceCriteria: [] });
+      if (elicitation === "reworded")
+        return JSON.stringify({ nfrs: REWORDED_NFRS, acceptanceCriteria: [] });
       // Every section the model was sent: "cite" stands for all of them.
       const sent = [...user.matchAll(/\(id=([^)]+)\)/g)].map((m) => m[1]!);
       return JSON.stringify({
@@ -503,8 +546,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     it("offers the NFRs of a run whose checkpoint was approved while it ran, writing none unlisted (#2427)", async () => {
       const { id, synthesis } = await gateBlockedAnalysis(["List feeds"]);
       await approveAll(id);
+      // #2427 review — and an item that restates no reviewed requirement. The
+      // #1569 offer runs only where the gate was closed before the NFRs were
+      // offered, as before #2427: whether the item is listed must not depend
+      // on whether the elicitor found a new NFR.
+      const withUnmatched = {
+        ...synthesis,
+        requirements: [
+          ...synthesis.requirements,
+          item("Export subscriptions as OPML", { structuredIds: [] }),
+        ],
+      };
 
-      expect(await run(id, "nfrs", synthesis)).toEqual([]);
+      expect(await run(id, "nfrs", withUnmatched)).toEqual([]);
       const meta = await metadataOf(id);
       expect(meta.promotionStatus).toBe("blocked");
       const listed = await listedOf(id);
@@ -514,7 +568,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ["Encrypt API tokens at rest", true],
         ["99.9% monthly uptime", true],
       ]);
-      expect(meta.promotionBlocked).toMatchObject({ awaitingRequirementCount: 4 });
+      // #2427 review — the count stated is what awaits a decision: the 3
+      // offered NFRs, not "List feeds", already approved (#2330's "4 awaiting"
+      // against 3 pending). The list the checkpoint shows is still 4.
+      expect(meta.promotionBlocked).toMatchObject({
+        awaitingRequirementCount: 3,
+        reviewedRequirementCount: 4,
+      });
       expect((await approvalsOf(id)).filter((a) => a.status === "pending")).toHaveLength(3);
 
       await approveAll(id);
@@ -542,6 +602,68 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const rows = await run(id, "nfrs", synthesis);
       expect((await metadataOf(id)).promotionStatus).toBe("allowed");
       expect(rows.map((r) => [r.title, r.reviewStatus])).toEqual(kept.map((t) => [t, "approved"]));
+    });
+
+    // #2427 review — the elicitor is a model and words its NFRs differently on
+    // each run, so a re-run of an approved analysis offered each rewording as
+    // new: up to 20 more pending approvals per run, never fewer, each holding
+    // the gate. A re-run now replaces the NFRs still undecided from an earlier
+    // run, and one already decided (rejected included) is never offered again.
+    it("a re-run replaces the NFRs still pending from an earlier run, and never re-offers a decided one (#2427)", async () => {
+      const { id, synthesis } = await gateBlockedAnalysis(["List feeds"]);
+      await approveAll(id);
+      await run(id, "nfrs", synthesis);
+      const first = (await listedOf(id)).filter((r) => r.elicitedNfr !== undefined);
+      expect(first).toHaveLength(3);
+      const uptime = first.find((r) => r.title === "99.9% monthly uptime")!;
+      await db.approvalRequest.updateMany({
+        where: { analysisId: id, itemId: uptime.id },
+        data: { status: "rejected", reviewedAt: new Date() },
+      });
+      const pendingTitles = async () => {
+        const pending = new Set(
+          (await approvalsOf(id)).filter((a) => a.status === "pending").map((a) => a.itemId),
+        );
+        return (await listedOf(id)).filter((r) => pending.has(r.id)).map((r) => r.title);
+      };
+
+      // Reworded: the two still pending are withdrawn, the rejected one stays
+      // listed and rejected, and this run's three are offered in their place.
+      await run(id, "reworded", synthesis);
+      expect((await listedOf(id)).map((r) => r.title)).toEqual([
+        "List feeds",
+        "99.9% monthly uptime",
+        ...REWORDED_NFRS.map((n) => n.title),
+      ]);
+      expect(await pendingTitles()).toEqual(REWORDED_NFRS.map((n) => n.title));
+      // No approval is left for a requirement the checkpoint no longer lists.
+      const listedIds = new Set((await listedOf(id)).map((r) => r.id));
+      expect((await approvalsOf(id)).every((a) => listedIds.has(a.itemId))).toBe(true);
+
+      // The first wording again: the rejected NFR is not offered a second time.
+      await run(id, "nfrs", synthesis);
+      expect(await pendingTitles()).toEqual(["P95 latency < 300ms", "Encrypt API tokens at rest"]);
+      expect(
+        (await approvalsOf(id)).filter((a) => a.itemId === uptime.id).map((a) => a.status),
+      ).toEqual(["rejected"]);
+      expect(await listedOf(id)).toHaveLength(4);
+    });
+
+    // #2427 review — the offer is best-effort. On a reviewed run whose gate
+    // was open, a failed offer leaves the NFRs unoffered, and so unwritten:
+    // never drafts beside the approved set the checkpoint did not list.
+    it("writes no NFR when the offer fails on a run whose checkpoint was approved (#2427)", async () => {
+      const { id, synthesis } = await gateBlockedAnalysis(["List feeds"]);
+      await approveAll(id);
+      await promoteApprovedRequirements(id, { asApproved: true });
+      vi.mocked(offerElicitedNfrsForReview).mockRejectedValueOnce(new Error("offer failed"));
+
+      const rows = await run(id, "nfrs", synthesis);
+      expect(vi.mocked(offerElicitedNfrsForReview)).toHaveBeenCalled();
+      expect(rows.map((r) => [r.title, r.reviewStatus])).toEqual([["List feeds", "approved"]]);
+      expect(elicitedRows(rows)).toEqual([]);
+      expect((await listedOf(id)).map((r) => r.title)).toEqual(["List feeds"]);
+      expect((await metadataOf(id)).promotionStatus).toBe("allowed");
     });
 
     // #1705 — a run whose promotion the approval gate blocked returned before

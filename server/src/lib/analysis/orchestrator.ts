@@ -191,6 +191,7 @@ import {
   planApprovedRequirementSet,
 } from "./approved-requirement-set.js";
 import {
+  countUndecidedRequirements,
   offerElicitedNfrsForReview,
   offerUnmatchedItemsForReview,
 } from "./offer-synthesis-items.js";
@@ -5404,6 +5405,11 @@ export class AnalysisOrchestrator {
       // analysis metadata and surfaced on the socket so the UI (#217) can show
       // a clear "promotion blocked" notice — never a silent promotion.
       let ticketStatus = await canCreateTickets(input.analysisId);
+      // #2427 review — whether the gate was closed before the NFR offer below
+      // could close it: the #1569 offer runs on exactly those runs, as before
+      // #2427, so whether a run's unmatched items are listed never depends on
+      // whether its elicitor found a new NFR.
+      const blockedBeforeNfrOffer = !ticketStatus.allowed;
       let reviewedList: ReadonlyArray<StructuredRequirement> = refined?.requirements ?? [];
       // Issue #2449 — the NFRs this run elicited are offered at the checkpoint,
       // so it lists every requirement promotion writes: promotion of a reviewed
@@ -5418,14 +5424,15 @@ export class AnalysisOrchestrator {
       // unoffered, and so unwritten.
       if (reviewedList.length > 0 && elicitedNfrs.length > 0) {
         try {
-          const offered = await offerElicitedNfrsForReview(input.analysisId, {
+          const { offered, withdrawn } = await offerElicitedNfrsForReview(input.analysisId, {
             nfrs: elicitedNfrs,
             findingIdsByIndex,
             synthesized: result.degraded ? [] : result.output.requirements,
           });
-          if (offered.length > 0) {
+          if (offered.length > 0 || withdrawn.length > 0) {
+            const gone = new Set(withdrawn);
             reviewedList = (await getStructuredRequirements(input.analysisId))?.requirements ?? [
-              ...reviewedList,
+              ...reviewedList.filter((r) => !gone.has(r.id)),
               ...offered,
             ];
             ticketStatus = await canCreateTickets(input.analysisId);
@@ -5444,7 +5451,7 @@ export class AnalysisOrchestrator {
         // instead. Not from a degraded synthesis, whose keyword-fallback items
         // are findings rather than requirements. Best-effort: a failure leaves
         // the run as it was before #1569, with the #930 notice.
-        if (reviewedList.length > 0 && !result.degraded) {
+        if (blockedBeforeNfrOffer && reviewedList.length > 0 && !result.degraded) {
           try {
             const offered = await offerUnmatchedItemsForReview(
               input.analysisId,
@@ -5471,8 +5478,13 @@ export class AnalysisOrchestrator {
         // Issue #730 — promotion persists the APPROVED structured requirements
         // when there are any (`promoteApprovedRequirements`), so that list — the
         // one the Approvals tab shows — is what is awaiting, not the synthesis set.
+        // #2427 review — of that list, the ones still awaiting a decision: on a
+        // checkpoint reopened after it was approved, "3 awaiting" for 3 pending,
+        // not the list's 4 (#2330). The list's size is recorded beside it.
         const awaitingRequirementCount =
-          reviewedList.length > 0 ? reviewedList.length : result.output.requirements.length;
+          reviewedList.length > 0
+            ? await countUndecidedRequirements(input.analysisId, reviewedList)
+            : result.output.requirements.length;
         const { reason: blockedReason } = describePromotionGate({
           pendingCount: ticketStatus.pendingCount,
           awaitingRequirementCount,
@@ -5490,6 +5502,9 @@ export class AnalysisOrchestrator {
             pendingCount: ticketStatus.pendingCount,
             rejectedCount: ticketStatus.rejectedCount,
             awaitingRequirementCount,
+            // #2427 review — the reviewed list's size, decided or not: what
+            // approving promotes, for the #909 comparison below.
+            ...(reviewedList.length > 0 ? { reviewedRequirementCount: reviewedList.length } : {}),
             // #909 — lets the Approvals tab say, before anyone approves, that the
             // reviewed list (not this many synthesized rows) is what is promoted.
             synthesisRequirementCount: result.output.requirements.length,

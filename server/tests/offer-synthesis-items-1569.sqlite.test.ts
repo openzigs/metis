@@ -194,7 +194,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     it("offers an elicited NFR on a reviewed list, with a pending approval, once (#2449)", async () => {
       const input = { nfrs: [NFR], findingIdsByIndex: [], synthesized: [] };
-      const [offered] = await offerElicitedNfrsForReview(REVIEWED, input);
+      const {
+        offered: [offered],
+      } = await offerElicitedNfrsForReview(REVIEWED, input);
       expect(offered).toMatchObject({
         title: NFR.title,
         elicitedNfr: { nfrCategory: "security" },
@@ -207,7 +209,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         status: "pending",
         type: "requirement",
       });
-      expect(await offerElicitedNfrsForReview(REVIEWED, input)).toEqual([]);
+      // #2427 — offered again while pending: kept, not added twice or withdrawn.
+      expect(await offerElicitedNfrsForReview(REVIEWED, input)).toEqual({
+        offered: [],
+        withdrawn: [],
+      });
     });
 
     it("offers no elicited NFR where no checkpoint reviews the list (#2449)", async () => {
@@ -217,7 +223,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           findingIdsByIndex: [],
           synthesized: [],
         }),
-      ).toEqual([]);
+      ).toEqual({ offered: [], withdrawn: [] });
       expect((await getStructuredRequirements(UNREVIEWED))!.requirements).toHaveLength(1);
       expect(await approvalsOf(UNREVIEWED)).toEqual([]);
     });

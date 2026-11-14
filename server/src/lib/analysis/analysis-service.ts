@@ -343,6 +343,13 @@ export interface PromotionBlockedState {
    */
   awaitingRequirementCount?: number;
   /**
+   * Issue #2427 — how many requirements the reviewed list holds, decided or
+   * not. `awaitingRequirementCount` counts only the undecided ones, so on a
+   * checkpoint reopened after it was approved the two differ. Absent on a run
+   * recorded before #2427, where `awaitingRequirementCount` was the list's.
+   */
+  reviewedRequirementCount?: number;
+  /**
    * Issue #909 — how many requirements the SYNTHESIS produced. When it differs
    * from `awaitingRequirementCount` (the reviewed list), approving promotes the
    * reviewed list, and the Approvals tab says so before anyone approves.
@@ -678,6 +685,26 @@ export async function appendStructuredRequirements(
     };
   });
   return appended;
+}
+
+/**
+ * Issue #2427 — rewrite the reviewed (structured) list in the same locked
+ * read-modify-write as {@link appendStructuredRequirements}, for an offer that
+ * also withdraws what an earlier one added. `revise` is handed the list as it
+ * is NOW and returns the list to store, or null to leave it as it is. Nothing
+ * is written to an analysis with no list.
+ */
+export async function reviseStructuredRequirements(
+  id: string,
+  revise: (current: readonly StructuredRequirement[]) => StructuredRequirement[] | null,
+): Promise<void> {
+  await mergeAnalysisMetadata(id, (current) => {
+    const list = current.structuredRequirements as StructuredRequirements | undefined;
+    if (!Array.isArray(list?.requirements)) return current;
+    const next = revise(list.requirements);
+    if (next === null) return current;
+    return { ...current, structuredRequirements: { ...list, requirements: next } };
+  });
 }
 
 /**
