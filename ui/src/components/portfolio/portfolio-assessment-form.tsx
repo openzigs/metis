@@ -26,6 +26,10 @@
  * the host may be any one of them. A document handed over from the project's
  * documents (`document`) is sent by id: the server reads it and checks each
  * requirement it holds.
+ *
+ * #2301 — requirements ticked on a project's Requirements tab
+ * (`requirementSet`) are sent by id: the server reads each, with access, and
+ * checks each on its own.
  */
 "use client";
 
@@ -68,6 +72,12 @@ export interface PortfolioFormChangeRequest {
   title: string;
 }
 
+/** #2301 — requirements ticked on a project's Requirements tab: each is checked on its own. */
+export interface PortfolioFormRequirementSet {
+  ids: string[];
+  title: string;
+}
+
 /** #2351 — what the check covers while no option is chosen (the default from elsewhere). */
 export const EVERY_PRODUCT = "Every product you can read";
 
@@ -94,6 +104,8 @@ export function PortfolioAssessmentForm({
   onClearDocument,
   changeRequest,
   onClearChangeRequest,
+  requirementSet,
+  onClearRequirementSet,
   productQuery = "",
   onProductQueryChange,
   productTotal,
@@ -134,6 +146,9 @@ export function PortfolioAssessmentForm({
   /** #2345 — a change request whose draft and approved requirements are each checked. */
   changeRequest?: PortfolioFormChangeRequest | null;
   onClearChangeRequest?: () => void;
+  /** #2301 — a chosen set of stored requirements, each checked on its own. */
+  requirementSet?: PortfolioFormRequirementSet | null;
+  onClearRequirementSet?: () => void;
   /** #2351 — "This project": the product of the project it was opened from. */
   current?: PortfolioFormProduct | null;
   /** Why there is no "This project" (e.g. the project is in no product). */
@@ -258,7 +273,8 @@ export function PortfolioAssessmentForm({
     hostRef.current?.focus();
   }, [productsLoading]);
 
-  const hasSource = changeRequest || requirement || document ? true : statement.trim().length > 0;
+  const hasSource =
+    changeRequest || requirementSet || requirement || document ? true : statement.trim().length > 0;
   const hasScope = allAccessible || scopeIds.length > 0;
   // #2351 — while "This project" is looked up, the scope is not known yet: a
   // quick submit would go out over every product.
@@ -269,11 +285,13 @@ export function PortfolioAssessmentForm({
     if (!canSubmit) return;
     const source = changeRequest
       ? { analysisId: changeRequest.id }
-      : document
-        ? { documentId: document.id }
-        : requirement
-          ? { requirementId: requirement.id }
-          : { statement: statement.trim() };
+      : requirementSet
+        ? { requirementIds: requirementSet.ids }
+        : document
+          ? { documentId: document.id }
+          : requirement
+            ? { requirementId: requirement.id }
+            : { statement: statement.trim() };
     const hosted = host ? { hostProductId: host } : {};
     onSubmit(
       allAccessible
@@ -304,6 +322,27 @@ export function PortfolioAssessmentForm({
               size="sm"
               className="px-0"
               onClick={onClearChangeRequest}
+            >
+              Type a statement instead
+            </Button>
+          ) : null}
+        </div>
+      ) : requirementSet ? (
+        <div className="space-y-1" data-testid="portfolio-form-requirement-set">
+          <p className="text-sm font-medium">Chosen requirements</p>
+          <p className="text-sm">{requirementSet.title}</p>
+          <p className="text-xs text-muted-foreground">
+            METIS checks each of the {requirementSet.ids.length} requirement
+            {requirementSet.ids.length === 1 ? "" : "s"} on its own. Checked before they are
+            approved, the result is labelled as run on unapproved requirements.
+          </p>
+          {onClearRequirementSet ? (
+            <Button
+              type="button"
+              variant="link"
+              size="sm"
+              className="px-0"
+              onClick={onClearRequirementSet}
             >
               Type a statement instead
             </Button>

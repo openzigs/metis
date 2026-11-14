@@ -101,6 +101,8 @@ export async function createPortfolioAssessment(raw: PortfolioAssessmentInput): 
         sourceDocumentId: input.sourceDocumentId,
         sourceAnalysisId: input.sourceAnalysisId,
         preApproval: input.preApproval,
+        // #2301 — the chosen requirements, so the host-picker link re-opens the same set.
+        sourceRequirementIds: JSON.stringify(input.sourceRequirementIds),
         scope: input.scope,
         productIds: JSON.stringify(input.productIds),
         status: input.status,
@@ -283,6 +285,14 @@ function parseJson<T>(raw: string, fallback: T): T {
   }
 }
 
+/** #2301 — a stored JSON list of ids: the strings in it, else none. */
+function storedIds(raw: string): string[] {
+  const parsed = parseJson<unknown>(raw, []);
+  return Array.isArray(parsed)
+    ? parsed.filter((id): id is string => typeof id === "string" && id.length > 0)
+    : [];
+}
+
 function oneOf<T extends string>(allowed: readonly T[], value: string | null, fallback: T): T;
 function oneOf<T extends string>(
   allowed: readonly T[],
@@ -321,6 +331,8 @@ export async function getPortfolioAssessment(id: string): Promise<PortfolioAsses
     sourceDocumentId: row.sourceDocumentId,
     sourceAnalysisId: row.sourceAnalysisId,
     preApproval: row.preApproval,
+    // #2301 — only ids: anything else stored there is not read as one.
+    sourceRequirementIds: storedIds(row.sourceRequirementIds),
     scope: oneOf(PORTFOLIO_ASSESSMENT_SCOPES, row.scope, "product"),
     productIds: parseJson<string[]>(row.productIds, []),
     status: oneOf(PORTFOLIO_ASSESSMENT_STATUSES, row.status, "failed"),

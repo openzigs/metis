@@ -1984,6 +1984,10 @@ model PortfolioAssessment {
   /// #2345 — true when a requirement checked was not approved when the check
   /// started: the result is labelled as run on unapproved requirements.
   preApproval         Boolean  @default(false)
+  /// #2301 — JSON string[]: the stored requirements chosen to be checked, each
+  /// one criterion, in the order chosen (scalar soft-links, no FK, like
+  /// `sourceDocumentId`), all in `sourceProjectId`. `[]` for any other source.
+  sourceRequirementIds String @default("[]")
   costUsd             Float    @default(0)
   createdById         String
   createdAt           DateTime @default(now())

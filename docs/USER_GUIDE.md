@@ -2280,6 +2280,15 @@ portfolio** button too, which starts with that product chosen. And every ready d
 a project's **Documents** page has a **Check requirements across portfolio** button, which
 checks each requirement the document holds (see *Checking a document* below). [#2272]
 
+To check several requirements at once, tick them on a project's **Requirements** tab and
+click **Check N selected across portfolio**. Each requirement you ticked is checked on its
+own, in the order you ticked them, up to 100 in one check (the button is disabled past that
+and says so). The requirements must all be of one project: only people who can read that
+project can read the check. Ticking a draft labels the check **Run on unapproved
+requirements**, as from a change request. A requirement's text past 2,000 characters is
+listed under **Not checked**, never cut silently. When the check's page asks which product
+will build it, its link re-opens the same set. [#2301]
+
 The check runs in the background. Its page (`/portfolio/<id>`) shows progress, and you can
 leave it or reload it: the same check picks up where it is. Your recent checks are listed
 under **Recent checks**. You can start 10 checks in 15 minutes.

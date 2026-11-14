@@ -107,6 +107,8 @@ export async function resolveReaderAccess(user: AuthPayload): Promise<ReaderAcce
 /**
  * #2447 — what of an assessment's source the reader cannot see. `all`: every
  * word of it (a single requirement resting on a source they cannot see).
+ * #2301: a chosen set's requirements are read like a change request's, and
+ * its criteria are written as `title: body` too.
  * Otherwise `hides(text)` says whether one stored text (a criterion, a
  * not-checked entry) may have been drawn from a change-request row they cannot
  * see, and `any` whether any stored text was, which withholds the model's
@@ -126,14 +128,23 @@ export async function resolveReaderAccess(user: AuthPayload): Promise<ReaderAcce
 async function hiddenSource(
   access: ReaderAccess,
   a: PortfolioAssessment,
-): Promise<{ all: boolean; any: boolean; hides: (text: string) => boolean }> {
-  const none = { all: false, any: false, hides: () => false };
+): Promise<{
+  all: boolean;
+  any: boolean;
+  hides: (text: string) => boolean;
+  /** #2301 — the ids of the source requirements resting on a source the reader cannot see. */
+  ids: ReadonlySet<string>;
+}> {
+  const none = { all: false, any: false, hides: () => false, ids: new Set<string>() };
   if (access.admin) return none;
   const where = a.sourceRequirementId
     ? { id: a.sourceRequirementId }
     : a.sourceAnalysisId
       ? { analysisId: a.sourceAnalysisId }
-      : null;
+      : // #2301 — a chosen set: those of its requirements resting on a hidden source.
+        (a.sourceRequirementIds?.length ?? 0) > 0
+        ? { id: { in: a.sourceRequirementIds } }
+        : null;
   if (!where) return none;
   const rows = await prisma.requirement.findMany({
     where,
@@ -141,7 +152,7 @@ async function hiddenSource(
   });
   const hidden = await restrictedIds(userSourceReader(access.user.userId), rows);
   if (hidden.size === 0) return none;
-  if (a.sourceRequirementId) return { all: true, any: true, hides: () => true };
+  if (a.sourceRequirementId) return { all: true, any: true, hides: () => true, ids: hidden };
   const visible = rows
     .filter((r) => !hidden.has(r.id))
     .map((r) => normalized(`${r.title}: ${r.body}`));
@@ -155,7 +166,7 @@ async function hiddenSource(
   const any =
     criteria.length === 0 ||
     [...criteria, ...a.notChecked.filter(carriesText).map((n) => n.text)].some(hides);
-  return { all: false, any, hides };
+  return { all: false, any, hides, ids: hidden };
 }
 
 /** Whitespace collapsed, as a not-checked entry's opening is written (`oneLine`). */
@@ -652,6 +663,11 @@ export async function viewPortfolioAssessment(
   return {
     ...a,
     statement: hidden.all ? RESTRICTED_SOURCE_TITLE : a.statement,
+    // #2301 — a chosen set names only the requirements this reader can see; of
+    // the rest only how many there are, so the page can tell the set is not
+    // all theirs to re-open.
+    sourceRequirementIds: (a.sourceRequirementIds ?? []).filter((id) => !hidden.ids.has(id)),
+    sourceRequirementCount: (a.sourceRequirementIds ?? []).length,
     notChecked: a.notChecked.map((n) =>
       hidden.all || (carriesText(n) && fromHidden(n.text))
         ? { ...n, text: RESTRICTED_SOURCE_TITLE }

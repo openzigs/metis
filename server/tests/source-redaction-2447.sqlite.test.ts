@@ -116,7 +116,8 @@ const { visibleTitleMatches } =
   await import("../src/lib/requirements/project-requirements-list.js");
 const { loadApprovedRequirements, SpecKitRequirementSeedError } =
   await import("../src/lib/spec-kit/requirements-seed.js");
-const { loadReadableSourceRequirement } = await import("../src/lib/portfolio/gap-engine.js");
+const { loadReadableSourceRequirement, loadReadableSourceRequirements } =
+  await import("../src/lib/portfolio/gap-engine.js");
 const { resolveChatSubject } = await import("../src/lib/ai/chat-subject.js");
 const { createGetAnalysisTool } = await import("../src/lib/analysis/results-chat-tools.js");
 const { createGetRequirementTool, createListRequirementsTool } =
@@ -1068,6 +1069,115 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           await db.portfolioAssessment.deleteMany({
             where: { id: { in: ["pa-2447-req", "pa-2447-cr"] } },
           });
+        }
+      });
+
+      it("#2301 — a stored check of a chosen set shows Bob none of the hidden requirement's text, and the open one's", async () => {
+        await db.portfolioAssessment.create({
+          data: {
+            id: "pa-2301-set",
+            statement: `2 chosen requirements of project "${P}"`,
+            scope: "all-accessible",
+            status: "completed",
+            createdById: "bob",
+            sourceProjectId: P,
+            sourceRequirementIds: JSON.stringify(["req-2447-open", "req-2447-secret"]),
+            report: JSON.stringify({
+              source: "model",
+              requirements: [{ text: `${SECRET}, restated`, kind: "functional", mentions: [] }],
+              products: [],
+            }),
+            notChecked: JSON.stringify([
+              { text: `${SECRET}: ${SECRET} — body`, reason: "text-cut", count: 12 },
+              { text: "Customers can pay: Customers can pay — body", reason: "text-cut", count: 3 },
+            ]),
+          },
+        });
+        try {
+          const bob = await viewPortfolioAssessment(
+            await resolveReaderAccess(payload("bob")),
+            "pa-2301-set",
+          );
+          expect(bob).not.toBeNull();
+          expect(JSON.stringify(bob)).not.toContain("Payroll");
+          // Only the hidden requirement's text goes; the statement names no requirement.
+          expect(bob!.statement).toBe(`2 chosen requirements of project "${P}"`);
+          expect(bob!.notChecked.map((n) => n.text)).toEqual([
+            RESTRICTED_SOURCE_TITLE,
+            "Customers can pay: Customers can pay — body",
+          ]);
+          // Nor its id: Bob is told only that the set holds one more he cannot see.
+          expect(bob!.sourceRequirementIds).toEqual(["req-2447-open"]);
+          expect(bob!.sourceRequirementCount).toBe(2);
+          expect(JSON.stringify(bob)).not.toContain("req-2447-secret");
+          const root = await viewPortfolioAssessment(
+            await resolveReaderAccess(payload("root")),
+            "pa-2301-set",
+          );
+          expect(JSON.stringify(root)).toContain(SECRET);
+          expect(root!.sourceRequirementIds).toEqual(["req-2447-open", "req-2447-secret"]);
+          expect(root!.sourceRequirementCount).toBe(2);
+        } finally {
+          await db.portfolioAssessment.deleteMany({ where: { id: "pa-2301-set" } });
+        }
+      });
+
+      it("#2301 — a chosen set holding a restricted requirement is not found for Bob", async () => {
+        const set = ["req-2447-open", "req-2447-secret"];
+        await expect(loadReadableSourceRequirements(payload("bob"), set)).rejects.toMatchObject({
+          statusCode: 404,
+        });
+        await expect(
+          loadReadableSourceRequirements(payload("bob"), ["req-2447-open"]),
+        ).resolves.toMatchObject({ projectId: P });
+        await expect(loadReadableSourceRequirements(payload("alice"), set)).resolves.toMatchObject({
+          requirements: [{ id: "req-2447-open" }, { id: "req-2447-secret", title: SECRET }],
+        });
+      });
+
+      it("#2301 — a set mixing a restricted requirement with another project's is 404 for Bob, not the cross-project 400", async () => {
+        const P2 = "proj-2447-other";
+        try {
+          await db.project.create({
+            data: {
+              id: P2,
+              name: P2,
+              slug: P2,
+              createdById: "alice",
+              workspaceId: WS,
+              status: "active",
+            },
+          });
+          await db.requirement.create({
+            data: {
+              id: "req-2447-other",
+              projectId: P2,
+              analysisId: CR,
+              title: "Invoices go out",
+              body: "Invoices go out — body",
+              reviewStatus: "approved",
+            },
+          });
+          const err = (who: Who, ids: string[]) =>
+            loadReadableSourceRequirements(payload(who), ids).then(
+              () => null,
+              (e: { statusCode: number; message: string }) => ({
+                statusCode: e.statusCode,
+                message: e.message,
+              }),
+            );
+          // Alice sees both, so the set is only refused for spanning projects.
+          expect(await err("alice", ["req-2447-secret", "req-2447-other"])).toMatchObject({
+            statusCode: 400,
+          });
+          // Bob is told exactly what an unknown id tells him: the restricted
+          // requirement's existence is not given away by a 400.
+          const unknown = await err("bob", ["req-2447-nope", "req-2447-other"]);
+          expect(unknown).toMatchObject({ statusCode: 404 });
+          expect(await err("bob", ["req-2447-secret", "req-2447-other"])).toEqual(unknown);
+        } finally {
+          await db.requirement.deleteMany({ where: { id: "req-2447-other" } });
+          await db.project.deleteMany({ where: { id: P2 } });
         }
       });
 

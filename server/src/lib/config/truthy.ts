@@ -12,6 +12,8 @@
  * vault imports.
  */
 
+import { z } from "zod";
+
 const TRUE_RE = /^(1|true|yes|on)$/i;
 const FALSE_RE = /^(0|false|no|off)$/i;
 
@@ -33,3 +35,31 @@ export function parseConfigBool(raw: string): boolean | undefined {
   if (FALSE_RE.test(v)) return false;
   return undefined;
 }
+
+/**
+ * #2493 (and #2344's `MCP_REMOTE_ENABLED`) — the write schema for every `bool`
+ * config key, and the body parser for the admin reindex `fresh` flag (#2499).
+ * Coercing with `Boolean(value)` would turn any non-empty string, "false"
+ * included, into true, so a client writing "false" switched the flag on. This
+ * takes exactly the clear spellings the read path (`getBool` →
+ * `isTruthyConfigValue`) understands, via {@link parseConfigBool}: a JSON
+ * boolean, the number 0 or 1, or `true` / `false` / `1` / `0` / `yes` / `no` /
+ * `on` / `off` as a string, case-insensitive and trimmed. Anything else (`""`,
+ * whitespace, `null`, other strings and numbers) is refused rather than guessed
+ * at. `ConfigService.set` stores the result as `"true"` / `"false"`.
+ */
+export const strictBoolSchema = z.union([
+  z.boolean(),
+  z.union([z.literal(0), z.literal(1)]).transform((n) => n === 1),
+  z.string().transform((raw, ctx) => {
+    const b = parseConfigBool(raw);
+    if (b === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Expected true/false, 1/0, yes/no or on/off",
+      });
+      return z.NEVER;
+    }
+    return b;
+  }),
+]);

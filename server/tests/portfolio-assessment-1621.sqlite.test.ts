@@ -110,6 +110,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         },
         // #1725 — the product chosen to build it.
         hostProductId: "prod-a",
+        // #2301 — a chosen set of requirements, in the order chosen.
+        sourceRequirementIds: ["req-2", "req-1"],
         costUsd: 0.42,
         createdById: USER,
         products: [
@@ -151,6 +153,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         // #2345 — none given: no change request, and not run before approval.
         sourceAnalysisId: null,
         preApproval: false,
+        sourceRequirementIds: ["req-2", "req-1"],
         scope: "all-accessible",
         productIds: ["prod-a", "prod-b"],
         status: "completed",
@@ -386,6 +389,26 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ],
         repos: [{ verdict: "could-not-verify", citations: [] }],
       });
+    });
+
+    it("#2301 — reads a stored set that is not a list of ids as none, and keeps only the ids of a mixed one", async () => {
+      const id = await createPortfolioAssessment({
+        statement: "S",
+        scope: "all-accessible",
+        productIds: [],
+        createdById: USER,
+      });
+      for (const [stored, read] of [
+        ["{bad", []],
+        ['{"0":"req-1"}', []],
+        ['["req-1",2,null,"","req-2"]', ["req-1", "req-2"]],
+      ] as const) {
+        await db.portfolioAssessment.update({
+          where: { id },
+          data: { sourceRequirementIds: stored },
+        });
+        expect((await getPortfolioAssessment(id))!.sourceRequirementIds).toEqual(read);
+      }
     });
   },
 );

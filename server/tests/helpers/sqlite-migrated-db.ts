@@ -96,6 +96,7 @@ export const STOP_BEFORE_MIGRATIONS: readonly string[] = [
   "20261126002345_issue2345_change_request_checks",
   "20261127002436_issue2436_allow_self_approval",
   "20261128002446_issue2446_source_provenance",
+  "20261129002301_issue2301_portfolio_requirement_set",
   "20261129002448_issue2448_pass_read_sets",
 ];
 
