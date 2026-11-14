@@ -41,7 +41,7 @@ import {
 import { prisma } from "../prisma.js";
 import { canAccessProjectDiscussions, canAccessThread } from "../discussions/access.js";
 import { AppError } from "../../middleware/error-handler.js";
-import { loadAccessibleImpactDetail } from "../impact-analysis/impact-detail-access.js";
+import { loadReadableImpactDetail } from "../impact-analysis/impact-detail-access.js";
 import { resolveReaderAccess, viewPortfolioAssessment } from "../portfolio/assessment-view.js";
 import { getJobScope, type JobScope } from "./job-events.js";
 import { readJobScope } from "./job-scope-store.js";
@@ -256,7 +256,7 @@ export async function resolveJobRoomScope(
     );
   } else if (scope.kind === "impact-analysis") {
     allowed = await passes(() =>
-      loadAccessibleImpactDetail({ id: user.userId, role: user.role }, jobId),
+      loadReadableImpactDetail({ id: user.userId, role: user.role }, jobId),
     );
   } else if (scope.kind === "portfolio-assessment") {
     // #1625 — the rule of `GET /api/portfolio-assessments/:id`.

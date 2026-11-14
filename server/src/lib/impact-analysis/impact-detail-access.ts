@@ -87,8 +87,12 @@ async function redactImpactDetail(
   };
 }
 
-/** The tenant rule: the run, or 404 when the actor may not read it. */
-async function loadReadableImpactDetail(
+/**
+ * The tenant rule: the run, or 404 when the actor may not read it. Not
+ * redacted: for a caller that only asks whether the run is readable (the
+ * `job:{id}` socket room), never for one that shows it.
+ */
+export async function loadReadableImpactDetail(
   actor: SchedulerActor,
   id: string,
 ): Promise<ImpactAnalysisDetail> {
