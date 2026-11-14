@@ -1447,8 +1447,10 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         // they become) are built from the `Requirement` rows, which replay the
         // synthesis output produced BEFORE any question was asked. When the
         // approval gate is still withholding those rows this is a no-op and
-        // `promoteApprovedRequirements` applies the answers instead.
-        await applyClarificationsToRequirements(analysisId);
+        // `promoteApprovedRequirements` applies the answers instead. #2429 —
+        // rows that exist were written after the analysis judged them, so the
+        // answer is the analyst's edit and their findings read stale.
+        await applyClarificationsToRequirements(analysisId, { afterAnalysis: true });
         // #2236 — the answers become project knowledge: recorded, indexed and
         // re-running what they change. After the response's work is
         // committed and off its path, metered to the project like the round.
@@ -1483,7 +1485,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         // #2236 — answers reused from the project's records this round reach
         // the stored requirements as typed ones do.
         if (state.reused?.some((r) => r.round === state.currentRound)) {
-          await applyClarificationsToRequirements(analysisId);
+          // #2429 — as a typed answer: the analyst's edit of existing rows.
+          await applyClarificationsToRequirements(analysisId, { afterAnalysis: true });
         }
         if ((state.reused?.length ?? 0) > reusedBefore) {
           // #2310 — and re-run what they change, as a typed answer does: off
@@ -1908,8 +1911,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         );
         written = result.state;
         // Issue #1116 — the CSV round-trip is the same submit path, so it must
-        // reach the artifact the same way.
-        await applyClarificationsToRequirements(analysisId);
+        // reach the artifact the same way (#2429: as the analyst's edit).
+        await applyClarificationsToRequirements(analysisId, { afterAnalysis: true });
         // #2236 — and become project knowledge the same way. #2310 — only
         // the round this import answered is recorded.
         const answeredRound = state.rounds.at(-1)?.round;

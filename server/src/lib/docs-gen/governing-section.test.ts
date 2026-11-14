@@ -558,7 +558,11 @@ describe("a BRD covering some of a run's requirements lists only their findings 
     expect(markdown).not.toContain('"Monthly statement" was checked');
     expect(db.versionGroupBy).toHaveBeenCalledWith({
       by: ["requirementId"],
-      where: { requirementId: { in: ["req-1", "req-2"] }, actorId: { not: null } },
+      // #2429 — an answer to a clarifying question after the analysis is a person's edit too.
+      where: {
+        requirementId: { in: ["req-1", "req-2"] },
+        OR: [{ actorId: { not: null } }, { reason: "Clarification answered after the analysis" }],
+      },
       _min: { version: true },
     });
   });

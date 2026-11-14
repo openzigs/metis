@@ -194,7 +194,9 @@ export const governingRequirementApplicabilitySchema = z.object({
    * version that was judged. Set by **Re-check this requirement**, which
    * stores an entry under the stored requirement's own id. Absent on an entry
    * the analysis wrote: its `text` is the analysed wording, which the stored
-   * requirements drawn from it had at their analysed version.
+   * requirements drawn from it had at their analysed version. #2429 — set on
+   * an analysed entry the clarification re-run re-decided, for the stored
+   * requirements whose answers its `text` carries.
    */
   versions: z.record(z.string().min(1).max(64), z.number().int().min(0)).optional(),
 });

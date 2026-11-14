@@ -15,12 +15,19 @@
  * VERSIONS. A stored requirement's ANALYSED version is the one the analysis
  * wrote: its version before the first edit by a person (a `RequirementVersion`
  * row with an actor), or its current version when no person has edited it.
- * System versions (kept approved criteria, clarification enrichment) are the
- * analysis's own writing. A finding judged on the analysed wording judged every
- * stored requirement drawn from it at that version. **Re-check this
- * requirement** (`recheck.ts`) judges one stored requirement's current wording
- * under its own id, and its rows record the version judged
- * (`governing_findings.requirementVersions`).
+ * System versions (kept approved criteria, clarification answers written in
+ * when the requirements were created) are the analysis's own writing. #2429 —
+ * an answer the analyst gives to a clarifying question once the requirements
+ * exist is a person's edit: the analysis judged them before it was given. Its
+ * version keeps a null actor, so the #769 guard (`reviewedRequirementWhere`)
+ * still lets the set be re-synthesised, and is told apart by its reason,
+ * {@link ANSWERED_CLARIFICATION_VERSION_REASON}. A finding judged on the
+ * analysed wording judged every stored requirement drawn from it at that
+ * version. **Re-check this requirement** (`recheck.ts`) judges one stored
+ * requirement's current wording under its own id, and its rows record the
+ * version judged (`governing_findings.requirementVersions`). #2429 — so does
+ * the clarification re-run's re-decision of an analysed requirement, for the
+ * stored requirements whose answers it judged (`clarification-rerun.ts`).
  *
  * STALE. A finding is stale for a stored requirement whose version is not the
  * one judged. A finding on an analysed requirement stops being stale for a
@@ -118,6 +125,21 @@ export function analysedVersionOf(version: number, firstPersonVersion: number | 
 }
 
 /**
+ * #2429 — the reason on the version an analyst's answer to a clarifying
+ * question writes into a requirement that already exists, so after the
+ * analysis judged it (`applyClarificationsToRequirements` with
+ * `afterAnalysis`). A person's edit for staleness (see VERSIONS), though its
+ * actor is null. Here rather than beside the enrichment's own reason so this
+ * module imports nothing that imports it.
+ */
+export const ANSWERED_CLARIFICATION_VERSION_REASON = "Clarification answered after the analysis";
+
+/** The `RequirementVersion` rows a person wrote (see VERSIONS). */
+const PERSON_VERSION = {
+  OR: [{ actorId: { not: null } }, { reason: ANSWERED_CLARIFICATION_VERSION_REASON }],
+};
+
+/**
  * The first version a person wrote, by requirement id, for those of `ids` that
  * have one. A requirement at version 0 has no history, so callers pass only the
  * ids above 0.
@@ -126,12 +148,59 @@ export async function firstPersonVersions(ids: readonly string[]): Promise<Map<s
   if (ids.length === 0) return new Map();
   const rows = await prisma.requirementVersion.groupBy({
     by: ["requirementId"],
-    where: { requirementId: { in: [...ids] }, actorId: { not: null } },
+    where: { requirementId: { in: [...ids] }, ...PERSON_VERSION },
     _min: { version: true },
   });
   const out = new Map<string, number>();
   for (const r of rows) if (r._min.version !== null) out.set(r.requirementId, r._min.version);
   return out;
+}
+
+/**
+ * #2429 — the current version of each of `ids` (live, of the analysis and
+ * project) that no one edited with an actor: every change a person made to its
+ * wording since the analysis is an answer to a clarifying question. Such a
+ * requirement's wording is the analysed wording with the answers, which is what
+ * the clarification re-run judges, so its re-decided findings judged this
+ * version. A requirement an analyst also edited by hand is left out: the
+ * re-run did not judge that edit.
+ */
+export async function answeredOnlyVersions(
+  ids: readonly string[],
+  analysisId: string,
+  projectId: string,
+): Promise<Map<string, AnsweredOnlyVersion>> {
+  if (ids.length === 0) return new Map();
+  // The body is read with the version, in one read, so the caller can tell
+  // which answers this version carries (#2429 review: an answer submitted
+  // after the caller read its answers bumps the version past what it judged).
+  const rows = await prisma.requirement.findMany({
+    where: { id: { in: [...ids] }, analysisId, projectId, deletedAt: null },
+    select: { id: true, version: true, body: true },
+  });
+  const edited = await editedByHand(rows.map((r) => r.id));
+  return new Map(
+    rows
+      .filter((r) => !edited.has(r.id))
+      .map((r) => [r.id, { version: r.version, body: r.body }] as const),
+  );
+}
+
+/** One requirement's current version, and the body written at it. */
+export interface AnsweredOnlyVersion {
+  version: number;
+  body: string;
+}
+
+/** The ids of `ids` with any version a person wrote by hand (with an actor). */
+async function editedByHand(ids: readonly string[]): Promise<Set<string>> {
+  if (ids.length === 0) return new Set();
+  const rows = await prisma.requirementVersion.findMany({
+    where: { requirementId: { in: [...ids] }, actorId: { not: null } },
+    distinct: ["requirementId"],
+    select: { requirementId: true },
+  });
+  return new Set(rows.map((r) => r.requirementId));
 }
 
 /** The analysed version of each of `rows`, by id. */
@@ -268,14 +337,16 @@ export function editedWithoutFindings(
       .map((e) => [e.requirementId, e.versions![e.requirementId]!] as const),
   );
   // #2311 — the analysed requirements the check decided. One whose entry
-  // errored, or that it never reached, judged no wording of anything drawn from it.
-  const decided = new Set(
-    applicability.requirements
-      .filter((e) => !isRecheckEntry(e) && !e.error)
-      .map((e) => e.requirementId),
-  );
-  const analysedJudged = (s: StoredRequirementState) =>
-    [...s.analysedIds].some((a) => decided.has(a));
+  // errored, or that it never reached, judged no wording of anything drawn from
+  // it. Each decided one judged `s` at its analysed version, or (#2429) at the
+  // version a clarification re-run's re-decision recorded for it; the oldest
+  // of those is what `s` was last judged at.
+  const analysedJudged = (s: StoredRequirementState): number | null => {
+    const judged = applicability.requirements
+      .filter((e) => !isRecheckEntry(e) && !e.error && s.analysedIds.has(e.requirementId))
+      .map((e) => e.versions?.[s.id] ?? s.analysedVersion);
+    return judged.length > 0 ? Math.min(...judged) : null;
+  };
   const offered = new Set<string>();
   for (const f of findings) {
     offered.add(f.requirementId);
@@ -283,7 +354,7 @@ export function editedWithoutFindings(
   }
   return states.flatMap((s) => {
     if (offered.has(s.id)) return [];
-    const judged = rechecked.get(s.id) ?? (analysedJudged(s) ? s.analysedVersion : null);
+    const judged = rechecked.get(s.id) ?? analysedJudged(s);
     if (judged === null || judged === s.version) return [];
     return [
       { requirementId: s.id, title: s.title, judgedVersion: judged, currentVersion: s.version },

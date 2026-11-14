@@ -3124,8 +3124,14 @@ decision on that row is audited the same way before the delete (#2017).
 `finding:<id>` evidence labels (each evidence finding records its analysed requirement); on the dev
 sample the join is many-to-many. A stored requirement's **analysed version** is its version before
 the first `RequirementVersion` row with an actor (its current version when a person never edited
-it). A finding is stale for each stored requirement whose current version is not the one it judged:
-`requirementVersions[id]` on a re-checked row, else the analysed version. An analysed finding stops
+it). #2429 — or before the first row with reason `ANSWERED_CLARIFICATION_VERSION_REASON`: an
+analyst's clarification answer written into a requirement that already exists
+(`applyClarificationsToRequirements(…, { afterAnalysis: true })`, from the clarify submit, the CSV
+import and a start that reused answers) is a person's edit, though it keeps a null actor so #769's
+`reviewedRequirementWhere` still reads the set as unreviewed. Answers written when the rows are
+created (promotion, a re-run re-creating them) stay the analysis's own. A finding is stale for each
+stored requirement whose current version is not the one it judged: `requirementVersions[id]` on a
+re-checked or re-decided row, else the analysed version. An analysed finding stops
 being stale for a requirement re-checked at its current version, whose own findings now stand for it
 (`withGoverningStaleness`, `lib/governing/requirement-staleness.ts`). The findings route, the BRD's
 governing section and the `get_governing_findings` chat tool set `stale` on each finding; the route
@@ -5380,7 +5386,25 @@ then:
   returns the record's own analysis's ids, and the extension is a compare-and-set on the list it
   read, retried when another reuse changed it first. Re-extraction is the dialog's own
   resolution call. The persisted per-finding stale marker and **Re-check this requirement** are
-  #2222's.
+  #2222's. #2429: since the answer counts as a person's edit, every finding the re-run does not
+  re-produce reads stale for the answered requirement: the traceability (agent) findings, and the
+  governing findings of a requirement whose re-decision failed (the lasting marker once
+  `refreshing` ends). A re-decided entry records in `versions` the version of each stored
+  requirement carrying its answers that no one edited by hand (`answeredOnlyVersions`, read
+  before deciding), its findings record the same in `requirementVersions`, and
+  `editedWithoutFindings` reads it, so the re-decided findings are current for those rows. A row
+  is stamped only when its clarifications block, read with that version, holds no answer the
+  run did not read: the version is read in the findings queue's turn, so an answer submitted
+  meanwhile can already be in it, unjudged, and that row is left to read stale.
+- **reopen** (#2429): a settled record whose quote the document's stored chunks still hold
+  (`currentDocumentTexts`: the chunks the document reader quotes, `rag/stored-chunks.ts`,
+  approved else quarantined, joined with the chunker's overlaps dropped so a quote across a cut
+  is found whole, compared in `normaliseForKey` form) is never reopened: its paragraph did not
+  change, so a near-identical sibling of the edited paragraph is not taken for it even when its
+  own question is not raised again. A document with no stored chunk leaves the word-overlap
+  match (`paragraphSimilarity`) to decide, as before. Known limit: the quote is looked for
+  anywhere in the document, so when a paragraph appears twice and one copy is edited, the old
+  wording is still held and its record is kept, not reopened.
 
 Answers are untrusted text in every later prompt. The resolution prompt fences the Q&A
 (`<<<ANSWERS … ANSWERS>>>`, markers stripped from the text). `/specify`, `/plan` (both forms) and

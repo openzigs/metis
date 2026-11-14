@@ -55,17 +55,22 @@ vi.mock("../prisma.js", () => ({
   prisma: {
     document: { findMany: (args: never) => findManyDocuments(args) },
     knowledgeChunk: {
-      findMany: vi.fn(async ({ where }: { where: { projectId: string; documentId: string } }) =>
-        db.knowledge.filter(
-          (c) => c.projectId === where.projectId && c.documentId === where.documentId,
-        ),
+      findMany: vi.fn(
+        async ({ where }: { where: { projectId: string; documentId: { in: string[] } } }) =>
+          db.knowledge.filter(
+            (c) => c.projectId === where.projectId && where.documentId.in.includes(c.documentId),
+          ),
       ),
     },
     quarantineChunk: {
-      findMany: vi.fn(async ({ where }: { where: { projectId: string; documentId: string } }) =>
-        db.quarantine.filter(
-          (c) => c.projectId === where.projectId && c.documentId === where.documentId && c.ord >= 0,
-        ),
+      findMany: vi.fn(
+        async ({ where }: { where: { projectId: string; documentId: { in: string[] } } }) =>
+          db.quarantine.filter(
+            (c) =>
+              c.projectId === where.projectId &&
+              where.documentId.in.includes(c.documentId) &&
+              c.ord >= 0,
+          ),
       ),
     },
   },

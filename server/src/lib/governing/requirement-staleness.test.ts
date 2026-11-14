@@ -11,18 +11,21 @@ const db = vi.hoisted(() => ({
   requirementFindMany: vi.fn(),
   findingFindMany: vi.fn(),
   versionGroupBy: vi.fn(),
+  versionFindMany: vi.fn(),
 }));
 vi.mock("../prisma.js", () => ({
   prisma: {
     requirement: { findMany: db.requirementFindMany },
     finding: { findMany: db.findingFindMany },
-    requirementVersion: { groupBy: db.versionGroupBy },
+    requirementVersion: { groupBy: db.versionGroupBy, findMany: db.versionFindMany },
   },
 }));
 
 const {
+  ANSWERED_CLARIFICATION_VERSION_REASON,
   analysedVersionOf,
   analysedVersions,
+  answeredOnlyVersions,
   editedWithoutFindings,
   evidenceFindingIdsOf,
   evidenceRequirementId,
@@ -195,7 +198,12 @@ describe("the reads", () => {
     ]);
     expect(db.versionGroupBy).toHaveBeenCalledWith({
       by: ["requirementId"],
-      where: { requirementId: { in: ["r2", "r3"] }, actorId: { not: null } },
+      // #2429 — an answer to a clarifying question given after the analysis is
+      // a person's edit too, though its actor is null.
+      where: {
+        requirementId: { in: ["r2", "r3"] },
+        OR: [{ actorId: { not: null } }, { reason: ANSWERED_CLARIFICATION_VERSION_REASON }],
+      },
       _min: { version: true },
     });
     expect([...versions]).toEqual([
@@ -206,6 +214,40 @@ describe("the reads", () => {
     db.versionGroupBy.mockClear();
     await analysedVersions([{ id: "r1", version: 0 }]);
     expect(db.versionGroupBy).not.toHaveBeenCalled();
+  });
+
+  it("#2429 — answeredOnlyVersions: the live requirements of the analysis and project no one edited by hand, at their version and body", async () => {
+    db.requirementFindMany.mockResolvedValue([
+      { id: "r1", version: 2, body: "b1" },
+      { id: "r2", version: 3, body: "b2" },
+    ]);
+    db.versionFindMany.mockResolvedValue([{ requirementId: "r2" }]);
+    const versions = await answeredOnlyVersions(["r1", "r2", "gone"], "ana-1", "proj-1");
+    // The body is read in the same read as the version, so it is the body at it.
+    expect(db.requirementFindMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ["r1", "r2", "gone"] },
+        analysisId: "ana-1",
+        projectId: "proj-1",
+        deletedAt: null,
+      },
+      select: { id: true, version: true, body: true },
+    });
+    // Only versions with an actor are a hand edit here: the answers were judged.
+    expect(db.versionFindMany).toHaveBeenCalledWith({
+      where: { requirementId: { in: ["r1", "r2"] }, actorId: { not: null } },
+      distinct: ["requirementId"],
+      select: { requirementId: true },
+    });
+    expect([...versions]).toEqual([["r1", { version: 2, body: "b1" }]]);
+
+    db.requirementFindMany.mockClear();
+    db.versionFindMany.mockClear();
+    db.requirementFindMany.mockResolvedValue([]);
+    expect((await answeredOnlyVersions([], "ana-1", "proj-1")).size).toBe(0);
+    expect(db.requirementFindMany).not.toHaveBeenCalled();
+    expect((await answeredOnlyVersions(["gone"], "ana-1", "proj-1")).size).toBe(0);
+    expect(db.versionFindMany).not.toHaveBeenCalled();
   });
 
   it("reads the analysis's live requirements and their evidence within the analysis and project", async () => {
@@ -380,6 +422,46 @@ describe("editedWithoutFindings (#2281)", () => {
     const twoSources = [state({ ...states[0]!, analysedIds: new Set(["AC-2", "AC-9"]) })];
     expect(editedWithoutFindings([], twoSources, elsewhere)).toEqual([
       { requirementId: "r1", title: "Timeout", judgedVersion: 0, currentVersion: 2 },
+    ]);
+  });
+
+  it("#2429 — an analysed entry a clarification re-run re-decided judges the version it recorded", () => {
+    const states = [state({ id: "r1", title: "Timeout", version: 2, analysedVersion: 1 })];
+    const reDecided = (version: number) =>
+      applicability([
+        { requirementId: "AC-2", text: "t", decisions: [], versions: { r1: version } },
+      ]);
+    // The re-decision judged the answered wording: nothing to re-check.
+    expect(editedWithoutFindings([], states, reDecided(2))).toEqual([]);
+    // Edited again since: listed, judged at the re-decided version.
+    expect(editedWithoutFindings([], states, reDecided(1))).toEqual([
+      { requirementId: "r1", title: "Timeout", judgedVersion: 1, currentVersion: 2 },
+    ]);
+    // Drawn from two decided analysed requirements, one not re-decided: the
+    // older judgment stands, so it is still offered.
+    const two = [state({ ...states[0]!, analysedIds: new Set(["AC-2", "AC-9"]) })];
+    const both = applicability([
+      { requirementId: "AC-2", text: "t", decisions: [], versions: { r1: 2 } },
+      { requirementId: "AC-9", text: "t", decisions: [] },
+    ]);
+    expect(editedWithoutFindings([], two, both)).toEqual([
+      { requirementId: "r1", title: "Timeout", judgedVersion: 1, currentVersion: 2 },
+    ]);
+    // An errored entry's versions judge nothing.
+    const errored = applicability([
+      { requirementId: "AC-2", text: "t", decisions: [], versions: { r1: 2 }, error: "x" },
+    ]);
+    expect(editedWithoutFindings([], states, errored)).toEqual([]);
+  });
+
+  it("#2429 — a finding a clarification re-run re-produced is current for the row it judged, and stale for the rest", () => {
+    const states = [
+      state({ id: "r1", version: 2, analysedVersion: 1 }),
+      state({ id: "r2", version: 1, analysedVersion: 0 }),
+    ];
+    const [f] = withGoverningStaleness([finding({ requirementVersions: { r1: 2 } })], states, null);
+    expect(f!.stale).toEqual([
+      { requirementId: "r2", title: "Title of r2", judgedVersion: 0, currentVersion: 1 },
     ]);
   });
 });

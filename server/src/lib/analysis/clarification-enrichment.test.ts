@@ -124,6 +124,7 @@ const {
   answerProvenance,
   applyClarificationsToRequirements,
   attributeAnswers,
+  CLARIFICATION_VERSION_REASON,
   hasAnsweredClarification,
   clarificationBlockEntries,
   collectAnsweredQuestions,
@@ -135,6 +136,8 @@ const {
 } = await import("./clarification-enrichment.js");
 
 const { ONE_TO_ONE_TIE_CASES } = await import("./one-to-one-match.cases.js");
+const { ANSWERED_CLARIFICATION_VERSION_REASON } =
+  await import("../governing/requirement-staleness.js");
 
 const { CRITERIA_FLAG_LINE, CRITERIA_FLAG_MARKER, clearCriteriaFlag, hasCriteriaFlag } =
   await import("./clarification-criteria-flag.js");
@@ -1708,6 +1711,20 @@ describe("applyClarificationsToRequirements", () => {
       expect(Object.keys(diff)).toEqual(["body"]);
       expect(diff.body.from).toBe("Convert before display.");
       expect(diff.body.to).toContain("The ECB daily rate.");
+    });
+
+    it("#2429 — writes the analysis's own reason by default, and the answered reason after the analysis", async () => {
+      await applyClarificationsToRequirements(ANALYSIS_ID);
+      expect(store.versions.map((v) => v.reason)).toEqual([CLARIFICATION_VERSION_REASON]);
+      store.versions = [];
+      store.requirements[0].body = "Convert before display, rounded.";
+      await applyClarificationsToRequirements(ANALYSIS_ID, { afterAnalysis: true });
+      expect(store.versions).toHaveLength(1);
+      // Still no actor: the #769 guard must not read an answer as review work.
+      expect(store.versions[0]).toMatchObject({
+        actorId: null,
+        reason: ANSWERED_CLARIFICATION_VERSION_REASON,
+      });
     });
 
     it("records nothing on a re-run that leaves the body as it is", async () => {

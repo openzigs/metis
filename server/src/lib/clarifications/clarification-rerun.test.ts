@@ -708,3 +708,127 @@ describe("#2310 — the re-run's edges", () => {
     expect(byId.get("AC-2")).toEqual(before.requirements[1]);
   });
 });
+
+describe("#2429 — a re-decision records the versions it judged", () => {
+  const carrying = [
+    {
+      id: "row-1",
+      title: "Password policy",
+      body: withBlock("x", [["How long must a password be?", "At least 12 characters."]]),
+    },
+    // Carries no changed answer: not judged by this re-decision.
+    { id: "row-2", title: "Export", body: withBlock("x", [["Which orders?", "All."]]) },
+  ];
+  const hook = async () => ({ decide: async (r: { id: string }) => decided(r.id, "applies") });
+  const run = (
+    judgedVersions: (
+      ids: readonly string[],
+      a: string,
+      p: string,
+    ) => Promise<Map<string, { version: number; body: string }>>,
+  ) => {
+    let evaluated: GoverningAnalysisApplicability | undefined;
+    const result = rerunAfterClarification(
+      { analysisId: "a1", projectId: "p1", provider, records: [record()] },
+      {
+        mapToCode: vi.fn(),
+        applicabilityHookFor: hook,
+        judgedVersions,
+        produceFindings: async (input: ProduceInput) => {
+          evaluated = (await input.prepare?.()) ?? undefined;
+          await input.afterProduce?.(RUN_OK);
+          return RUN_OK;
+        },
+      },
+    );
+    return { result, evaluated: () => evaluated };
+  };
+
+  it("stamps the rows carrying its answers at the version read before deciding, keeping earlier stamps", async () => {
+    db.requirement.findMany.mockResolvedValue(carrying);
+    applicability.stored!.requirements[0] = {
+      ...applicability.stored!.requirements[0]!,
+      versions: { "row-earlier": 1 },
+    };
+    const judgedVersions = vi.fn(
+      async () => new Map([["row-1", { version: 3, body: carrying[0]!.body }]]),
+    );
+    const { result, evaluated } = run(judgedVersions);
+    expect((await result).governingRequirements).toEqual(["AC-1"]);
+    expect(judgedVersions).toHaveBeenCalledWith(["row-1"], "a1", "p1");
+    // The findings are produced from the stamped entry, so their rows record it…
+    expect(evaluated()!.requirements[0]!.versions).toEqual({ "row-earlier": 1, "row-1": 3 });
+    // …and the stored entry carries it too.
+    const ac1 = applicability.stored!.requirements.find((r) => r.requirementId === "AC-1")!;
+    expect(ac1.versions).toEqual({ "row-earlier": 1, "row-1": 3 });
+  });
+
+  it("stamps nothing for a row an analyst also edited by hand, nor for none carrying the answer", async () => {
+    db.requirement.findMany.mockResolvedValue(carrying);
+    const { result, evaluated } = run(
+      vi.fn(async () => new Map<string, { version: number; body: string }>()),
+    );
+    expect((await result).governingRequirements).toEqual(["AC-1"]);
+    expect(evaluated()!.requirements[0]).not.toHaveProperty("versions");
+    expect(
+      applicability.stored!.requirements.find((r) => r.requirementId === "AC-1"),
+    ).not.toHaveProperty("versions");
+
+    db.requirement.findMany.mockResolvedValue([]);
+    const judgedVersions = vi.fn(async () => new Map<string, { version: number; body: string }>());
+    await run(judgedVersions).result;
+    expect(judgedVersions).toHaveBeenCalledWith([], "a1", "p1");
+  });
+
+  it("stamps no row whose version, read in the findings run's turn, carries an answer this run never read", async () => {
+    db.requirement.findMany.mockResolvedValue(carrying);
+    // Submitted after this run read its answers, while its findings run waited
+    // in the queue: the row is now at a version carrying answer 2, unjudged.
+    const later = withBlock("x", [
+      ["How long must a password be?", "At least 12 characters."],
+      ["Must it contain a digit?", "Yes, at least one."],
+    ]);
+    // An answer changed in place since the read is unjudged the same way.
+    const changed = withBlock("x", [["How long must a password be?", "At least 16 characters."]]);
+    for (const body of [later, changed]) {
+      applicability.stored = structuredClone(STORED);
+      const { result, evaluated } = run(
+        vi.fn(async () => new Map([["row-1", { version: 4, body }]])),
+      );
+      expect((await result).governingRequirements).toEqual(["AC-1"]);
+      // Unstamped, so the findings read stale for row-1: the safe direction.
+      expect(evaluated()!.requirements[0]).not.toHaveProperty("versions");
+    }
+
+    // An answer from an earlier round the run read (`settled`) is judged.
+    applicability.stored = structuredClone(STORED);
+    let evaluated: GoverningAnalysisApplicability | undefined;
+    await rerunAfterClarification(
+      {
+        analysisId: "a1",
+        projectId: "p1",
+        provider,
+        records: [record()],
+        settled: [
+          {
+            key: "k0",
+            question: "Must it contain a digit?",
+            answer: "Yes, at least one.",
+            requirementIds: ["R-1"],
+          },
+        ],
+      },
+      {
+        mapToCode: vi.fn(),
+        applicabilityHookFor: hook,
+        judgedVersions: async () => new Map([["row-1", { version: 4, body: later }]]),
+        produceFindings: async (input: ProduceInput) => {
+          evaluated = (await input.prepare?.()) ?? undefined;
+          await input.afterProduce?.(RUN_OK);
+          return RUN_OK;
+        },
+      },
+    );
+    expect(evaluated!.requirements[0]!.versions).toEqual({ "row-1": 4 });
+  });
+});
