@@ -25,10 +25,16 @@
  *     all-documents run, whose retrievals #2448 records), checked against the
  *     access lists as they are NOW. It read them as the shared audience
  *     (#2248), so all were open then; one restricted since hides the run-wide
- *     rows (and an agent's narrative) from a reader who cannot see it. A run
- *     under any other marker (#2448 adds the starter's access) is shown only to
- *     an admin, whom no access list restricts, until that marker says what the
- *     run could read.
+ *     rows (and an agent's narrative) from a reader who cannot see it.
+ *     #2448 — for a `starter` run (its code read with the access of the
+ *     person who ran each pass) the corpus also holds every pass's read set
+ *     (`AgentResult.readSourceIds`), and a pass that recorded none makes it
+ *     every document of the project (fail closed). A run under any other
+ *     marker is shown only to an admin, whom no access list restricts.
+ *
+ * #2448 — what rests on a run as a whole and is not a row (its narrative, the
+ * finding titles a cap cut, the searches its code agent ran) is emptied for a
+ * reader who cannot see the run as a whole (`redactAnalysisSnapshot`).
  *
  * Chunk ids are not checked separately: a chunk's access list is written with
  * its document's, in one transaction (`saveDocumentAcl`), and a cited chunk's
@@ -36,7 +42,8 @@
  *
  * Cost: one query for the runs' markers, one for the cited documents' access
  * lists (none when no run carries a marker), five for a shared run's corpus
- * (only when a row rests on that run as a whole), and the reader's role only
+ * and six for a starter run's (only when a row rests on that run as a whole),
+ * and the reader's role only
  * when a document is restricted or a row rests on a non-shared run. The reader
  * is never resolved for an unrestricted project, so it behaves as before.
  */
@@ -60,7 +67,7 @@ import {
   type AclActor,
 } from "../rag/acl.js";
 import { SYSTEM_ACTOR_ID } from "../audit/system-actor.js";
-import { parseSourceIds, SOURCE_ACCESS_SHARED } from "./source-ids.js";
+import { parseSourceIds, SOURCE_ACCESS_SHARED, SOURCE_ACCESS_STARTER } from "./source-ids.js";
 
 /** A row the filter decides on: the run it belongs to and its stored sources. */
 export interface SourceGuardedRow {
@@ -151,8 +158,9 @@ export function sourceGuardOf(input: {
     if (run.sourceAccess === null) return true;
     // A shared run read every document its rows record: what rests on the run
     // as a whole is shown only to a reader who can see each of them NOW, so a
-    // document restricted after the run hides it too (fail closed).
-    if (run.sourceAccess === SOURCE_ACCESS_SHARED) {
+    // document restricted after the run hides it too (fail closed). #2448 — a
+    // starter run's corpus adds what each of its passes read.
+    if (hasCorpus(run.sourceAccess)) {
       return [...(corpus.get(analysisId) ?? [])].every((id) => seesDocument(run, id));
     }
     return isAdmin;
@@ -172,8 +180,13 @@ export function sourceGuardOf(input: {
 
 type GuardDb = Pick<
   PrismaClient,
-  "analysis" | "document" | "finding" | "requirement" | "crossDocFinding"
+  "analysis" | "document" | "finding" | "requirement" | "crossDocFinding" | "agentResult"
 >;
+
+/** Whether a run under `sourceAccess` has a corpus that decides what rests on it as a whole. */
+function hasCorpus(sourceAccess: string | null): boolean {
+  return sourceAccess === SOURCE_ACCESS_SHARED || sourceAccess === SOURCE_ACCESS_STARTER;
+}
 
 /** Ids per `IN (...)` list: well under SQLite's bound-parameter limit. */
 const ID_BATCH = 500;
@@ -217,7 +230,7 @@ export async function loadSourceGuard(
     if (!run || run.sourceAccess === null) continue;
     const sources = parseSourceIds(row.sourceIds);
     if (sources) for (const id of sources.documentIds) cite(run.projectId, id);
-    else if (run.sourceAccess === SOURCE_ACCESS_SHARED) wideRuns.add(row.analysisId);
+    else if (hasCorpus(run.sourceAccess)) wideRuns.add(row.analysisId);
     else needsActor = true;
   }
   const corpus = await loadRunCorpus(db, [...wideRuns], runs);
@@ -261,6 +274,9 @@ export async function loadSourceGuard(
  * run's corpus is then every document of its project (fail closed), one more
  * read per such run. A requirement or cross-document finding with no record is
  * expected (it rests on the run) and widens nothing.
+ *
+ * #2448 — a starter run's corpus also holds each of its passes' read sets, one
+ * more read; a pass with none recorded widens it to the whole project too.
  */
 async function loadRunCorpus(
   db: GuardDb,
@@ -298,8 +314,9 @@ async function loadRunCorpus(
     // #2491 — the documents a run was explicitly asked to read
     // (`metadata.documentIds`) are its corpus too, cited or not: one retrieved
     // but never cited still shaped the run-wide text. An all-documents run
-    // stores an empty list and searched the whole project; which documents it
-    // retrieved is not recorded until #2448, so only its cited ones count.
+    // stores an empty list and searched the whole project as the shared
+    // audience, which records no retrieval (#2448 records only what a starter
+    // run's code passes read), so only its cited ones count.
     const inputs = await db.analysis.findMany({
       where: { id: { in: ids } },
       select: { id: true, metadata: true },
@@ -316,6 +333,22 @@ async function loadRunCorpus(
     const incomplete = new Set(
       unrecorded.flatMap((f) => (f.agentResult?.analysisId ? [f.agentResult.analysisId] : [])),
     );
+
+    // #2448 — a starter run read with a person's access: each pass's read set
+    // is part of what it read. A pass that recorded none (or an unreadable
+    // record) may have read anything its project holds.
+    const starterIds = ids.filter((id) => runs.get(id)?.sourceAccess === SOURCE_ACCESS_STARTER);
+    const passes =
+      starterIds.length > 0
+        ? await db.agentResult.findMany({
+            where: { analysisId: { in: starterIds } },
+            select: { analysisId: true, readSourceIds: true },
+          })
+        : [];
+    for (const pass of passes) {
+      if (parseSourceIds(pass.readSourceIds)) add(pass.analysisId, pass.readSourceIds);
+      else incomplete.add(pass.analysisId);
+    }
     for (const analysisId of incomplete) {
       const run = runs.get(analysisId);
       if (!run) continue;
@@ -498,10 +531,63 @@ function redactStructuredList(
   return { ...metadata, structuredRequirements: { ...list, requirements } };
 }
 
+type Capability = NonNullable<AnalysisSnapshot["capability"]>;
+type Retrieval = NonNullable<AnalysisSnapshot["retrieval"]>;
+
+/**
+ * #2448 — a capability record without the text a code pass may have taken from
+ * a restricted file: the titles of the findings an answer's cap cut. Counts
+ * stay. Shown to a reader who cannot see the run as a whole, and sent on the
+ * run's live room, which any reader of the project may join.
+ */
+export function redactRunCapability<T extends Capability | null | undefined>(capability: T): T {
+  if (!capability?.findingsLeftOut) return capability;
+  return {
+    ...capability,
+    findingsLeftOut: capability.findingsLeftOut.map((n) => ({ ...n, leftOutTitles: [] })),
+  };
+}
+
+/** #2448 — the code agent's searched scope without what it searched for (a path, a name). */
+function redactRetrieval<T extends Retrieval | null | undefined>(retrieval: T): T {
+  if (!retrieval || !Array.isArray(retrieval.searchedScope)) return retrieval;
+  return {
+    ...retrieval,
+    searchedScope: retrieval.searchedScope.map(({ query: _query, ...rest }) => rest),
+  };
+}
+
+/**
+ * #2448 — the run-wide records of `snapshot` (typed and in `metadata`) for a
+ * reader who cannot see the run as a whole: what a code pass may have taken
+ * from a restricted file is emptied, the rest is kept.
+ */
+function redactRunRecords(
+  snapshot: AnalysisSnapshot,
+  metadata: AnalysisSnapshot["metadata"],
+): Pick<AnalysisSnapshot, "metadata" | "capability" | "retrieval"> {
+  return {
+    metadata: metadata
+      ? {
+          ...metadata,
+          ...(metadata.capability && typeof metadata.capability === "object"
+            ? { capability: redactRunCapability(metadata.capability as Capability) }
+            : {}),
+          ...(metadata.retrieval && typeof metadata.retrieval === "object"
+            ? { retrieval: redactRetrieval(metadata.retrieval as Retrieval) }
+            : {}),
+        }
+      : metadata,
+    capability: redactRunCapability(snapshot.capability),
+    retrieval: redactRetrieval(snapshot.retrieval),
+  };
+}
+
 /**
  * The snapshot of run `snapshot.id` as `guard` lets its reader see it: every
  * row they cannot see becomes its placeholder, and an agent's summary and notes
- * (the run's narrative) are emptied when they cannot see the run as a whole.
+ * (the run's narrative) are emptied when they cannot see the run as a whole,
+ * as are its run-wide records' text from a code pass (#2448, `redactRunRecords`).
  * Nothing is removed, so the result keeps its shape and its counts.
  */
 export function redactAnalysisSnapshot<T extends AnalysisSnapshot>(
@@ -522,10 +608,21 @@ export function redactAnalysisSnapshot<T extends AnalysisSnapshot>(
     promotedIds.add(structuredId);
     if (!sees(sources.requirements, r.id)) hiddenStructuredIds.add(structuredId);
   }
+  const listed = redactStructuredList(snapshot.metadata, hiddenStructuredIds, seesRun, promotedIds);
+  // #2448 — the raw record in `metadata` names the same documents as the typed one.
+  const metadata =
+    listed?.capability && typeof listed.capability === "object"
+      ? {
+          ...listed,
+          capability: redactDocumentCoverage(listed.capability as Capability, analysisId, guard),
+        }
+      : listed;
+  const capability = redactDocumentCoverage(snapshot.capability, analysisId, guard);
   return {
     ...snapshot,
-    capability: redactDocumentCoverage(snapshot.capability, analysisId, guard),
-    metadata: redactStructuredList(snapshot.metadata, hiddenStructuredIds, seesRun, promotedIds),
+    ...(seesRun
+      ? { metadata, capability }
+      : redactRunRecords({ ...snapshot, capability }, metadata)),
     agents: snapshot.agents.map((a) => ({
       ...a,
       ...(seesRun ? {} : { summary: null, notes: [] }),

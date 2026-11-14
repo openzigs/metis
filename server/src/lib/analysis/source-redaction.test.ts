@@ -22,6 +22,7 @@ import {
   loadSourceGuard,
   redactAnalysisSnapshot,
   restrictedRequirementIds,
+  redactRunCapability,
   restrictedCrossDocFinding,
   restrictedFinding,
   restrictedIds,
@@ -40,7 +41,7 @@ const ids = (documentIds: string[]) => JSON.stringify({ documentIds, chunkIds: [
 const runs = new Map([
   ["shared-run", { projectId: "p1", sourceAccess: "shared" }],
   ["legacy-run", { projectId: "p1", sourceAccess: null }],
-  ["starter-run", { projectId: "p1", sourceAccess: "starter" }],
+  ["other-run", { projectId: "p1", sourceAccess: "future" }],
 ]);
 const documents = new Map([
   ["d-open", { projectId: "p1", subjects: [] }],
@@ -92,10 +93,10 @@ describe("sourceGuardOf (#2447)", () => {
     expect(guardFor(SHARED).canSee({ analysisId: "shared-run", sourceIds: null })).toBe(true);
     expect(guardFor(BOB).canSeeRun("shared-run")).toBe(true);
     // Any other marker: only an admin, whom no list restricts.
-    expect(guardFor(BOB).canSee({ analysisId: "starter-run", sourceIds: null })).toBe(false);
-    expect(guardFor(ALICE).canSeeRun("starter-run")).toBe(false);
-    expect(guardFor(ADMIN).canSee({ analysisId: "starter-run", sourceIds: null })).toBe(true);
-    expect(guardFor(null).canSeeRun("starter-run")).toBe(false);
+    expect(guardFor(BOB).canSee({ analysisId: "other-run", sourceIds: null })).toBe(false);
+    expect(guardFor(ALICE).canSeeRun("other-run")).toBe(false);
+    expect(guardFor(ADMIN).canSee({ analysisId: "other-run", sourceIds: null })).toBe(true);
+    expect(guardFor(null).canSeeRun("other-run")).toBe(false);
   });
 
   it("on a shared run, a row with no record needs every source the run recorded, as its lists are now", () => {
@@ -122,8 +123,8 @@ describe("sourceGuardOf (#2447)", () => {
   });
 
   it("reads an unparseable record as no record, never as an empty one", () => {
-    expect(guardFor(BOB).canSee({ analysisId: "starter-run", sourceIds: "[]" })).toBe(false);
-    expect(guardFor(BOB).canSee({ analysisId: "starter-run", sourceIds: "{not json" })).toBe(false);
+    expect(guardFor(BOB).canSee({ analysisId: "other-run", sourceIds: "[]" })).toBe(false);
+    expect(guardFor(BOB).canSee({ analysisId: "other-run", sourceIds: "{not json" })).toBe(false);
   });
 
   it("hides a row of a run it cannot find", () => {
@@ -145,6 +146,8 @@ function fakeDb(
   }> = [],
   /** The runs with a finding whose sources were not recorded (a failed read). */
   unrecorded: string[] = [],
+  /** #2448 — each pass's read set (`AgentResult.readSourceIds`). */
+  passes: Array<{ analysisId: string; readSourceIds: string | null }> = [],
 ) {
   type RunWhere = {
     analysisId?: { in: string[] };
@@ -184,14 +187,19 @@ function fakeDb(
           : where.id!.in.includes(d.id),
       ),
   );
+  const agentResultFindMany = vi.fn(
+    async ({ where }: { where: { analysisId: { in: string[] } } }) =>
+      passes.filter((p) => where.analysisId.in.includes(p.analysisId)),
+  );
   const db = {
+    agentResult: { findMany: agentResultFindMany },
     analysis: { findMany: analysisFindMany },
     document: { findMany: documentFindMany },
     finding: { findMany: findingFindMany },
     requirement: { findMany: requirementFindMany },
     crossDocFinding: { findMany: crossDocFindMany },
   } as unknown as Parameters<typeof loadSourceGuard>[2];
-  return { db, analysisFindMany, documentFindMany, findingFindMany };
+  return { db, analysisFindMany, documentFindMany, findingFindMany, agentResultFindMany };
 }
 
 const RESTRICTED_ACL = JSON.stringify([{ kind: "user", value: "alice" }]);
@@ -291,7 +299,7 @@ describe("loadSourceGuard (#2447)", () => {
   });
 
   it("resolves the reader for a row resting on a run under a non-shared marker", async () => {
-    const { db } = fakeDb([{ id: "a", projectId: "p1", sourceAccess: "starter" }], []);
+    const { db } = fakeDb([{ id: "a", projectId: "p1", sourceAccess: "future" }], []);
     const reader = vi.fn(async () => ADMIN);
     const guard = await loadSourceGuard(reader, [{ analysisId: "a", sourceIds: null }], db);
     expect(reader).toHaveBeenCalledTimes(1);
@@ -583,7 +591,7 @@ describe("redactAnalysisSnapshot (#2447)", () => {
   });
 
   it("empties an agent's narrative when the reader cannot see the run as a whole", () => {
-    const starter = { ...snapshot, id: "starter-run" } as AnalysisSnapshot;
+    const starter = { ...snapshot, id: "other-run" } as AnalysisSnapshot;
     const out = redactAnalysisSnapshot(starter, sources, guardFor(ALICE));
     expect(out.agents[0]).toMatchObject({ summary: null, notes: [] });
     // A row with no record rests on that run, so it goes too.
@@ -592,7 +600,7 @@ describe("redactAnalysisSnapshot (#2447)", () => {
 
   it("treats a row the snapshot has but the record map lacks as having no record", () => {
     const out = redactAnalysisSnapshot(
-      { ...snapshot, id: "starter-run" } as AnalysisSnapshot,
+      { ...snapshot, id: "other-run" } as AnalysisSnapshot,
       { findings: new Map(), requirements: new Map(), crossDocFindings: new Map() },
       guardFor(BOB),
     );
@@ -638,7 +646,7 @@ describe("redactAnalysisSnapshot (#2447)", () => {
     );
     // A run Alice cannot see as a whole: the unpromoted entry rests on it, so it goes too.
     expect(
-      titles(redactAnalysisSnapshot(withList("starter-run"), promoted, guardFor(ALICE))),
+      titles(redactAnalysisSnapshot(withList("other-run"), promoted, guardFor(ALICE))),
     ).toEqual(["Secret entry", "Restricted", "Restricted"]);
   });
 
@@ -707,5 +715,159 @@ describe("#2491 — inputs, coverage and requirement ids", () => {
     expect(await restrictedRequirementIds(BOB, ["r1", "r1"], db)).toEqual(new Set(["r1"]));
     expect(findMany).toHaveBeenCalledTimes(1);
     expect(await restrictedRequirementIds(ALICE, ["r1"], db)).toEqual(new Set());
+  });
+});
+
+describe("#2448 — a run read with the access of whoever ran each pass", () => {
+  const starterRuns = new Map([
+    ...runs,
+    ["starter-run", { projectId: "p1", sourceAccess: "starter" }],
+  ]);
+  const guard = (actor: AclActor | null, corpus: Set<string>) =>
+    sourceGuardOf({
+      runs: starterRuns,
+      documents,
+      actor,
+      corpus: new Map([["starter-run", corpus]]),
+    });
+
+  it("decides what rests on the run as a whole by what it read, as each access list is now", () => {
+    // Alice's pass read d-alice: Bob cannot see the run as a whole, Alice and an admin can.
+    const read = new Set(["d-open", "d-alice"]);
+    expect(guard(BOB, read).canSeeRun("starter-run")).toBe(false);
+    expect(guard(BOB, read).canSee({ analysisId: "starter-run", sourceIds: null })).toBe(false);
+    expect(guard(ALICE, read).canSeeRun("starter-run")).toBe(true);
+    expect(guard(ADMIN, read).canSeeRun("starter-run")).toBe(true);
+    expect(guard(SHARED, read).canSeeRun("starter-run")).toBe(false);
+    // A run that read nothing restricted: every member, as before.
+    expect(guard(BOB, new Set(["d-open"])).canSeeRun("starter-run")).toBe(true);
+    // A row with its own list is still decided by that list alone.
+    expect(
+      guard(BOB, read).canSee({
+        analysisId: "starter-run",
+        sourceIds: ids(["d-open"]),
+      }),
+    ).toBe(true);
+  });
+
+  it("adds each pass's read set to the corpus, in one more read", async () => {
+    const run = { id: "a", projectId: "p1", sourceAccess: "starter" };
+    const docs = [
+      { id: "d1", projectId: "p1", aclSubjects: RESTRICTED_ACL },
+      { id: "d2", projectId: "p1", aclSubjects: "[]" },
+    ];
+    const rows = [{ analysisId: "a", sourceIds: null }];
+    // No row cites d1; only the pass that read it records it.
+    const recorded = [{ analysisId: "a", sourceIds: ids(["d2"]) }];
+    const read = fakeDb(
+      [run],
+      docs,
+      recorded,
+      [],
+      [{ analysisId: "a", readSourceIds: ids(["d1"]) }],
+    );
+    expect((await loadSourceGuard(BOB, rows, read.db)).canSeeRun("a")).toBe(false);
+    expect((await loadSourceGuard(ALICE, rows, read.db)).canSeeRun("a")).toBe(true);
+    expect(read.agentResultFindMany).toHaveBeenCalledWith({
+      where: { analysisId: { in: ["a"] } },
+      select: { analysisId: true, readSourceIds: true },
+    });
+    // Its passes read nothing restricted: every member.
+    const open = fakeDb([run], docs, recorded, [], [{ analysisId: "a", readSourceIds: ids([]) }]);
+    expect((await loadSourceGuard(BOB, rows, open.db)).canSeeRun("a")).toBe(true);
+  });
+
+  it("fails closed on a pass that recorded no read set: every document of the project counts", async () => {
+    const run = { id: "a", projectId: "p1", sourceAccess: "starter" };
+    const docs = [
+      { id: "d1", projectId: "p1", aclSubjects: RESTRICTED_ACL },
+      { id: "d2", projectId: "p1", aclSubjects: "[]" },
+    ];
+    const rows = [{ analysisId: "a", sourceIds: null }];
+    for (const readSourceIds of [null, "{not json"]) {
+      const { db } = fakeDb([run], docs, [], [], [{ analysisId: "a", readSourceIds }]);
+      expect((await loadSourceGuard(BOB, rows, db)).canSeeRun("a")).toBe(false);
+      expect((await loadSourceGuard(ALICE, rows, db)).canSeeRun("a")).toBe(true);
+    }
+  });
+
+  it("never reads a shared run's passes: it recorded none, and needs none", async () => {
+    const run = { id: "a", projectId: "p1", sourceAccess: "shared" };
+    const { db, agentResultFindMany } = fakeDb(
+      [run],
+      [{ id: "d2", projectId: "p1", aclSubjects: "[]" }],
+      [{ analysisId: "a", sourceIds: ids(["d2"]) }],
+      [],
+      [{ analysisId: "a", readSourceIds: null }],
+    );
+    expect(
+      (await loadSourceGuard(BOB, [{ analysisId: "a", sourceIds: null }], db)).canSeeRun("a"),
+    ).toBe(true);
+    expect(agentResultFindMany).not.toHaveBeenCalled();
+  });
+
+  it("empties the run-wide records a code pass wrote for a reader who cannot see the run", () => {
+    const capability = {
+      reasons: [],
+      findingsLeftOut: [
+        {
+          agentKey: "code",
+          producedCount: 52,
+          keptCount: 50,
+          leftOutTitles: ["Secret in vault.ts"],
+        },
+      ],
+    };
+    const retrieval = {
+      successfulSearches: 1,
+      failedSearches: 0,
+      erroredCalls: 0,
+      degraded: false,
+      searchedScope: [{ tool: "read_file_slice", query: "src/vault.ts", hit: true }],
+    };
+    const run = {
+      id: "starter-run",
+      projectId: "p1",
+      agents: [],
+      requirements: [],
+      crossDocFindings: null,
+      capability,
+      retrieval,
+      metadata: { capability, retrieval, model: "m" },
+    } as unknown as AnalysisSnapshot;
+    const none = {
+      findings: new Map(),
+      requirements: new Map(),
+      crossDocFindings: new Map(),
+    };
+    const bob = redactAnalysisSnapshot(run, none, guard(BOB, new Set(["d-alice"])));
+    expect(JSON.stringify(bob)).not.toMatch(/vault/);
+    expect(bob.capability!.findingsLeftOut).toEqual([
+      { agentKey: "code", producedCount: 52, keptCount: 50, leftOutTitles: [] },
+    ]);
+    expect(bob.retrieval!.searchedScope).toEqual([{ tool: "read_file_slice", hit: true }]);
+    expect(bob.metadata).toMatchObject({ model: "m" });
+    // Alice can see everything it read: nothing is emptied.
+    expect(redactAnalysisSnapshot(run, none, guard(ALICE, new Set(["d-alice"])))).toEqual(run);
+  });
+
+  it("redactRunCapability keeps the counts and leaves a record with nothing cut alone", () => {
+    const cut = {
+      reasons: [],
+      findingsLeftOut: [
+        {
+          agentKey: "code",
+          producedCount: 3,
+          keptCount: 1,
+          leftOutTitles: ["a", "b"],
+        },
+      ],
+    } as unknown as NonNullable<AnalysisSnapshot["capability"]>;
+    expect(redactRunCapability(cut)!.findingsLeftOut).toEqual([
+      { agentKey: "code", producedCount: 3, keptCount: 1, leftOutTitles: [] },
+    ]);
+    const plain = { reasons: [] } as unknown as NonNullable<AnalysisSnapshot["capability"]>;
+    expect(redactRunCapability(plain)).toBe(plain);
+    expect(redactRunCapability(null)).toBeNull();
   });
 });
