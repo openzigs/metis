@@ -1250,10 +1250,11 @@ What the old and new defaults do on each corpus:
 
 #2241 measured false abstention with the flags off at 7 of 10 answerable questions, with S1, S3
 and S4 abstaining because their top 8 excerpts held none of the expected files. #2243 has since
-turned the code-search tools on by default. Two pairs of runs on this branch, with the 0.43
-floor: `off` and `default` (the server's defaults, so the tools on), alternating. Sonnet 5.5
-answered and judged all 26 questions (fixture version 3). The reports are in
-`readings/ba-qa/2417-default-vs-off-run{1,2}.md`.
+turned the code-search tools on by default. Two pairs of runs on #2417's branch (on `b4fd68d`),
+with the 0.43 floor: `off` and `default` (the server's defaults, so the tools on), alternating.
+Sonnet 5.5 answered and judged all 26 questions (fixture version 3). The reports are in
+`readings/ba-qa/2417-default-vs-off-run{1,2}.md`. The runs predate #2488, which turned
+`get_change_history` on by default, so `default` here did not offer it.
 
 | | off, run 1 | off, run 2 | default, run 1 | default, run 2 |
 |---|---:|---:|---:|---:|
@@ -1271,12 +1272,12 @@ answered and judged all 26 questions (fixture version 3). The reports are in
 - **With the shipped defaults, no single-product question abstains falsely.** S1 to S11 were
   answered in both `default` runs. The false abstentions left are M1 to M4 (chat still asks a
   two-product question unscoped here, so they retrieve nothing) and H1 and H3, which need
-  `get_change_history`, off by default. In run 1, M4 asked a follow-up instead.
+  `get_change_history`, off when these ran. In run 1, M4 asked a follow-up instead.
 - **The flags-off arm is unchanged, and the floor is not why.** With the flags off, S1, S3, S4,
   S7, S10 and S11 abstain in both runs, as S1, S3 and S4 did in #2241. The floor empties none of
   them at 0.43 or at 0.55 (answerable emptied 0/18 above). Their top 8 excerpts hold the wrong
-  files, and only the code-search tools reach the right ones. That is the arm #2243 turned off
-  by default, so it no longer describes what chat does.
+  files, and only the code-search tools reach the right ones. #2243 turned those tools on by
+  default, so the `off` arm no longer describes what chat does.
 - **Spend:** $3.448429, the four runs above.
 
 ### Routing multi-product chat (#2336), 2026-11-12: measured, not needed
