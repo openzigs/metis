@@ -10,9 +10,6 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Verify the issue premise](project_verify-issue-premise-before-copy.md) — grep write path + tests first; recheck 'blocked on PR' deferrals
 - [TanStack stale data](project_tanstack-stale-data-after-failed-refetch.md) — failed refetch keeps .data; prop-seeded useState ignores refetch
 - [CI guards parse the step](project_ci-guards-must-parse-the-step.md) — reject if:, `||`, continue-on-error (#458)
-- [Cap gendoc-sized ids](project_gendoc-ids-are-long.md) — id caps (cursor, schema, path) must fit ~94-char gendoc- ids (#469)
-- [Tests can pin a bug](project_tests-can-lock-in-bugs.md) — grep tests for the old constant before calling it a regression (#483)
-- [Workspace delete is soft](project_workspace-delete-is-soft.md) — filter deletedAt in membership scope and at sinks (#549, #561)
 - [Parallel PR semantic conflicts](project_parallel-prs-semantic-conflicts.md) — clean merge can bypass a guard; updateMany bumps @updatedAt
 - [Test harness false greens](project_test-harness-false-greens.md) — pipe-to-tail exit codes; helper-only tests; fireEvent file input
 - [Socket handler patterns](project_socket-handler-patterns.md) — payload?.x, onClientEvent; rooms fixed at handshake; guard typo probe
@@ -120,9 +117,10 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Stacked PR squash conflicts](project_stacked-pr-squash-conflicts.md) — keep HEAD; union scripts/exports
 - [Borrow/governing lessons](project_review-lessons-borrowed-and-governing.md) — filter before dedupe; regex FNs; sibling merged?
 - [Time keys, re-seed, CI misreads](project_time-window-keys-reseed-states-ci-signals.md) — now-window key reverts; test mid states; neutral CodeQL
-- [Gate and harness traps](project_gate-and-harness-traps-2026-11.md) — TEST_PLAN for new routes; lint heap; eval Commit line; Playwright tab
+- [Gate and harness traps](project_gate-and-harness-traps-2026-11.md) — TEST_PLAN; lint heap; Playwright input dies; no git && in worktree
 - [Test doubles mirror reality](project_test-doubles-mirror-real-behaviour-2026-11.md) — developer lacks project.create; orchestrator stub forwards
 - [JSON extractors: fence branch](project_json-extractors-have-a-fence-branch.md) — test fenced replies; two extractors (#1355, #2407, #2415)
 - [Relevance floor vs RRF cut](project_relevance-floor-before-rrf-cut.md) — backfill evicts kept hits; user-word reference (#2416, #2413)
 - [Job toast de-dup per run](project_job-toast-dedup-keyed-per-run.md) — documents keep ids across regenerations (#2418)
 - [Status filters: label-aware](project_requirement-status-filters-must-be-label-aware.md) — legacy review:* labels (#1016, #2420)
+- [Node 22 req.destroyed](project_node22-req-destroyed-true-after-body-read.md) — true after body read; use res.closed (#2472)

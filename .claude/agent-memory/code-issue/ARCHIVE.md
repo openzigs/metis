@@ -98,3 +98,6 @@ memory files it points to stay in the store.
 - [simple-git 4 env guard](project_simple-git-4-env-guard.md) — GIT_* env needs allowEnvironment; use real-git test (#906) (retired 2026-11-13: oldest pointer, made room for the 2026-11-12/13 findings; the file stays)
 - [vitest 5 jest-dom second copy](project_vitest5-jest-dom-second-copy.md) — jest-dom loads a 2nd vitest; extend expect locally (#668) (retired 2026-11-13: oldest pointer, made room for the 2026-11-12/13 findings; the file stays)
 - [float USD to cents](project_float-usd-to-cents.md) — costUsd*100 float error; round to cents before sign/zero checks (#950) (retired 2026-11-13: oldest pointer, made room for the 2026-11-12/13 findings; the file stays)
+- [Cap gendoc-sized ids](project_gendoc-ids-are-long.md) — id caps (cursor, schema, path) must fit ~94-char gendoc- ids (#469)
+- [Tests can pin a bug](project_tests-can-lock-in-bugs.md) — grep tests for the old constant before calling it a regression (#483)
+- [Workspace delete is soft](project_workspace-delete-is-soft.md) — filter deletedAt in membership scope and at sinks (#549, #561)
