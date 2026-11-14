@@ -128,7 +128,26 @@ export class ConnectionsPage {
     await this.dbLabelInput.fill(opts.label);
     if (opts.allowTables !== undefined) await this.dbAllowTablesInput.fill(opts.allowTables);
     if (opts.allowColumns !== undefined) await this.dbAllowColumnsInput.fill(opts.allowColumns);
+    // #2479 — the button sits ~400px below the label field. Scroll it into
+    // view as its own step and wait for the browser to report it in the
+    // viewport before clicking. That report comes from an IntersectionObserver
+    // callback, which only runs once the browser has painted the scrolled page.
+    // The flaky attempts clicked straight into a scroll that never painted.
+    // That happened on the one call that fills only the label and clicks at
+    // once.
+    await this.addDbButton.scrollIntoViewIfNeeded();
+    await expect(this.addDbButton).toBeInViewport();
+    await expect(this.addDbButton).toBeEnabled();
+    // Tie the step to the request the click sends, so a failure says whether
+    // the connector was ever posted rather than only that no label appeared.
+    const created = this.page.waitForResponse(
+      (res) =>
+        res.request().method() === "POST" &&
+        /\/api\/projects\/[^/]+\/connectors\/dbs$/.test(new URL(res.url()).pathname),
+      { timeout: 10_000 },
+    );
     await this.addDbButton.click();
+    expect((await created).status(), "POST …/connectors/dbs").toBe(201);
     await expect(this.page.getByText(opts.label).first()).toBeVisible({ timeout: 10_000 });
   }
 
