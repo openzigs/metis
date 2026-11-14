@@ -39,7 +39,7 @@ import { apiRateLimiter } from "./middleware/api-rate-limit.js";
 import { mountSlackReceiver } from "./lib/slack/slack-receiver.js";
 import { JSON_LIMIT_BYTES } from "./lib/config/json-limit.js";
 import { parseCorsOrigins } from "./lib/config/cors-origins.js";
-import { mountRemoteMcp, mountRemoteMcpBodyLimit } from "./routes/mcp-remote.js";
+import { isRemoteMcpPath, mountRemoteMcp, mountRemoteMcpBodyLimit } from "./routes/mcp-remote.js";
 import type { RemoteMcpDeps } from "./mcp/metis-index/remote/http.js";
 
 const JSON_LIMIT = JSON_LIMIT_BYTES; // 10 MiB, matches MAX_DOCUMENT_BYTES for upload routes
@@ -123,7 +123,10 @@ export function createApp(opts: CreateAppOptions = {}): Application {
   const corsOrigins = parseCorsOrigins(
     opts.corsOrigin ?? process.env.CORS_ORIGIN ?? "http://localhost:3000",
   );
-  app.use(cors({ origin: corsOrigins, credentials: true }));
+  // #2344 — not on the remote MCP endpoint: its Origin check is a DNS-rebinding
+  // allowlist and it grants no CORS, so the UI's credentialed CORS stays off `/mcp`.
+  const appCors = cors({ origin: corsOrigins, credentials: true });
+  app.use((req, res, next) => (isRemoteMcpPath(req.path) ? next() : appCors(req, res, next)));
   // Issue #579 — mount the Slack Bolt receiver BEFORE the global JSON body parser
   // so Bolt can read+verify the RAW request body (Slack signs the raw bytes; a
   // pre-parsed body would break signature verification). Mounted only when

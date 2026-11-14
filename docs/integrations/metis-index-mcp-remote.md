@@ -29,6 +29,12 @@ You need:
   provider, link each user's access-token subject by hand with `link-identity-cli`, provider `oidc`
   (see [Linking two identities to one account](../auth/README.md)), or use a provider whose access-token `sub` matches its ID-token `sub`
   (Keycloak, Okta and Auth0 by default).
+- **ID tokens that never name this endpoint in `aud`.** METIS does not require the RFC 9068
+  `typ: at+jwt` header, because some providers (Keycloak among them) omit it from access
+  tokens. What stops an ID token from being used as an access token here is the issuer check
+  and the audience check: an ID token's `aud` is the client id of the application that signed
+  the user in, not this endpoint's URL. Keep it that way. Never register a client whose id is
+  this endpoint's URL, and never add the endpoint's URL as an audience on ID tokens.
 - **A read-only scope** on the authorization server for this API, for example `mcp:read`.
 - **TLS.** The endpoint refuses plain HTTP unless its configured URL is on `localhost`.
 

@@ -50,3 +50,65 @@ describe("createApp: remote MCP mounts", () => {
     expect(verifyToken).not.toHaveBeenCalled();
   });
 });
+
+// MCP_REMOTE_ALLOWED_ORIGINS is a DNS-rebinding allowlist, not CORS: the
+// endpoint answers no origin with Access-Control-* headers — not one it allows,
+// and not the UI's own CORS_ORIGIN, whose credentialed CORS stays on /api.
+describe("createApp: remote MCP and CORS", () => {
+  const ui = "https://ui.example.com";
+  const agent = "https://agent.example.com";
+  const withOrigins: RemoteMcpConfig = {
+    ...enabled,
+    settings: { ...enabled.settings, allowedOrigins: new Set([agent]) },
+  };
+  const app = () => createApp({ corsOrigin: ui, remoteMcp: { readConfig: () => withOrigins } });
+  const preflight = (path: string, origin: string) =>
+    request(app())
+      .options(path)
+      .set("origin", origin)
+      .set("access-control-request-method", "POST")
+      .set("access-control-request-headers", "authorization, content-type");
+
+  it("answers a preflight from an allowed MCP origin with no CORS grant", async () => {
+    const r = await preflight("/mcp", agent);
+    expect(r.headers["access-control-allow-origin"]).toBeUndefined();
+    expect(r.headers["access-control-allow-credentials"]).toBeUndefined();
+  });
+
+  it("answers a preflight from the UI's CORS origin on /mcp with no CORS grant", async () => {
+    const r = await preflight("/mcp", ui);
+    expect(r.headers["access-control-allow-origin"]).toBeUndefined();
+    expect(r.headers["access-control-allow-credentials"]).toBeUndefined();
+  });
+
+  it("refuses an actual call from the UI's origin when it is not an allowed MCP origin", async () => {
+    const r = await request(app()).post("/mcp").set("origin", ui).send({});
+    expect(r.status).toBe(403);
+    expect(r.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+
+  it("grants no CORS on the endpoint however the path is cased (Express routes /MCP to it)", async () => {
+    for (const path of ["/MCP", "/Mcp/"]) {
+      const r = await preflight(path, ui);
+      expect(r.headers["access-control-allow-origin"]).toBeUndefined();
+    }
+  });
+
+  it("answers a disallowed origin with no CORS grant", async () => {
+    const r = await preflight("/mcp", "https://evil.example.com");
+    expect(r.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+
+  it("leaves the global CORS for /api unchanged", async () => {
+    const r = await preflight("/api/health", ui);
+    expect(r.headers["access-control-allow-origin"]).toBe(ui);
+    expect(r.headers["access-control-allow-credentials"]).toBe("true");
+    const other = await preflight("/api/health", agent);
+    expect(other.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+
+  it("keeps CORS on a path that only starts with the letters mcp", async () => {
+    const r = await preflight("/mcpx", ui);
+    expect(r.headers["access-control-allow-origin"]).toBe(ui);
+  });
+});

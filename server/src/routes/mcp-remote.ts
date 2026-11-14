@@ -19,6 +19,15 @@ import {
   REMOTE_MCP_PATH,
 } from "../mcp/metis-index/remote/config.js";
 
+/**
+ * True for `/mcp` and anything under it, in any case (Express mounts match
+ * case-insensitively) — not for a path that merely starts with the letters.
+ */
+export function isRemoteMcpPath(path: string): boolean {
+  const p = path.toLowerCase();
+  return p === REMOTE_MCP_PATH || p.startsWith(`${REMOTE_MCP_PATH}/`);
+}
+
 /** Mount BEFORE the global body parsers: bounds the endpoint's request body. */
 export function mountRemoteMcpBodyLimit(app: Application, deps: RemoteMcpDeps = {}): void {
   app.use(REMOTE_MCP_PATH, createRemoteMcpBodyLimit(deps));
