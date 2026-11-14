@@ -7,7 +7,9 @@ import {
   MAX_TOTAL_SOURCES_PER_REQUIREMENT,
   RequirementsExtractionError,
   RequirementsExtractor,
+  SOURCE_EXTRACTION_BATCH_STATEMENTS,
   SOURCE_EXTRACTION_SUFFIX,
+  batchSourceStatements,
   buildSourceExtractionInput,
 } from "../src/lib/analysis/requirements-extractor.js";
 import type { AIProvider, ChatResponse } from "../src/lib/ai/types.js";
@@ -808,5 +810,190 @@ describe("extract — source mode (#2235)", () => {
     expect(search?.sources?.map((s) => s.ref)).not.toContain("REQ-001");
     // R8 is raised only by REQ-001's quote, which was left out with it.
     expect(search?.ambiguities.map((a) => a.field)).toEqual(["R7:fast"]);
+  });
+});
+
+/**
+ * #2530 — one reply had to hold every requirement of the document, and on all
+ * four corpus documents it did not fit the output cap. The statements are now
+ * extracted a batch at a time and the requirements concatenated.
+ */
+describe("extract — source mode, a batch of statements at a time (#2530)", () => {
+  /** `n` statements in document order, REQ-001 onwards, none flagged by the GtWR rules. */
+  const many = (n: number) =>
+    Array.from({ length: n }, (_, i) => {
+      const ref = `REQ-${String(i + 1).padStart(3, "0")}`;
+      return {
+        ref,
+        statement: `Clause ${ref} applies.`,
+        documentId: "doc-1",
+        filename: "frd.docx",
+        headingPath: [`${i + 1} Section`],
+        quote: `Clause ${ref} applies to every order.`,
+      };
+    });
+  /** A reply with one requirement per ref, each citing it. */
+  const citing = (...refs: string[]) =>
+    JSON.stringify({
+      requirements: refs.map((ref) => ({
+        title: `Requirement for ${ref}`,
+        description: `Rests on ${ref}.`,
+        sourceIds: [ref],
+      })),
+    });
+  /** The labels a call's user message lists. */
+  const labelsIn = (provider: AIProvider, call: number): string[] =>
+    [
+      ...String(vi.mocked(provider.chat).mock.calls[call]![0][1]!.content).matchAll(
+        /^\[(REQ-\d+)\]$/gm,
+      ),
+    ].map((m) => m[1]!);
+  /** A batch-1 statement the GtWR rules flag, worded as "Search results load quickly." */
+  const withFlaggedFourth = () => {
+    const statements = many(45);
+    statements[3] = {
+      ...statements[3]!,
+      statement: "Search results load quickly.",
+      quote: "Results shall be returned fast, where possible within 2 seconds.",
+    };
+    return statements;
+  };
+  const SEARCH_REPLY = JSON.stringify({
+    requirements: [{ title: "Search results load", description: "Search results load quickly." }],
+  });
+
+  it("splits the statements into even batches in document order, none over the size", () => {
+    expect(batchSourceStatements([])).toEqual([]);
+    expect(batchSourceStatements(many(SOURCE_EXTRACTION_BATCH_STATEMENTS))).toHaveLength(1);
+    const sizes = (n: number, size: number) =>
+      batchSourceStatements(many(n), size).map((b) => b.length);
+    expect(
+      sizes(SOURCE_EXTRACTION_BATCH_STATEMENTS + 1, SOURCE_EXTRACTION_BATCH_STATEMENTS),
+    ).toEqual([11, 10]);
+    expect(sizes(45, 20)).toEqual([15, 15, 15]);
+    expect(sizes(7, 3)).toEqual([3, 2, 2]);
+    expect(
+      batchSourceStatements(many(7), 3)
+        .flat()
+        .map((s) => s.ref),
+    ).toEqual(many(7).map((s) => s.ref));
+  });
+
+  it("asks one call per batch, each listing only its statements, and concatenates the requirements", async () => {
+    const statements = many(45);
+    const provider = sequenceProvider([citing("REQ-001"), citing("REQ-016"), citing("REQ-031")]);
+    const result = await new RequirementsExtractor({ provider }).extract(
+      buildSourceExtractionInput(statements, "Focus on orders."),
+      undefined,
+      statements,
+    );
+
+    expect(provider.chat).toHaveBeenCalledTimes(3);
+    expect(labelsIn(provider, 0)).toEqual(statements.slice(0, 15).map((s) => s.ref));
+    expect(labelsIn(provider, 1)).toEqual(statements.slice(15, 30).map((s) => s.ref));
+    expect(labelsIn(provider, 2)).toEqual(statements.slice(30).map((s) => s.ref));
+    for (let call = 0; call < 3; call++) {
+      const [system, user] = vi.mocked(provider.chat).mock.calls[call]![0];
+      // Every batch is a source-mode call, with the analyst's instructions first.
+      expect(String(system!.content)).toContain(SOURCE_EXTRACTION_SUFFIX);
+      expect(String(user!.content).startsWith("Focus on orders.\n\n[REQ-")).toBe(true);
+    }
+    expect(result.requirements.map((r) => r.sources?.map((s) => s.ref))).toEqual([
+      ["REQ-001"],
+      ["REQ-016"],
+      ["REQ-031"],
+    ]);
+    // Each requirement keeps the input it was extracted from.
+    expect(result.requirements[1]!.rawSource).toBe(
+      buildSourceExtractionInput(statements.slice(15, 30), "Focus on orders."),
+    );
+  });
+
+  it("resolves a requirement's sourceIds against its own batch only", async () => {
+    const statements = many(45);
+    // Batch 2 names REQ-001, which it was never shown, alongside its own REQ-020.
+    const provider = sequenceProvider([
+      citing("REQ-002"),
+      JSON.stringify({
+        requirements: [
+          { title: "Mixed", description: "Mixed.", sourceIds: ["REQ-001", "REQ-020"] },
+        ],
+      }),
+      citing("REQ-040"),
+    ]);
+    const result = await new RequirementsExtractor({ provider }).extract(
+      buildSourceExtractionInput(statements),
+      undefined,
+      statements,
+    );
+    expect(result.requirements.map((r) => r.sources?.map((s) => s.ref))).toEqual([
+      ["REQ-002"],
+      ["REQ-020"],
+      ["REQ-040"],
+    ]);
+  });
+
+  it("scans every statement of every batch, matching an uncited one to a requirement from any batch", async () => {
+    const statements = withFlaggedFourth();
+    // REQ-004 is in batch 1 and nothing cites it; batch 3 writes its requirement.
+    const provider = sequenceProvider([citing("REQ-001"), citing("REQ-016"), SEARCH_REPLY]);
+    const result = await new RequirementsExtractor({ provider }).extract(
+      buildSourceExtractionInput(statements),
+      undefined,
+      statements,
+    );
+    const search = result.requirements[2]!;
+    expect(search.ambiguities.map((a) => a.field)).toEqual(["R7:fast", "R8:where possible"]);
+    expect(search.sources?.map((s) => s.ref)).toEqual(["REQ-004"]);
+    expect(result.totalAmbiguities).toBe(2);
+  });
+
+  it("does not hand a statement one batch cites to a requirement another batch wrote", async () => {
+    const statements = withFlaggedFourth();
+    const provider = sequenceProvider([citing("REQ-004"), citing("REQ-016"), SEARCH_REPLY]);
+    const result = await new RequirementsExtractor({ provider }).extract(
+      buildSourceExtractionInput(statements),
+      undefined,
+      statements,
+    );
+    expect(result.requirements[0]!.ambiguities.map((a) => a.field)).toEqual([
+      "R7:fast",
+      "R8:where possible",
+    ]);
+    expect(result.requirements[2]!.ambiguities).toEqual([]);
+    expect(result.requirements[2]!.sources).toBeUndefined();
+    expect(result.totalAmbiguities).toBe(2);
+  });
+
+  it("fails the whole extraction when one batch cannot be read, asking no later batch", async () => {
+    const statements = many(45);
+    const provider = sequenceProvider([citing("REQ-001"), "not json", "still not json"]);
+    await expect(
+      new RequirementsExtractor({ provider }).extract(
+        buildSourceExtractionInput(statements),
+        undefined,
+        statements,
+      ),
+    ).rejects.toMatchObject({ name: "RequirementsExtractionError", reason: "unparseable" });
+    // Batch 1, then batch 2 and its one re-prompt; batch 3 is never asked.
+    expect(provider.chat).toHaveBeenCalledTimes(3);
+  });
+
+  it("refuses an input that is not the statements' own, rather than repeat it in every batch", async () => {
+    const statements = many(45);
+    const provider = sequenceProvider([]);
+    await expect(
+      new RequirementsExtractor({ provider }).extract("Some other text", undefined, statements),
+    ).rejects.toThrow(/buildSourceExtractionInput/);
+    expect(provider.chat).not.toHaveBeenCalled();
+  });
+
+  it("sends a list that fits one batch as given, in one call", async () => {
+    const statements = many(SOURCE_EXTRACTION_BATCH_STATEMENTS);
+    const provider = sequenceProvider([citing("REQ-001")]);
+    const input = buildSourceExtractionInput(statements, "Focus on orders.");
+    await new RequirementsExtractor({ provider }).extract(input, undefined, statements);
+    expect(provider.chat).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(provider.chat).mock.calls[0]![0][1]!.content).toBe(input);
   });
 });

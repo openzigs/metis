@@ -187,6 +187,54 @@ export function buildSourceExtractionInput(
 }
 
 /**
+ * #2530 — the most statements one source-mode extraction call is given. One
+ * reply writes a requirement per statement with its `sourceIds`, ambiguities
+ * and evidence needs. #2271 measured the whole list in one reply (62 to 345
+ * statements) stopping at the 16,000-token output cap on all four corpus
+ * documents on Sonnet 5.5; 62 statements wrote over 43,000 characters, about
+ * 260 tokens a statement before the cut. 20 statements leave the reply about
+ * a third of that cap.
+ */
+export const SOURCE_EXTRACTION_BATCH_STATEMENTS = 20;
+
+/**
+ * #2530 — `statements` in document order, split into the fewest batches of at
+ * most `size`, as even as they come (21 are 11 and 10, not 20 and 1), so no
+ * batch is a lone statement read without its neighbours.
+ */
+export function batchSourceStatements(
+  statements: readonly SourceStatement[],
+  size: number = SOURCE_EXTRACTION_BATCH_STATEMENTS,
+): SourceStatement[][] {
+  const count = Math.ceil(statements.length / size);
+  const batches: SourceStatement[][] = [];
+  let at = 0;
+  for (let i = 0; i < count; i++) {
+    const take = Math.ceil((statements.length - at) / (count - i));
+    batches.push(statements.slice(at, at + take));
+    at += take;
+  }
+  return batches;
+}
+
+/**
+ * #2530 — the text `rawInput` carries before the statements: the
+ * `extraInstructions` {@link buildSourceExtractionInput} was given. Every batch
+ * call repeats it ahead of its own statements. Any other input would be repeated
+ * whole, statements and all, in every batch, so it is refused.
+ */
+function sourceExtractionLead(rawInput: string, sources: readonly SourceStatement[]): string {
+  const blocks = buildSourceExtractionInput(sources);
+  if (!rawInput.endsWith(blocks)) {
+    throw new Error(
+      "A source-mode extraction's input must be buildSourceExtractionInput(sources, …) " +
+        "over the same statements",
+    );
+  }
+  return rawInput.slice(0, rawInput.length - blocks.length);
+}
+
+/**
  * The most source paragraphs one requirement keeps that the GtWR rules flag
  * nothing in, however many flagged ones it also cites. #2296 — a flagged
  * paragraph is kept past it: it is what the flag's question cites.
@@ -401,7 +449,16 @@ export class RequirementsExtractor {
    * #2235 — with `sources` (the document reader's verified statements), each
    * requirement is asked for the statements it rests on, carries their
    * paragraphs as `sources`, and has the GtWR rules' hits on those
-   * paragraphs added to its ambiguities.
+   * paragraphs added to its ambiguities. `rawInput` is then
+   * {@link buildSourceExtractionInput} over `sources`.
+   *
+   * #2530 — past {@link SOURCE_EXTRACTION_BATCH_STATEMENTS} statements, one
+   * call per batch ({@link batchSourceStatements}), in document order, each
+   * with `rawInput`'s instructions and its own statements; the requirements are
+   * concatenated. A requirement's `sourceIds` resolve against the statements its
+   * call was given, and the uncited scan runs once, over every statement. A
+   * batch whose reply cannot be read fails the extraction, as one call did:
+   * a list missing a batch's requirements would pass for a complete one.
    */
   async extract(
     rawInput: string,
@@ -411,8 +468,45 @@ export class RequirementsExtractor {
     if (!rawInput.trim()) {
       return { requirements: [], totalAmbiguities: 0, totalEvidenceNeeds: 0 };
     }
-    const sourceMode = sources !== undefined && sources.length > 0;
+    if (sources === undefined || sources.length === 0) {
+      const rawReqs = await this.request(rawInput, false, signal);
+      return this.summarise(this.toStructured(rawReqs, rawInput));
+    }
 
+    const batches = batchSourceStatements(sources);
+    const lead = batches.length > 1 ? sourceExtractionLead(rawInput, sources) : "";
+    const requirements: StructuredRequirement[] = [];
+    // #2296 — what the requirements cite, including paragraphs past the ceiling.
+    const citedRefs = new Set<string>();
+    for (const [i, batch] of batches.entries()) {
+      const input = batches.length > 1 ? buildSourceExtractionInput(batch, lead) : rawInput;
+      if (batches.length > 1) {
+        log.info("Extracting a batch of source statements", {
+          batch: i + 1,
+          of: batches.length,
+          statements: batch.length,
+        });
+      }
+      const rawReqs = await this.request(input, true, signal);
+      requirements.push(
+        ...this.toStructured(rawReqs, input, new Map(batch.map((s) => [s.ref, s])), citedRefs),
+      );
+    }
+    // #2275 — the GtWR rules scan EVERY statement, not only the cited ones: a
+    // statement no requirement cites (the model left it out, or cited the wrong
+    // one) would otherwise get no rule hits at all. #2530 — across every batch:
+    // a statement one batch left uncited may be what another batch's
+    // requirement restates.
+    attachUncitedQualityFlags(requirements, new Map(sources.map((s) => [s.ref, s])), citedRefs);
+    return this.summarise(requirements);
+  }
+
+  /** One extraction call over `input`; the reply's requirements, unread. */
+  private async request(
+    input: string,
+    sourceMode: boolean,
+    signal: AbortSignal | undefined,
+  ): Promise<unknown[]> {
     const messages: ChatMessage[] = [
       {
         role: "system",
@@ -420,10 +514,10 @@ export class RequirementsExtractor {
           ? EXTRACTION_SYSTEM_PROMPT + SOURCE_EXTRACTION_SUFFIX
           : EXTRACTION_SYSTEM_PROMPT,
       },
-      { role: "user", content: rawInput },
+      { role: "user", content: input },
     ];
 
-    log.info("Extracting structured requirements from input", { chars: rawInput.length });
+    log.info("Extracting structured requirements from input", { chars: input.length });
 
     const outcome = await requestStructuredVerdict(this.provider, {
       label: "requirements-extraction",
@@ -441,32 +535,36 @@ export class RequirementsExtractor {
     if (!hasVerdict(outcome)) {
       throw new RequirementsExtractionError(outcome.reason, outcome.detail);
     }
+    return outcome.verdict.requirements;
+  }
 
-    const parsed = this.toStructured(
-      outcome.verdict.requirements,
-      rawInput,
-      sourceMode ? new Map(sources.map((s) => [s.ref, s])) : undefined,
-    );
-
+  /** The extraction's result: `requirements` with their totals, logged. */
+  private summarise(requirements: StructuredRequirement[]): StructuredRequirements {
+    const parsed: StructuredRequirements = {
+      requirements,
+      totalAmbiguities: requirements.reduce((n, r) => n + r.ambiguities.length, 0),
+      totalEvidenceNeeds: requirements.reduce((n, r) => n + r.evidenceNeeds.length, 0),
+    };
     log.info("Extracted structured requirements", {
       requirements: parsed.requirements.length,
       ambiguities: parsed.totalAmbiguities,
       evidenceNeeds: parsed.totalEvidenceNeeds,
     });
-
     return parsed;
   }
 
+  /**
+   * One reply's requirements. In source mode, each cites from `sourcesByRef`
+   * (the statements its call was given) and every statement it names, kept or
+   * not, is added to `citedRefs`.
+   */
   private toStructured(
     rawReqs: unknown[],
     rawSource: string,
     sourcesByRef?: ReadonlyMap<string, SourceStatement>,
-  ): StructuredRequirements {
+    citedRefs: Set<string> = new Set(),
+  ): StructuredRequirement[] {
     const requirements: StructuredRequirement[] = [];
-    let totalAmbiguities = 0;
-    let totalEvidenceNeeds = 0;
-    // #2296 — what the requirements cite, including paragraphs past the ceiling.
-    const citedRefs = new Set<string>();
 
     for (const raw of rawReqs) {
       if (!raw || typeof raw !== "object") continue;
@@ -504,9 +602,6 @@ export class RequirementsExtractor {
         ambiguities.push(flagged);
       }
 
-      totalAmbiguities += ambiguities.length;
-      totalEvidenceNeeds += evidenceNeeds.length;
-
       requirements.push({
         id: randomUUID(),
         title,
@@ -521,14 +616,7 @@ export class RequirementsExtractor {
       });
     }
 
-    // #2275 — the GtWR rules scan EVERY statement, not only the cited ones: a
-    // statement no requirement cites (the model left it out, or cited the wrong
-    // one) would otherwise get no rule hits at all.
-    if (sourcesByRef) {
-      totalAmbiguities += attachUncitedQualityFlags(requirements, sourcesByRef, citedRefs);
-    }
-
-    return { requirements, totalAmbiguities, totalEvidenceNeeds };
+    return requirements;
   }
 
   private parseAmbiguities(raw: unknown): Ambiguity[] {
