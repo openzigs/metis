@@ -676,6 +676,33 @@ describe("#2219 — notifyReviewedRequirementEdited", () => {
     ).toEqual(["rev-a", "rev-b", "user-req"]);
   });
 
+  it("#2224 — two edits dispatched back to back tell each person once", async () => {
+    // Pinned at v1; edits v1→v2 and v2→v3 land before either fan-out has
+    // written its rows. The rows a fan-out writes are what the next one reads
+    // as "already told", so the two must not read that set concurrently.
+    itemFindMany.mockResolvedValue([item()]);
+    const stored: Array<{ userId: string; payload: string }> = [];
+    notificationCreate.mockImplementation(
+      async ({ data }: { data: { userId: string; payload: string } }) => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        stored.push({ userId: data.userId, payload: data.payload });
+        return { id: `n${stored.length}` };
+      },
+    );
+    notificationFindMany.mockImplementation(async () => [...stored]);
+
+    dispatchReviewedRequirementEdited(editInput());
+    dispatchReviewedRequirementEdited(editInput({ fromVersion: 2, toVersion: 3 }));
+
+    await vi.waitFor(() => expect(notificationCreate).toHaveBeenCalledTimes(3));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(
+      createdRows()
+        .map((r) => r.userId)
+        .sort(),
+    ).toEqual(["rev-a", "rev-b", "user-req"]);
+  });
+
   it("never throws: a failed lookup or a failed send is logged", async () => {
     itemFindMany.mockRejectedValueOnce(new Error("db down"));
     await expect(notifyReviewedRequirementEdited(editInput())).resolves.toBeUndefined();

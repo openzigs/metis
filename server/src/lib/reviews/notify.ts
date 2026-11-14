@@ -466,14 +466,30 @@ export async function notifyReviewedRequirementEdited(
   }
 }
 
+/**
+ * #2224 — the fan-out still running for each requirement. A fan-out reads the
+ * rows earlier ones wrote to decide who was already told, so two edits in
+ * quick succession must not read that set concurrently: each requirement's
+ * fan-outs run one after another. Per process only; a second server instance
+ * can still race, at the cost of one duplicate notification.
+ */
+const pendingFanOuts = new Map<string, Promise<void>>();
+
 /** Fire-and-forget wrapper — no throw / rejection can reach the caller. */
 export function dispatchReviewedRequirementEdited(input: ReviewedRequirementEditInput): void {
   try {
-    void notifyReviewedRequirementEdited(input).catch((err: unknown) => {
-      log.error("dispatchReviewedRequirementEdited: fan-out rejected", {
-        requirementId: input.requirementId,
-        err,
+    const key = input.requirementId;
+    const next = (pendingFanOuts.get(key) ?? Promise.resolve())
+      .then(() => notifyReviewedRequirementEdited(input))
+      .catch((err: unknown) => {
+        log.error("dispatchReviewedRequirementEdited: fan-out rejected", {
+          requirementId: input.requirementId,
+          err,
+        });
       });
+    pendingFanOuts.set(key, next);
+    void next.then(() => {
+      if (pendingFanOuts.get(key) === next) pendingFanOuts.delete(key);
     });
   } catch (err) {
     log.error("dispatchReviewedRequirementEdited: synchronous failure", {

@@ -10,7 +10,7 @@ import type { ReactNode } from "react";
 import Link from "next/link";
 import type { ReviewPolicy, ReviewRequest } from "@/lib/reviews-api";
 import { DueDateBadge, ReviewStatusBadge } from "./review-badges";
-import { outOfDateVersion } from "./ReviewItemCard";
+import { outOfDateCount } from "./ReviewItemCard";
 import { PageHeader } from "@/components/ui/page-header";
 
 /** Human-readable decision-policy summary. Exported for unit testing. */
@@ -30,9 +30,7 @@ export function policyLabel(
  * current (or the review no longer stands on its pins). Exported for testing.
  */
 export function outOfDateSummary(review: Pick<ReviewRequest, "items" | "status">): string | null {
-  const count = review.items.filter(
-    (item) => outOfDateVersion(item, review.status) !== null,
-  ).length;
+  const count = outOfDateCount(review);
   if (count === 0) return null;
   const noun = count === 1 ? "requirement" : "requirements";
   return review.status === "approved"
