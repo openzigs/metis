@@ -26,6 +26,7 @@ import { requirePermission } from "../middleware/require-permission.js";
 import { requireProjectAccess } from "../middleware/require-project-access.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
+import { userSourceReader } from "../lib/analysis/source-redaction.js";
 import { assertResourceProjectAccess } from "../lib/auth/resource-project-access.js";
 import {
   baselineScopePreAuthRateLimiter,
@@ -150,7 +151,11 @@ export function baselinesRouter(): Router {
       // project-mismatch 400 that would confirm a foreign id exists.
       await assertBaselineAccess(req, String(req.params.idA));
       await assertBaselineAccess(req, String(req.params.idB));
-      const data = await compareBaselines(String(req.params.idA), String(req.params.idB));
+      const data = await compareBaselines(
+        String(req.params.idA),
+        String(req.params.idB),
+        userSourceReader(req.user!.userId),
+      );
       res.json({ success: true, data });
     },
   );
@@ -162,7 +167,10 @@ export function baselinesRouter(): Router {
     requirePermission("review.read"),
     async (req: Request, res: Response) => {
       await assertBaselineAccess(req, String(req.params.baselineId));
-      const data = await getBaselineContents(String(req.params.baselineId));
+      const data = await getBaselineContents(
+        String(req.params.baselineId),
+        userSourceReader(req.user!.userId),
+      );
       res.json({ success: true, data });
     },
   );

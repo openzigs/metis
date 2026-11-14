@@ -39,6 +39,7 @@ vi.mock("../lib/prisma.js", () => ({ prisma: mockPrisma }));
 vi.mock("../lib/analysis/source-redaction.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/analysis/source-redaction.js")>()),
   restrictedIds: async () => new Set<string>(),
+  restrictedRequirementIds: async () => new Set<string>(),
 }));
 
 vi.mock("../middleware/auth.js", () => ({

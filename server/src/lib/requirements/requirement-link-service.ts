@@ -24,10 +24,21 @@
  * `RequirementLink` model doc contract (#623).
  */
 import type { PrismaClient } from "@prisma/client";
-import { isRequirementLinkType, isSelfLink, type RequirementLinkType } from "@metis/shared";
+import {
+  isRequirementLinkType,
+  isSelfLink,
+  RESTRICTED_SOURCE_TITLE,
+  type RequirementLinkType,
+} from "@metis/shared";
 import { AppError } from "../../middleware/error-handler.js";
 import { Prisma, prisma as defaultPrisma, resolveDatabaseProvider } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
+import {
+  restrictedIds,
+  restrictedRequirementIds,
+  userSourceReader,
+  type SourceReader,
+} from "../analysis/source-redaction.js";
 import { actorHasProjectAccess, type SchedulerActor } from "../scheduler/project-access.js";
 import { listMemberProjectsInWorkspace } from "../cross-project/cross-project-access.js";
 import { isUniqueViolation } from "../db/prisma-errors.js";
@@ -261,6 +272,14 @@ export async function createRequirementLink(
     });
   });
 
+  // #2491 — an endpoint resting on a source the caller cannot see answers as
+  // a missing one: the link's response would name it.
+  const hidden = await restrictedRequirementIds(userSourceReader(actor.id), [
+    sourceRequirementId,
+    targetRequirementId,
+  ]);
+  if (hidden.size > 0) throw linkEndpointNotFound();
+
   assertSameWorkspace(source, target);
 
   if (
@@ -475,6 +494,19 @@ export async function listRequirementLinks(
     return allowed;
   };
 
+  // #2491 — a counterpart resting on a source the caller cannot see is listed
+  // as the placeholder: the link is theirs to see, its title is not.
+  const hidden = await restrictedRequirementIds(userSourceReader(actor.id), [
+    ...(outgoingRows as unknown as Array<{ targetRequirementId: string }>).map(
+      (r) => r.targetRequirementId,
+    ),
+    ...(incomingRows as unknown as Array<{ sourceRequirementId: string }>).map(
+      (r) => r.sourceRequirementId,
+    ),
+  ]);
+  const contextOf = (r: RequirementWithProject): LinkedRequirementContext =>
+    hidden.has(r.id) ? { ...toContext(r), title: RESTRICTED_SOURCE_TITLE } : toContext(r);
+
   const outgoing: RequirementLinkView[] = [];
   for (const row of outgoingRows as unknown as Array<{
     id: string;
@@ -491,7 +523,7 @@ export async function listRequirementLinks(
       createdAt: row.createdAt,
       sourceRequirementId: row.sourceRequirementId,
       targetRequirementId: row.targetRequirementId,
-      requirement: toContext(row.target),
+      requirement: contextOf(row.target),
     });
   }
 
@@ -511,7 +543,7 @@ export async function listRequirementLinks(
       createdAt: row.createdAt,
       sourceRequirementId: row.sourceRequirementId,
       targetRequirementId: row.targetRequirementId,
-      requirement: toContext(row.source),
+      requirement: contextOf(row.source),
     });
   }
 
@@ -545,6 +577,7 @@ function escapeLike(term: string): string {
 async function searchWorkspaceRequirementsPostgres(
   database: LinkPrisma,
   input: { projectIds: string[]; query: string; page: number; pageSize: number },
+  reader: SourceReader,
 ): Promise<SearchResult> {
   const { projectIds, query, page, pageSize } = input;
   const raw = database as unknown as {
@@ -553,12 +586,28 @@ async function searchWorkspaceRequirementsPostgres(
   const projectList = Prisma.join(projectIds);
   const pattern = `%${escapeLike(query)}%`;
 
-  const countRows = await raw.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
-    SELECT COUNT(*) AS "count"
+  // #2491 — every match is decided before a page is cut: a hidden one is
+  // neither listed, counted, nor allowed to take a visible one's place.
+  const matches = await raw.$queryRaw<
+    Array<{ id: string; analysisId: string; sourceIds: string | null }>
+  >(Prisma.sql`
+    SELECT "id", "analysisId", "sourceIds"
     FROM "requirements"
     WHERE "projectId" IN (${projectList})
       AND "deletedAt" IS NULL
       AND "title" ILIKE ${pattern}
+  `);
+  const hidden = [...(await restrictedIds(reader, matches))];
+  const notHidden =
+    hidden.length > 0 ? Prisma.sql`AND r."id" NOT IN (${Prisma.join(hidden)})` : Prisma.empty;
+
+  const countRows = await raw.$queryRaw<Array<{ count: bigint }>>(Prisma.sql`
+    SELECT COUNT(*) AS "count"
+    FROM "requirements" r
+    WHERE r."projectId" IN (${projectList})
+      AND r."deletedAt" IS NULL
+      AND r."title" ILIKE ${pattern}
+      ${notHidden}
   `);
   const total = Number(countRows[0]?.count ?? 0);
 
@@ -571,6 +620,7 @@ async function searchWorkspaceRequirementsPostgres(
     WHERE r."projectId" IN (${projectList})
       AND r."deletedAt" IS NULL
       AND r."title" ILIKE ${pattern}
+      ${notHidden}
     ORDER BY r."title" ASC
     LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}
   `);
@@ -623,11 +673,18 @@ export async function searchWorkspaceRequirements(
   // Postgres path expresses the case-fold with a parameterised `ILIKE` raw query
   // (#649). Only taken when there IS a term; the term-less query is identical on
   // both backends.
+  // #2491 — the caller reads the results: a requirement resting on a source
+  // they cannot see is left out, so the picker never confirms a word of it.
+  const reader = userSourceReader(actor.id);
   if (query && resolveDatabaseProvider() === "postgresql") {
-    return searchWorkspaceRequirementsPostgres(database, { projectIds, query, page, pageSize });
+    return searchWorkspaceRequirementsPostgres(
+      database,
+      { projectIds, query, page, pageSize },
+      reader,
+    );
   }
 
-  const where = {
+  const matching = {
     projectId: { in: projectIds },
     deletedAt: null,
     // SQLite `LIKE` is case-insensitive for ASCII, so a plain `contains` filter
@@ -635,6 +692,15 @@ export async function searchWorkspaceRequirements(
     // bound parameter — never interpolated into SQL.
     ...(query ? { title: { contains: query } } : {}),
   };
+  // Every match is decided before a page is cut, as above.
+  const hidden = await restrictedIds(
+    reader,
+    (await database.requirement.findMany({
+      where: matching,
+      select: { id: true, analysisId: true, sourceIds: true },
+    })) as Array<{ id: string; analysisId: string; sourceIds: string | null }>,
+  );
+  const where = hidden.size > 0 ? { ...matching, id: { notIn: [...hidden] } } : matching;
 
   const [total, rows] = await Promise.all([
     database.requirement.count({ where }),

@@ -36,6 +36,7 @@ import { buildProductAccessWhere, productRepoReadAccess } from "../products/prod
 import { canAccessProjectDiscussions } from "../discussions/access.js";
 import { getPortfolioAssessment } from "./assessment-store.js";
 import { restrictedIds, userSourceReader } from "../analysis/source-redaction.js";
+import { CHECKED_REVIEW_STATUSES } from "../analysis/change-request-source.js";
 import { impactOverview, impactSentence } from "./report-overview.js";
 import {
   portfolioSummary,
@@ -117,10 +118,17 @@ async function hiddenSource(
 ): Promise<{ all: boolean; titles: string[] }> {
   const none = { all: false, titles: [] as string[] };
   if (access.admin) return none;
+  // #2491 — of a change request, only the rows the check could have read: live,
+  // and draft or approved (`loadChangeRequestSource`). A rejected, deferred or
+  // deleted row was never sent, so hiding it withholds nothing.
   const where = a.sourceRequirementId
     ? { id: a.sourceRequirementId }
     : a.sourceAnalysisId
-      ? { analysisId: a.sourceAnalysisId }
+      ? {
+          analysisId: a.sourceAnalysisId,
+          deletedAt: null,
+          OR: [{ reviewStatus: null }, { reviewStatus: { in: [...CHECKED_REVIEW_STATUSES] } }],
+        }
       : null;
   if (!where) return none;
   const rows = await prisma.requirement.findMany({
@@ -129,10 +137,33 @@ async function hiddenSource(
   });
   const hidden = await restrictedIds(userSourceReader(access.user.userId), rows);
   if (hidden.size === 0) return none;
+  const all = a.sourceRequirementId !== null && a.sourceRequirementId !== undefined;
+  const titles = rows.filter((r) => hidden.has(r.id)).map((r) => r.title.trim());
+  if (all) return { all, titles };
+  // #2491 — and only a row the check did read: one whose title opens a stored
+  // criterion or not-checked entry (a criterion is `title: body`). A row left
+  // out at the start (its starter could not see it) opens none. With no stored
+  // criterion to tell by (a check that never got that far), every row counts.
+  const criteria = storedCriteria(a);
+  if (criteria.length === 0) return { all, titles };
+  const stored = [...criteria, ...a.notChecked.map((n) => n.text.trim())];
   return {
-    all: a.sourceRequirementId !== null && a.sourceRequirementId !== undefined,
-    titles: rows.filter((r) => hidden.has(r.id)).map((r) => r.title.trim()),
+    all,
+    titles: titles.filter((t) => t.length > 0 && stored.some((text) => text.startsWith(t))),
   };
+}
+
+/** The criteria a check stored on its products, trimmed. */
+function storedCriteria(a: PortfolioAssessment): string[] {
+  return a.products.flatMap((p) => {
+    const list = (p.technicalDetail as { criteria?: unknown } | null)?.criteria;
+    return Array.isArray(list)
+      ? list.flatMap((c: unknown) => {
+          const criterion = (c as { criterion?: unknown } | null)?.criterion;
+          return typeof criterion === "string" ? [criterion.trim()] : [];
+        })
+      : [];
+  });
 }
 
 async function mayRead(access: ReaderAccess, a: PortfolioAssessment): Promise<boolean> {

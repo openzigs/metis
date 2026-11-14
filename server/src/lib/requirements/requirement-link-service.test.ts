@@ -8,7 +8,18 @@
  * are consulted for BOTH endpoints) and drive the service's own logic against a
  * hand-rolled Prisma mock — no real DB (the #289 lesson).
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// #2491 — the source filter is pinned over a real database in
+// tests/source-redaction-2491.sqlite.test.ts; here nothing is restricted unless
+// a test says which ids are.
+const hiddenIds = vi.hoisted(() => ({ ids: new Set<string>() }));
+vi.mock("../analysis/source-redaction.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../analysis/source-redaction.js")>()),
+  restrictedIds: async (_reader: unknown, rows: Array<{ id: string }>) =>
+    new Set(rows.map((r) => r.id).filter((id) => hiddenIds.ids.has(id))),
+  restrictedRequirementIds: async (_reader: unknown, ids: Iterable<string>) =>
+    new Set([...ids].filter((id) => hiddenIds.ids.has(id))),
+}));
 
 const actorHasProjectAccess = vi.fn();
 const listMemberProjectsInWorkspace = vi.fn();
@@ -571,11 +582,12 @@ describe("searchWorkspaceRequirements", () => {
       { workspaceId: "ws1", query: "log", page: 2, pageSize: 10 },
       db as never,
     );
-    const whereArg = db.requirement.findMany.mock.calls[0][0].where;
+    // #2491 — the first read decides every match's sources; the second is the page.
+    const whereArg = db.requirement.findMany.mock.calls[1][0].where;
     expect(whereArg.projectId).toEqual({ in: ["projA", "projB"] });
     expect(whereArg.deletedAt).toBeNull();
     expect(whereArg.title).toEqual({ contains: "log" });
-    const callArgs = db.requirement.findMany.mock.calls[0][0];
+    const callArgs = db.requirement.findMany.mock.calls[1][0];
     expect(callArgs.skip).toBe(10);
     expect(callArgs.take).toBe(10);
     expect(result.items[0]).toMatchObject({ id: "r1", projectName: "Project A" });
@@ -586,6 +598,7 @@ describe("searchWorkspaceRequirements", () => {
     resolveDatabaseProviderMock.mockReturnValue("postgresql");
     const queryRaw = db.$queryRaw as ReturnType<typeof vi.fn>;
     queryRaw
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ count: 1n }])
       .mockResolvedValueOnce([
         { id: "r1", title: "Login", projectId: "projA", projectName: "Project A" },
@@ -598,13 +611,14 @@ describe("searchWorkspaceRequirements", () => {
     // Postgres takes the raw ILIKE branch — the Prisma builder is NOT used.
     expect(db.requirement.findMany).not.toHaveBeenCalled();
     expect(db.requirement.count).not.toHaveBeenCalled();
-    expect(queryRaw).toHaveBeenCalledTimes(2);
-    const countSql = (queryRaw.mock.calls[0][0] as { strings: string[] }).strings.join(" ");
-    const pageSql = (queryRaw.mock.calls[1][0] as { strings: string[] }).strings.join(" ");
+    // #2491 — the matches' sources, then the count and the page.
+    expect(queryRaw).toHaveBeenCalledTimes(3);
+    const countSql = (queryRaw.mock.calls[1][0] as { strings: string[] }).strings.join(" ");
+    const pageSql = (queryRaw.mock.calls[2][0] as { strings: string[] }).strings.join(" ");
     expect(countSql).toContain("ILIKE");
     expect(pageSql).toContain("ILIKE");
     // The mixed-case term is a bound parameter (never interpolated into SQL).
-    const pageValues = (queryRaw.mock.calls[1][0] as { values: unknown[] }).values;
+    const pageValues = (queryRaw.mock.calls[2][0] as { values: unknown[] }).values;
     expect(pageValues).toContain("%LOGIN%");
     expect(result).toMatchObject({ total: 1, page: 2, pageSize: 10 });
     expect(result.items[0]).toMatchObject({ id: "r1", projectName: "Project A" });
@@ -613,13 +627,16 @@ describe("searchWorkspaceRequirements", () => {
   it("escapes LIKE metacharacters in the term on the Postgres path", async () => {
     resolveDatabaseProviderMock.mockReturnValue("postgresql");
     const queryRaw = db.$queryRaw as ReturnType<typeof vi.fn>;
-    queryRaw.mockResolvedValueOnce([{ count: 0n }]).mockResolvedValueOnce([]);
+    queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ count: 0n }])
+      .mockResolvedValueOnce([]);
     await searchWorkspaceRequirements(
       actor,
       { workspaceId: "ws1", query: "50%_off", page: 1, pageSize: 20 },
       db as never,
     );
-    const values = (queryRaw.mock.calls[1][0] as { values: unknown[] }).values;
+    const values = (queryRaw.mock.calls[2][0] as { values: unknown[] }).values;
     // % and _ are escaped so they match literally, not as wildcards.
     expect(values).toContain("%50\\%\\_off%");
   });
@@ -631,7 +648,7 @@ describe("searchWorkspaceRequirements", () => {
       db as never,
     );
     expect(db.$queryRaw).not.toHaveBeenCalled();
-    const whereArg = db.requirement.findMany.mock.calls[0][0].where;
+    const whereArg = db.requirement.findMany.mock.calls[1][0].where;
     expect(whereArg.title).toEqual({ contains: "LOG" });
   });
 
@@ -641,7 +658,7 @@ describe("searchWorkspaceRequirements", () => {
       { workspaceId: "ws1", excludeProjectId: "projB", page: 1, pageSize: 20 },
       db as never,
     );
-    const whereArg = db.requirement.findMany.mock.calls[0][0].where;
+    const whereArg = db.requirement.findMany.mock.calls[1][0].where;
     expect(whereArg.projectId).toEqual({ in: ["projA"] });
   });
 
@@ -656,7 +673,61 @@ describe("searchWorkspaceRequirements", () => {
       pageSize: 20,
     });
     expect(defaultPrismaMock.requirement.count).toHaveBeenCalledTimes(1);
-    expect(defaultPrismaMock.requirement.findMany).toHaveBeenCalledTimes(1);
+    // #2491 — the matches' sources, then the page.
+    expect(defaultPrismaMock.requirement.findMany).toHaveBeenCalledTimes(2);
     expect(result.items[0]).toMatchObject({ id: "r9", projectName: "Project A" });
+  });
+});
+
+describe("#2491 — a requirement resting on a source the caller cannot see", () => {
+  let db: MockDb;
+  beforeEach(() => {
+    db = createMockDb();
+  });
+  afterEach(() => {
+    hiddenIds.ids = new Set();
+    resolveDatabaseProviderMock.mockReturnValue("sqlite");
+  });
+
+  it("is left out of the SQLite search before the page is cut", async () => {
+    hiddenIds.ids = new Set(["r-hidden"]);
+    listMemberProjectsInWorkspace.mockResolvedValue(["projA"]);
+    db.requirement.findMany.mockResolvedValueOnce([
+      { id: "r-hidden", analysisId: "a", sourceIds: null },
+      { id: "r1", analysisId: "a", sourceIds: null },
+    ]);
+    db.requirement.count.mockResolvedValue(1);
+    db.requirement.findMany.mockResolvedValueOnce([
+      { id: "r1", title: "Login", projectId: "projA", project: { name: "Project A" } },
+    ]);
+    await searchWorkspaceRequirements(
+      actor,
+      { workspaceId: "ws1", query: "log", page: 1, pageSize: 10 },
+      db as never,
+    );
+    expect(db.requirement.findMany.mock.calls[1][0].where.id).toEqual({ notIn: ["r-hidden"] });
+    expect(db.requirement.count.mock.calls[0][0].where.id).toEqual({ notIn: ["r-hidden"] });
+  });
+
+  it("is left out of the Postgres search's count and page", async () => {
+    hiddenIds.ids = new Set(["r-hidden"]);
+    listMemberProjectsInWorkspace.mockResolvedValue(["projA"]);
+    resolveDatabaseProviderMock.mockReturnValue("postgresql");
+    const queryRaw = db.$queryRaw as ReturnType<typeof vi.fn>;
+    queryRaw
+      .mockResolvedValueOnce([{ id: "r-hidden", analysisId: "a", sourceIds: null }])
+      .mockResolvedValueOnce([{ count: 0n }])
+      .mockResolvedValueOnce([]);
+    await searchWorkspaceRequirements(
+      actor,
+      { workspaceId: "ws1", query: "log", page: 1, pageSize: 10 },
+      db as never,
+    );
+    for (const call of [queryRaw.mock.calls[1], queryRaw.mock.calls[2]]) {
+      // The exclusion is a nested fragment whose ids are bound, never interpolated.
+      const nested = JSON.stringify((call[0] as { values: unknown[] }).values);
+      expect(nested).toContain("NOT IN");
+      expect(nested).toContain('"__join":["r-hidden"]');
+    }
   });
 });

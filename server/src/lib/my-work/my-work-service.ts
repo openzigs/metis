@@ -36,6 +36,14 @@ import {
   type MyWorkState,
 } from "@metis/shared";
 import { prisma } from "../prisma.js";
+import {
+  documentSourceRow,
+  inputDocumentIds,
+  loadSourceGuard,
+  userSourceReader,
+  type SourceGuardedRow,
+  type SourceReader,
+} from "../analysis/source-redaction.js";
 import { workspaceScopeWhere, type ProjectScopeActor } from "../auth/project-scope.js";
 import { awaitingDecisionWhere } from "../reviews/awaiting-decision.js";
 
@@ -308,7 +316,7 @@ export async function getMyWork(
           },
         });
 
-  const documentNames = await loadDocumentNames(runs);
+  const documentNames = await loadDocumentNames(runs, userSourceReader(actor.userId));
   const changeRequests: MyWorkChangeRequest[] = runs
     .map((run) => {
       const d = derived.get(run.id)!;
@@ -384,21 +392,29 @@ async function loadHandedOffRuns(runIds: string[]): Promise<Set<string>> {
   return new Set(rows.map((r) => r.analysisId));
 }
 
-/** File names of the runs' source documents, from each run's own project only. */
+/**
+ * File names of the runs' source documents, from each run's own project only.
+ * #2491 — and only of a document `reader` can see now: one restricted since the
+ * run is not named (the title falls back to the next source).
+ */
 async function loadDocumentNames(
-  runs: Array<{ projectId: string; metadata: string | null }>,
+  runs: Array<{ id: string; projectId: string; metadata: string | null }>,
+  reader: SourceReader,
 ): Promise<Map<string, string>> {
   const wanted = new Map<string, string>(); // documentId -> projectId
+  const cited: Array<{ documentId: string; row: SourceGuardedRow }> = [];
   for (const run of runs) {
-    try {
-      const ids = (JSON.parse(run.metadata ?? "{}") as { documentIds?: unknown }).documentIds;
-      if (Array.isArray(ids)) {
-        for (const id of ids) if (typeof id === "string") wanted.set(id, run.projectId);
-      }
-    } catch {
-      // Unreadable metadata: the title falls back to the next source.
+    for (const documentId of inputDocumentIds(run.metadata)) {
+      wanted.set(documentId, run.projectId);
+      cited.push({ documentId, row: documentSourceRow(run.id, documentId) });
     }
   }
+  if (wanted.size === 0) return new Map();
+  const guard = await loadSourceGuard(
+    reader,
+    cited.map((c) => c.row),
+  );
+  for (const { documentId, row } of cited) if (!guard.canSee(row)) wanted.delete(documentId);
   if (wanted.size === 0) return new Map();
   const docs = await prisma.document.findMany({
     where: { id: { in: [...wanted.keys()] }, deletedAt: null },

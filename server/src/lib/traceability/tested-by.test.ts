@@ -6,6 +6,13 @@
  * filter shows up as a wrong answer rather than passing over a stub.
  */
 import { describe, expect, it, vi } from "vitest";
+// #2491 — the source filter is pinned over a real database in
+// tests/source-redaction-2491.sqlite.test.ts; here nothing is restricted.
+vi.mock("../analysis/source-redaction.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../analysis/source-redaction.js")>()),
+  restrictedIds: async () => new Set<string>(),
+  restrictedRequirementIds: async () => new Set<string>(),
+}));
 import {
   DEFAULT_TESTED_BY_ENTRY_POINT_MIN_TEST_CALLERS,
   DEFAULT_TESTED_BY_HUB_MIN_FOREIGN_TEST_DIRS,

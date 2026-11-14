@@ -29,6 +29,7 @@
 import type { PrismaClient } from "@prisma/client";
 import {
   MAX_TRACEABILITY_LINK_DEPTH,
+  RESTRICTED_SOURCE_TITLE,
   SIMILAR_REQUIREMENT_SOURCE,
   type CrossProjectLinkEdge,
   type LinkedRequirementChain,
@@ -42,6 +43,7 @@ import { prisma as defaultPrisma } from "../prisma.js";
 import { actorHasProjectAccess, type SchedulerActor } from "../scheduler/project-access.js";
 import { listMemberProjectsInWorkspace } from "../cross-project/cross-project-access.js";
 import { getRequirementChain } from "./traceability-spine.js";
+import { restrictedRequirementIds, userSourceReader } from "../analysis/source-redaction.js";
 import {
   loadTestedByTargets,
   resolveTestedByForTargets,
@@ -183,8 +185,11 @@ export async function getRequirementChainWithLinks(
   const prisma = pickPrisma(deps);
   const depth = clampLinkDepth(options.depth);
 
+  // #2491 — the caller reads every chain: a linked requirement resting on a
+  // source they cannot see is restricted like one in a project they cannot.
+  const reader = userSourceReader(actor.id);
   // Base chain — spine is untouched and still project-scoped (404 if missing).
-  const base = await getRequirementChain(projectId, requirementId, { prisma });
+  const base = await getRequirementChain(projectId, requirementId, { prisma, reader });
 
   const linkedChains: LinkedRequirementChain[] = [];
   const accessCache = new Map<string, boolean>();
@@ -210,6 +215,10 @@ export async function getRequirementChainWithLinks(
       },
       select: LINK_EDGE_SELECT,
     })) as unknown as LinkEdgeRow[];
+    const hidden = await restrictedRequirementIds(
+      reader,
+      edges.flatMap((e) => [e.sourceRequirementId, e.targetRequirementId]),
+    );
 
     const next: string[] = [];
     for (const edge of edges) {
@@ -234,12 +243,17 @@ export async function getRequirementChainWithLinks(
         },
       };
 
-      if (!(await canAccess(counterpart.projectId))) {
+      // #2491 — a restricted counterpart is never named by its title either.
+      if (hidden.has(counterpart.id) || !(await canAccess(counterpart.projectId))) {
+        linkEdge.requirement.title = RESTRICTED_SOURCE_TITLE;
         linkedChains.push({ link: linkEdge, chain: null, restricted: true });
         continue; // never expand through an inaccessible node
       }
 
-      const chain = await getRequirementChain(counterpart.projectId, counterpart.id, { prisma });
+      const chain = await getRequirementChain(counterpart.projectId, counterpart.id, {
+        prisma,
+        reader,
+      });
       linkedChains.push({ link: linkEdge, chain, restricted: false });
       next.push(counterpart.id);
     }

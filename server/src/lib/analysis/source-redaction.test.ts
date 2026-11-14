@@ -16,8 +16,12 @@ import { InactiveAclActorError, sharedAudienceActor, type AclActor } from "../ra
 const auditSpy = vi.hoisted(() => vi.fn());
 vi.mock("../audit/audit-service.js", () => ({ audit: auditSpy }));
 import {
+  documentCoverageRows,
+  documentSourceRow,
+  inputDocumentIds,
   loadSourceGuard,
   redactAnalysisSnapshot,
+  restrictedRequirementIds,
   restrictedCrossDocFinding,
   restrictedFinding,
   restrictedIds,
@@ -645,5 +649,63 @@ describe("redactAnalysisSnapshot (#2447)", () => {
       guardFor(BOB),
     );
     expect(out.crossDocFindings).toBeNull();
+  });
+});
+
+describe("#2491 — inputs, coverage and requirement ids", () => {
+  it("inputDocumentIds reads the string ids of `metadata.documentIds`, and nothing from anything else", () => {
+    expect(inputDocumentIds(JSON.stringify({ documentIds: ["d1", 2, "d2"] }))).toEqual([
+      "d1",
+      "d2",
+    ]);
+    for (const raw of [
+      null,
+      undefined,
+      "",
+      "not json",
+      "null",
+      "5",
+      JSON.stringify({ documentIds: "d1" }),
+    ]) {
+      expect(inputDocumentIds(raw)).toEqual([]);
+    }
+  });
+
+  it("documentCoverageRows names one single-document row per document the coverage record lists", () => {
+    const snapshot = {
+      id: "a",
+      capability: { documentReading: { documents: [{ documentId: "d1" }, { documentId: "d2" }] } },
+    } as unknown as AnalysisSnapshot;
+    expect(documentCoverageRows(snapshot)).toEqual([
+      documentSourceRow("a", "d1"),
+      documentSourceRow("a", "d2"),
+    ]);
+    expect(
+      documentCoverageRows({ id: "a", capability: null } as unknown as AnalysisSnapshot),
+    ).toEqual([]);
+  });
+
+  it("restrictedRequirementIds reads nothing for no ids, and asks the guard about each row it finds", async () => {
+    const findMany = vi.fn(async () => [{ id: "r1", analysisId: "a", sourceIds: ids(["d1"]) }]);
+    const db = {
+      requirement: { findMany },
+      analysis: {
+        findMany: vi.fn(async () => [{ id: "a", projectId: "p1", sourceAccess: "shared" }]),
+      },
+      document: {
+        findMany: vi.fn(async () => [
+          {
+            id: "d1",
+            projectId: "p1",
+            aclSubjects: JSON.stringify([{ kind: "user", value: "alice" }]),
+          },
+        ]),
+      },
+    } as unknown as Parameters<typeof restrictedRequirementIds>[2];
+    expect(await restrictedRequirementIds(BOB, [], db)).toEqual(new Set());
+    expect(findMany).not.toHaveBeenCalled();
+    expect(await restrictedRequirementIds(BOB, ["r1", "r1"], db)).toEqual(new Set(["r1"]));
+    expect(findMany).toHaveBeenCalledTimes(1);
+    expect(await restrictedRequirementIds(ALICE, ["r1"], db)).toEqual(new Set());
   });
 });

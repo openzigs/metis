@@ -11,6 +11,13 @@
  * dependency run for real against that in-memory client.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+// #2491 — the source filter is pinned over a real database in
+// tests/source-redaction-2491.sqlite.test.ts; here nothing is restricted.
+vi.mock("../lib/analysis/source-redaction.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/analysis/source-redaction.js")>()),
+  restrictedIds: async () => new Set<string>(),
+  restrictedRequirementIds: async () => new Set<string>(),
+}));
 import express, { type NextFunction, type Request, type Response } from "express";
 import request from "supertest";
 
@@ -97,8 +104,9 @@ describe("GET /workspaces/:id/requirements/search (wired route → service → p
     // The service actually reached Prisma — proving the client was threaded end
     // to end, not defaulted around a mock.
     expect(prismaMock.requirement.count).toHaveBeenCalledTimes(1);
-    expect(prismaMock.requirement.findMany).toHaveBeenCalledTimes(1);
-    const whereArg = prismaMock.requirement.findMany.mock.calls[0][0].where;
+    // #2491 — the matches' sources, then the page.
+    expect(prismaMock.requirement.findMany).toHaveBeenCalledTimes(2);
+    const whereArg = prismaMock.requirement.findMany.mock.calls[1][0].where;
     expect(whereArg.projectId).toEqual({ in: ["projA"] });
   });
 });

@@ -20,7 +20,8 @@
  *   - a row with no list (NULL, or a value that does not parse): it rests on
  *     the run as a whole, so it is shown only to a reader who can see
  *     everything the run could (fail closed). For a `shared` run that is its
- *     corpus: every document any of its rows records, checked against the
+ *     corpus: every document any of its rows records, and every document it
+ *     was asked to read (`metadata.documentIds`, #2491), checked against the
  *     access lists as they are NOW. It read them as the shared audience
  *     (#2248), so all were open then; one restricted since hides the run-wide
  *     rows (and an agent's narrative) from a reader who cannot see it. A run
@@ -33,7 +34,7 @@
  * document is always among the row's document ids.
  *
  * Cost: one query for the runs' markers, one for the cited documents' access
- * lists (none when no run carries a marker), three for a shared run's corpus
+ * lists (none when no run carries a marker), five for a shared run's corpus
  * (only when a row rests on that run as a whole), and the reader's role only
  * when a document is restricted or a row rests on a non-shared run. The reader
  * is never resolved for an unrestricted project, so it behaves as before.
@@ -251,8 +252,8 @@ export async function loadSourceGuard(
 
 /**
  * The corpus of each run in `analysisIds`: every document id any of its
- * findings, requirements or cross-document findings records. Three reads per
- * batch of runs, of the recorded lists only.
+ * findings, requirements or cross-document findings records, and (#2491) every
+ * one its `metadata.documentIds` names. Five reads per batch of runs.
  *
  * A finding with no record means its source read failed (#2446 records one for
  * every finding it writes), so the recorded union may miss what it cited: that
@@ -293,6 +294,18 @@ async function loadRunCorpus(
     for (const r of requirements) add(r.analysisId, r.sourceIds);
     for (const c of crossDoc) add(c.analysisId, c.sourceIds);
 
+    // #2491 — the documents the run was asked to read (`metadata.documentIds`)
+    // are its corpus too, cited or not: one retrieved but never cited still
+    // shaped the run-wide text.
+    const inputs = await db.analysis.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, metadata: true },
+    });
+    for (const run of inputs) {
+      const set = corpus.get(run.id);
+      if (set) for (const id of inputDocumentIds(run.metadata)) set.add(id);
+    }
+
     const unrecorded = await db.finding.findMany({
       where: { agentResult: { analysisId: { in: ids } }, sourceIds: null },
       select: { agentResult: { select: { analysisId: true } } },
@@ -312,6 +325,17 @@ async function loadRunCorpus(
     }
   }
   return corpus;
+}
+
+/** The document ids a run's stored `metadata` says it was asked to read. */
+export function inputDocumentIds(metadata: string | null | undefined): string[] {
+  if (!metadata) return [];
+  try {
+    const ids = (JSON.parse(metadata) as { documentIds?: unknown } | null)?.documentIds;
+    return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -497,6 +521,7 @@ export function redactAnalysisSnapshot<T extends AnalysisSnapshot>(
   }
   return {
     ...snapshot,
+    capability: redactDocumentCoverage(snapshot.capability, analysisId, guard),
     metadata: redactStructuredList(snapshot.metadata, hiddenStructuredIds, seesRun, promotedIds),
     agents: snapshot.agents.map((a) => ({
       ...a,
@@ -515,6 +540,69 @@ export function redactAnalysisSnapshot<T extends AnalysisSnapshot>(
         }
       : snapshot.crossDocFindings,
   };
+}
+
+/** A row resting on exactly one document: how a single document is checked. */
+export function documentSourceRow(analysisId: string, documentId: string): SourceGuardedRow {
+  return { analysisId, sourceIds: JSON.stringify({ documentIds: [documentId], chunkIds: [] }) };
+}
+
+/**
+ * #2491 — the rows the guard must load to decide a snapshot's document
+ * coverage record (`capability.documentReading`): one per document it names.
+ */
+export function documentCoverageRows(snapshot: AnalysisSnapshot): SourceGuardedRow[] {
+  const documents = snapshot.capability?.documentReading?.documents ?? [];
+  return documents.map((d) => documentSourceRow(snapshot.id, d.documentId));
+}
+
+/**
+ * #2491 — the coverage record as `guard`'s reader may see it: a document they
+ * cannot see keeps its id, status and counts, but not its file name or its
+ * section headings.
+ */
+function redactDocumentCoverage(
+  capability: AnalysisSnapshot["capability"],
+  analysisId: string,
+  guard: SourceGuard,
+): AnalysisSnapshot["capability"] {
+  const documents = capability?.documentReading?.documents;
+  if (!capability || !documents) return capability;
+  return {
+    ...capability,
+    documentReading: {
+      ...capability.documentReading,
+      documents: documents.map((d) =>
+        guard.canSee(documentSourceRow(analysisId, d.documentId))
+          ? d
+          : { ...d, filename: RESTRICTED_SOURCE_TITLE, sections: [], reason: undefined },
+      ),
+    },
+  };
+}
+
+/**
+ * #2491 — of `requirementIds`, those `reader` cannot see: one read of their
+ * runs and recorded sources, then {@link restrictedIds}. An id with no row is
+ * not named (the caller's own read decides what an unknown id shows).
+ */
+export async function restrictedRequirementIds(
+  reader: SourceReader,
+  requirementIds: Iterable<string>,
+  db: GuardDb = defaultPrisma as unknown as GuardDb,
+): Promise<Set<string>> {
+  const ids = [...new Set(requirementIds)];
+  if (ids.length === 0) return new Set();
+  const rows: Array<SourceGuardedRow & { id: string }> = [];
+  for (const batch of batches(ids)) {
+    rows.push(
+      ...(await db.requirement.findMany({
+        where: { id: { in: batch } },
+        select: { id: true, analysisId: true, sourceIds: true },
+      })),
+    );
+  }
+  return restrictedIds(reader, rows, db);
 }
 
 /**

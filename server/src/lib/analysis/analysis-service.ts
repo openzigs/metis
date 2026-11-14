@@ -26,7 +26,12 @@ import {
   serializeSourceIds,
   sourceIdsOfFindingSets,
 } from "./source-ids.js";
-import { loadSourceGuard, redactAnalysisSnapshot, type SourceReader } from "./source-redaction.js";
+import {
+  documentCoverageRows,
+  loadSourceGuard,
+  redactAnalysisSnapshot,
+  type SourceReader,
+} from "./source-redaction.js";
 import {
   analysisFailedAgents,
   openQuestionCount,
@@ -2478,6 +2483,8 @@ async function redactSnapshotFor(
       sourceIds,
     })),
     ...crossDocRows.map((r) => ({ analysisId: row.id, sourceIds: r.sourceIds })),
+    // #2491 — and each document the coverage record names.
+    ...documentCoverageRows(snapshot),
   ]);
   return redactAnalysisSnapshot(snapshot, sources, guard);
 }

@@ -22,6 +22,7 @@ import {
   stripMetisMarkers,
 } from "@metis/shared";
 import { prisma } from "../prisma.js";
+import { restrictedIds, sharedSourceReader } from "../analysis/source-redaction.js";
 import { formatStartedAt } from "../analysis/run-start-label.js";
 import { snapshotAtVersion } from "../reviews/baseline-service.js";
 import { pickTracked, type VersionRow } from "../requirements/requirement-version-service.js";
@@ -144,12 +145,27 @@ export async function loadScopedRequirements(
   projectId: string,
   filter: RequirementsScopeFilter,
 ): Promise<LoadedScopedRequirement[]> {
-  const rows = await prisma.requirement.findMany({
+  return (await loadScopedRequirementsForProject(projectId, filter)).requirements;
+}
+
+/**
+ * #2491 — the selected requirements the whole project may read, and how many
+ * were left out. A generated document is read by every member, so it is
+ * written as the shared audience (#2248) reads, as the Spec Kit seed is: a
+ * requirement resting on a source restricted to some members is never written
+ * into it. Counted, never named.
+ */
+export async function loadScopedRequirementsForProject(
+  projectId: string,
+  filter: RequirementsScopeFilter,
+): Promise<{ requirements: LoadedScopedRequirement[]; restrictedLeftOut: number }> {
+  const read = await prisma.requirement.findMany({
     where: requirementsScopeWhere(projectId, filter),
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     select: {
       id: true,
       analysisId: true,
+      sourceIds: true,
       labels: true,
       title: true,
       body: true,
@@ -176,12 +192,17 @@ export async function loadScopedRequirements(
       },
     },
   });
+  const hidden = await restrictedIds(sharedSourceReader(), read);
+  const rows = read.filter((r) => !hidden.has(r.id)).map(({ sourceIds: _sourceIds, ...r }) => r);
   const rendered = filter.reviewRequestId
     ? await atReviewPins(projectId, filter.reviewRequestId, rows)
     : rows;
-  return [...rendered].sort(
-    (a, b) => (PRIORITY_RANK[a.priority] ?? 4) - (PRIORITY_RANK[b.priority] ?? 4),
-  );
+  return {
+    requirements: [...rendered].sort(
+      (a, b) => (PRIORITY_RANK[a.priority] ?? 4) - (PRIORITY_RANK[b.priority] ?? 4),
+    ),
+    restrictedLeftOut: hidden.size,
+  };
 }
 
 function versionedText(value: unknown): string {
@@ -587,6 +608,8 @@ export function renderRequirementsDocument(
   requirements: readonly ScopedRequirement[],
   names: RequirementsSourceNames = {},
   governing: GoverningSection | null = null,
+  /** #2491 — requirements left out because their sources are restricted. */
+  restrictedLeftOut = 0,
 ): string {
   const linked = requirements.filter(
     (r) => r.codeMappings.length > 0 || r.implementations.length > 0,
@@ -595,6 +618,11 @@ export function renderRequirementsDocument(
     `# ${cell(headingWithCount(title, requirements.length))}`,
     "",
     selectionSummary(filter, requirements.length, names),
+    ...(restrictedLeftOut > 0
+      ? [
+          `${restrictedLeftOut} more requirement(s) in this selection are left out: their sources are restricted.`,
+        ]
+      : []),
     `${linked} of ${requirements.length} have recorded code links.`,
     "",
     "## Summary",
@@ -644,7 +672,10 @@ export async function synthesizeRequirementsDocument(
   filter: RequirementsScopeFilter,
   title: string,
 ): Promise<{ markdown: string; sourceFingerprint: string; requirementCount: number }> {
-  const requirements = await loadScopedRequirements(projectId, filter);
+  const { requirements, restrictedLeftOut } = await loadScopedRequirementsForProject(
+    projectId,
+    filter,
+  );
   if (requirements.length === 0) {
     throw new Error("No requirements match this document's scope");
   }
@@ -662,6 +693,7 @@ export async function synthesizeRequirementsDocument(
       requirements,
       await loadSourceNames(projectId, filter),
       governing,
+      restrictedLeftOut,
     ),
     sourceFingerprint: governing
       ? createHash("sha256")
