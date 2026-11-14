@@ -3064,14 +3064,16 @@ requirement edited since the analysis was synthesised from.
 
 #2281 — a requirement edited since the check whose analysed requirement produced **no** finding has
 nothing to go stale, so the findings route also returns `editedWithoutFindings`
-(`editedWithoutFindings()`: drawn from an analysed requirement, or re-checked before, at a version
-other than the one judged, with no finding of its own or stale for it), and the panel offers each a
+(`editedWithoutFindings()`: drawn from an analysed requirement the check decided — #2311: one whose
+entry errored, or that it never reached, judged nothing — or re-checked before, at a version other
+than the one judged, with no finding of its own or stale for it), and the panel offers each a
 re-check. A re-check's findings and applicability entry are keyed by the stored requirement's id
 (`isRecheckEntry`: the entry records its own id's version); once that requirement is deleted they
 are left out of the route, the BRD (and its "left out" count) and the chat tool
-(`withGoverningStaleness`), and the clarify flow asks no question about its entry
-(`withoutDeletedRechecks`). They are kept, so a restored requirement brings them back. The BRD
-labels a re-checked wording **As re-checked**, without the title its heading already gives.
+(`withGoverningStaleness`), and the clarify flow asks no question about its entry, settles no answer onto it and carries none
+to it (`withoutDeletedRechecks`, #2311). They are kept, so a restored requirement brings them back. The BRD
+labels a re-checked wording **As re-checked**, without the title its heading already gives (only a
+whole title is left out, #2311).
 
 **Analysis view** (#1876): `GoverningFindingsPanel`
 (`ui/src/components/analysis/governing-findings-panel.tsx`), at the foot of the Findings tab,

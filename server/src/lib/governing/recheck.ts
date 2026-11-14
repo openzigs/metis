@@ -90,6 +90,8 @@ export async function recheckGoverningRequirement(
   input: RecheckGoverningRequirementInput,
 ): Promise<RecheckGoverningRequirementOutcome> {
   const { analysisId, projectId } = input;
+  // #2311 — a caller gone before the check starts: no model call at all.
+  if (input.signal?.aborted) return { ok: false, reason: "cancelled" };
   const requirement = await prisma.requirement.findFirst({
     where: { id: input.requirementId, analysisId, projectId, deletedAt: null },
     select: { id: true, title: true, body: true, acceptanceCriteria: true, version: true },

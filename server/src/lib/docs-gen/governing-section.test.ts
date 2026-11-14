@@ -895,6 +895,10 @@ describe("a re-checked requirement in the BRD — #2281", () => {
     expect(alone).not.toContain("_As analysed:_");
     const renamed = renderGoverningSection(run("Keep a card\n\nBody.")).join("\n");
     expect(renamed).toContain("_As re-checked:_ Keep a card");
+    // #2311 — renamed to a prefix of the wording's title: quoted whole, not cut mid-title.
+    const prefix = renderGoverningSection(run("Save a cardholder's details\n\nBody.")).join("\n");
+    expect(prefix).toContain("_As re-checked:_ Save a cardholder's details Body.");
+    expect(prefix).not.toContain("_As re-checked:_ holder's");
   });
 
   it("leaves out a deleted requirement's re-check, and does not count it as left out", async () => {

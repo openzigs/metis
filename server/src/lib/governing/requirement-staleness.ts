@@ -250,9 +250,10 @@ export function recheckedRequirementTitles(
 /**
  * #2281 — the stored requirements edited since the governing check last judged
  * them that no finding offers a re-check for (see NOT YET CHECKED): drawn from
- * an analysed requirement, or re-checked before, at a version other than the
- * one judged, with no finding of their own and none stale for them. `findings`
- * are {@link withGoverningStaleness}'s. Empty when the check never ran.
+ * an analysed requirement the check decided, or re-checked before, at a version
+ * other than the one judged, with no finding of their own and none stale for
+ * them. `findings` are {@link withGoverningStaleness}'s. Empty when the check
+ * never ran, or (#2311) decided nothing.
  */
 export function editedWithoutFindings(
   findings: readonly GoverningFinding[],
@@ -260,11 +261,21 @@ export function editedWithoutFindings(
   applicability: GoverningAnalysisApplicability | null,
 ): GoverningStaleRequirement[] {
   if (!applicability) return [];
+  // A re-check stores no entry when it fails (`recheck.ts`), so each one judged.
   const rechecked = new Map(
     applicability.requirements
-      .filter((e) => isRecheckEntry(e) && !e.error)
+      .filter(isRecheckEntry)
       .map((e) => [e.requirementId, e.versions![e.requirementId]!] as const),
   );
+  // #2311 — the analysed requirements the check decided. One whose entry
+  // errored, or that it never reached, judged no wording of anything drawn from it.
+  const decided = new Set(
+    applicability.requirements
+      .filter((e) => !isRecheckEntry(e) && !e.error)
+      .map((e) => e.requirementId),
+  );
+  const analysedJudged = (s: StoredRequirementState) =>
+    [...s.analysedIds].some((a) => decided.has(a));
   const offered = new Set<string>();
   for (const f of findings) {
     offered.add(f.requirementId);
@@ -272,7 +283,7 @@ export function editedWithoutFindings(
   }
   return states.flatMap((s) => {
     if (offered.has(s.id)) return [];
-    const judged = rechecked.get(s.id) ?? (s.analysedIds.size > 0 ? s.analysedVersion : null);
+    const judged = rechecked.get(s.id) ?? (analysedJudged(s) ? s.analysedVersion : null);
     if (judged === null || judged === s.version) return [];
     return [
       { requirementId: s.id, title: s.title, judgedVersion: judged, currentVersion: s.version },

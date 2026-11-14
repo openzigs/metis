@@ -1205,6 +1205,12 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
     governingRecheckUserRateLimiter,
     async (req: Request, res: Response) => {
       if (!isGoverningDocsEnabled()) throw new AppError(404, "NOT_FOUND", "Not found");
+      // #2281 — the request's lifetime bounds the model calls. #2311 — attached
+      // before the first await, so a client gone before the check starts runs none.
+      const ac = new AbortController();
+      res.on("close", () => {
+        if (!res.writableEnded) ac.abort();
+      });
       const analysisId = String(req.params.id);
       const projectId = String(req.params.projectId);
       await ensureAnalysisVisible(analysisId, projectId);
@@ -1215,11 +1221,6 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         });
       }
       const provider = meterAnalysisProvider(buildProvider({ config: loadAIConfig() }));
-      // #2281 — the request's lifetime bounds the model calls.
-      const ac = new AbortController();
-      res.on("close", () => {
-        if (!res.writableEnded) ac.abort();
-      });
       const outcome = await runInAnalysisUsageScope({ projectId, sessionId: analysisId }, () =>
         recheckGoverningRequirement({
           analysisId,
