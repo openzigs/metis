@@ -60,6 +60,7 @@ import {
   repoDocumentPath,
   type CodeAccessFilter,
 } from "./tools/code-access.js";
+import { replacedReadIds } from "./source-redaction.js";
 import { parseSourceIds, serializeSourceIds, SOURCE_ACCESS_STARTER } from "./source-ids.js";
 import { createChildLogger } from "../logger.js";
 
@@ -337,14 +338,23 @@ export async function readsWithStarterAccess(
 /**
  * Whether what run `analysisId` wrote may rest on a restricted read: a
  * `starter` run whose stored passes read a restricted file, or whose read set
- * cannot be told (fail closed). A run whose passes all read nothing restricted
+ * cannot be told (fail closed), or whose replaced passes read anything
+ * (`metadata.replacedReadSourceIds`, #2506). A run whose passes all read nothing restricted
  * (a project with no access lists) is as open as a `shared` one.
  */
 export async function mayRestOnRestrictedRead(
   analysisId: string,
   db: Pick<PrismaClient, "analysis" | "agentResult"> = defaultPrisma,
 ): Promise<boolean> {
-  if (!(await readsWithStarterAccess(analysisId, db))) return false;
+  const run = await db.analysis.findUnique({
+    where: { id: analysisId },
+    select: { sourceAccess: true, metadata: true },
+  });
+  if (run?.sourceAccess !== SOURCE_ACCESS_STARTER) return false;
+  // What the passes a regenerate or resume replaced had read still shaped the
+  // run (`metadata.replacedReadSourceIds`): null or non-empty is restricted.
+  const replaced = replacedReadIds(run.metadata);
+  if (replaced === null || replaced.length > 0) return true;
   const stored = await storedReadSet(db, analysisId);
   return stored === null || stored.size > 0;
 }

@@ -33,6 +33,7 @@ import {
   type MigratedSqlite,
   MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
 } from "./helpers/sqlite-migrated-db.js";
+import { mayRestOnRestrictedRead } from "../src/lib/analysis/pass-reads.js";
 import type { AclActor } from "../src/lib/rag/acl.js";
 import type { ReaderDocumentLoader } from "../src/lib/analysis/document-reader-agent.js";
 import type { RequirementCodeMatch } from "../src/lib/traceability/requirement-code-mapping.js";
@@ -500,6 +501,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         (await db.analysis.findUniqueOrThrow({ where: { id } })).metadata ?? "{}",
       ) as Record<string, unknown>;
       expect(kept.replacedReadSourceIds).toEqual([MEMO]);
+      // The only stored row is Bob's and read nothing, yet the run still may
+      // rest on Alice's memo, so its clarifications are not indexed (#2506).
+      expect(await mayRestOnRestrictedRead(id, db)).toBe(true);
 
       const bob = await snapshotAs("bob", id, "document");
       // His own finding rests only on what he read...

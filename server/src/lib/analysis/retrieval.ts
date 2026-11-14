@@ -165,8 +165,8 @@ export interface GroundedSearchSource {
  * #2431 — the document ACL a retrieval reads under. An analysis passes the
  * shared audience (`sharedDocumentAudience`): its findings are read by every
  * project member. #2506 — a pass of a run a person started passes that
- * person, with `onRead` recording what it read. Required, so a new caller cannot forget it and read every
- * restricted document: an eval over fixed documents opts out by name with
+ * person, with `onRead` recording what it read. Required, so a new caller
+ * cannot forget it and read every restricted document: an eval over fixed documents opts out by name with
  * {@link UNRESTRICTED_RETRIEVAL}, and nothing else may.
  */
 export const UNRESTRICTED_RETRIEVAL = "unrestricted" as const;

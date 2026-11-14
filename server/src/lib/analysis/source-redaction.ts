@@ -380,15 +380,16 @@ async function loadRunCorpus(
 /**
  * #2506 — what a run's replaced passes read (`metadata.replacedReadSourceIds`,
  * written by `persistAgentResult`'s replace): the ids, `[]` when none was
- * replaced, `null` when one of them recorded none or the value does not read.
+ * replaced, `null` when one of them recorded none or the metadata does not read
+ * (fail closed).
  */
-function replacedReadIds(metadata: string | null | undefined): string[] | null {
+export function replacedReadIds(metadata: string | null | undefined): string[] | null {
   if (!metadata) return [];
   let value: unknown;
   try {
     value = (JSON.parse(metadata) as Record<string, unknown> | null)?.replacedReadSourceIds;
   } catch {
-    return [];
+    return null;
   }
   if (value === undefined) return [];
   if (!Array.isArray(value)) return null;
