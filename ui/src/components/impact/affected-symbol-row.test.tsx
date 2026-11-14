@@ -75,6 +75,25 @@ describe("AffectedSymbolRow symbol link (#992)", () => {
   });
 });
 
+describe("AffectedSymbolRow tier (#2302)", () => {
+  it.each([
+    [symbol({ relation: "direct", depth: 0, confidence: 0.9 }), "likely", "Likely"],
+    [symbol({ relation: "direct", depth: 0, confidence: 0.2 }), "possible", "Possible"],
+    [
+      symbol({ relation: "caller", depth: 1, confidence: 0.85 }),
+      "verified",
+      "Verified by graph path",
+    ],
+    [symbol({ relation: "related", depth: 1, confidence: 0.95 }), "possible", "Possible"],
+    [symbol({ codeSymbolId: null }), "needs-review", "Needs review"],
+  ] as const)("shows %#: %s", (sym, tier, label) => {
+    renderRow(sym, null);
+    const badge = screen.getByTestId("impact-tier");
+    expect(badge).toHaveAttribute("data-tier", tier);
+    expect(badge).toHaveTextContent(label);
+  });
+});
+
 function item(projectId: string): ImpactItemView {
   return {
     id: "it-1",

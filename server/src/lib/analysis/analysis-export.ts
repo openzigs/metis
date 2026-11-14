@@ -28,9 +28,12 @@
 import {
   formatCodeCitationLocator,
   DDL_RISK_LABEL,
+  IMPACT_TIER_LABEL,
   impactFileKey,
   impactRepoCount,
   impactSymbolRole,
+  impactSymbolTier,
+  impactTableTier,
   groupImpactTables,
   groupRepresentative,
   type CodeCitation,
@@ -604,9 +607,12 @@ function impactSymbolBullet(sym: ImpactAffectedSymbolView, withRepo: boolean): s
       ? `${sym.filePath}:${sym.startLine}${sym.endLine != null ? `-${sym.endLine}` : ""}`
       : sym.filePath;
   const repo = withRepo && sym.repo ? ` in ${mdInline(sym.repo.name)}` : "";
+  // #2302 — the tier the page shows, from the same shared rule.
   return `- ${codeSpan(loc)}${repo} · ${codeSpan(sym.qualifiedName)} — ${mdInline(
     sym.relation,
-  )}, depth ${sym.depth} · confidence ${sym.confidence.toFixed(2)}`;
+  )}, depth ${sym.depth} · confidence ${sym.confidence.toFixed(2)} · tier: ${
+    IMPACT_TIER_LABEL[impactSymbolTier(sym)]
+  }`;
 }
 
 /**
@@ -693,6 +699,9 @@ function proposedColumnLines(row: ImpactAffectedTableView, indent: string): stri
     mdInline(row.changeKind),
     `source ${mdInline(row.source)}`,
     `confidence ${row.confidence.toFixed(2)}`,
+    // #2302 — each column its own tier, as on the page: a column the live schema
+    // lacks needs review even under a table that resolves.
+    `tier: ${IMPACT_TIER_LABEL[impactTableTier(row)]}`,
   ];
   if (row.riskClass) facts.push(`risk: ${DDL_RISK_LABEL[row.riskClass]}`);
   return [
@@ -717,6 +726,8 @@ function impactTableGroupBullet(group: GroupedImpactTable): string {
     facts.push(mdInline(entry.changeKind), `source ${mdInline(entry.source)}`);
   }
   if (rep) facts.push(`confidence ${rep.confidence.toFixed(2)}`);
+  // #2302 — the table's tier, from the row that represents it, as on the page.
+  if (rep) facts.push(`tier: ${IMPACT_TIER_LABEL[impactTableTier(rep)]}`);
   // #982/#991 — risk before relevance, mirroring the UI's badge order; the
   // shared `DDL_RISK_LABEL` is the single source of truth for the vocabulary.
   const risk = groupRiskClass(group);
@@ -744,7 +755,14 @@ function impactTableGroupBullet(group: GroupedImpactTable): string {
   }
   if (referenced.length > 0) {
     const shown = referenced.slice(0, MAX_REFERENCED_COLUMNS);
-    const names = shown.map((c) => codeSpan(c.columnName ?? c.tableName)).join(", ");
+    // #2302 — a verify-only column the live schema lacks is flagged where it is listed.
+    const names = shown
+      .map((c) => {
+        const name = codeSpan(c.columnName ?? c.tableName);
+        const tier = impactTableTier(c);
+        return tier === "needs-review" ? `${name} (${IMPACT_TIER_LABEL[tier]})` : name;
+      })
+      .join(", ");
     const more =
       referenced.length > shown.length ? ` …and ${referenced.length - shown.length} more` : "";
     lines.push(
@@ -763,6 +781,7 @@ function impactRoutineBullet(routine: ImpactAffectedTableView): string {
     mdInline(routine.changeKind),
     `source ${mdInline(routine.source)}`,
     `confidence ${routine.confidence.toFixed(2)}`,
+    `tier: ${IMPACT_TIER_LABEL[impactTableTier(routine)]}`,
   ];
   const lines = [`- **${mdInline(routine.tableName)}** — ${facts.join(" · ")}`];
   if (routine.relevanceRationale && routine.relevanceRationale.trim().length > 0) {

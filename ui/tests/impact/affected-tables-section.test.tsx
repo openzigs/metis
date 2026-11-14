@@ -230,12 +230,85 @@ describe("AffectedTablesSection", () => {
     );
     const badge = screen.getByTestId("schema-relevance-tier");
     expect(badge).toHaveAttribute("data-relevance-tier", "likely");
-    expect(badge).toHaveTextContent("Likely");
+    // #2302 — "Likely related", apart from the "Likely" impact tier beside it.
+    expect(badge).toHaveTextContent("Likely related");
     // Issue #985 review follow-up — the rationale renders visibly via
     // RelevanceRationale (asserted below), so the badge must NOT also carry it
     // as a `title`; a redundant `title` would double-announce the same
     // sentence to screen readers.
     expect(badge).not.toHaveAttribute("title");
+  });
+
+  it("#2302 — gives each table its impact tier, mapped from the relevance tier", () => {
+    render(
+      <AffectedTablesSection
+        tables={[
+          tableEntry({ id: "a", tableName: "crm.customers", relevanceTier: "likely" }),
+          tableEntry({ id: "b", tableName: "crm.orders", relevanceTier: "unlikely" }),
+          tableEntry({
+            id: "c",
+            tableName: "crm.ghosts",
+            relevanceTier: "likely",
+            reconciliation: "table-not-found",
+          }),
+        ]}
+      />,
+    );
+    const tierOf = (name: string) =>
+      within(
+        screen
+          .getAllByTestId("schema-impact-table")
+          .find((g) => g.getAttribute("data-table-name") === name)!,
+      ).getByTestId("impact-tier");
+    expect(tierOf("crm.customers")).toHaveAttribute("data-tier", "likely");
+    expect(tierOf("crm.customers")).toHaveTextContent("Likely");
+    expect(tierOf("crm.orders")).toHaveTextContent("Possible");
+    expect(tierOf("crm.ghosts")).toHaveAttribute("data-tier", "needs-review");
+    expect(tierOf("crm.ghosts")).toHaveTextContent("Needs review");
+  });
+
+  it("#2302 — gives a routine its impact tier, and an unjudged row one by confidence", () => {
+    render(
+      <AffectedTablesSection
+        tables={[
+          tableEntry({ id: "r", objectKind: "function", tableName: "app.calc", confidence: 0.3 }),
+          tableEntry({ id: "t", tableName: "app.totals", confidence: 0.9 }),
+        ]}
+      />,
+    );
+    const routine = screen.getByTestId("schema-impact-routine");
+    expect(within(routine).getByTestId("impact-tier")).toHaveAttribute("data-tier", "possible");
+    const table = screen.getByTestId("schema-impact-table");
+    expect(within(table).getByTestId("impact-tier")).toHaveAttribute("data-tier", "likely");
+  });
+
+  it("#2302 — gives each column its own tier, so an unresolved column under a matched table needs review", () => {
+    render(
+      <AffectedTablesSection
+        tables={[
+          tableEntry({ id: "t", tableName: "crm.orders", relevanceTier: "likely" }),
+          tableEntry({
+            id: "c1",
+            tableName: "crm.orders",
+            columnName: "read_at",
+            changeKind: "add-column",
+            suggestedDdl: "ALTER TABLE crm.orders ADD COLUMN read_at <type>;",
+            reconciliation: "column-not-found",
+            confidence: 0.4,
+          }),
+          tableEntry({ id: "c2", tableName: "crm.orders", columnName: "status", confidence: 0.9 }),
+        ]}
+      />,
+    );
+    const columnTier = (name: string) =>
+      within(
+        screen
+          .getAllByTestId("schema-impact-column")
+          .find((c) => c.getAttribute("data-column-name") === name)!,
+      ).getByTestId("impact-tier");
+    expect(columnTier("read_at")).toHaveAttribute("data-tier", "needs-review");
+    expect(columnTier("read_at")).toHaveTextContent("Needs review");
+    expect(columnTier("status")).toHaveAttribute("data-tier", "likely");
   });
 
   it("labels the possible tier distinctly (#950)", () => {
