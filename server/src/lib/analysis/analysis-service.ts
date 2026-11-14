@@ -20,6 +20,13 @@ import { mergeHiddenRequirementLabels, parseRequirementLabels } from "./requirem
 import { analysedVersions } from "../governing/requirement-staleness.js";
 import { ELICITED_NFRS_AWAITING_PROMOTION_KEY } from "./elicited-nfr-requirements.js";
 import {
+  SOURCE_ACCESS_SHARED,
+  evidenceFindingIds,
+  resolveFindingSourceIds,
+  serializeSourceIds,
+  sourceIdsOfFindingSets,
+} from "./source-ids.js";
+import {
   analysisFailedAgents,
   openQuestionCount,
   readDroppedCitations,
@@ -293,6 +300,9 @@ export async function createAnalysis(input: CreateAnalysisInput) {
       startedAt,
       title,
       titleGenerated: !typed,
+      // #2446 — the run reads code as the shared audience (#2314) and records
+      // the sources of every finding and requirement it writes.
+      sourceAccess: SOURCE_ACCESS_SHARED,
       metadata: JSON.stringify({
         agentKeys: input.agentKeys,
         documentIds: input.documentIds ?? [],
@@ -1025,15 +1035,16 @@ export async function persistAgentResult(
   // Issue #2011 — `mode: "supersede"` runs that delete and the write below in
   // one transaction. #2018 — under an explicit deadline, not Prisma's default.
   const mode = input.mode ?? "replace";
+  const sources = await findingSourceIds(input);
   const { persisted, refusedMetrics } =
     mode === "supersede"
       ? await prisma.$transaction(async (tx) => {
           await deleteAgentResultsInScope(tx, input);
-          return writeAgentResult(tx, input);
+          return writeAgentResult(tx, input, sources);
         }, SUPERSEDE_TRANSACTION_OPTIONS)
       : await (async () => {
           if (mode === "replace") await deleteAgentResultsInScope(prisma, input);
-          return writeAgentResult(prisma, input);
+          return writeAgentResult(prisma, input, sources);
         })();
   if (refusedMetrics > 0) {
     // Counts and the run identity only — never the finding text.
@@ -1061,10 +1072,38 @@ async function deleteAgentResultsInScope(
   });
 }
 
+/**
+ * #2446 — the stored sources of each finding in `input`, index-aligned, read
+ * once per result and outside the write's transaction. Every path that
+ * persists findings (agentic, requirement-grounded, single-shot, regenerate,
+ * resume, the agent phase) comes through here. If they cannot be read, the
+ * findings are still written, recording none (NULL): a reader then treats
+ * them as "not recorded" (#2447 fails closed), and a completed pass is never
+ * lost for a record about it.
+ */
+async function findingSourceIds(input: PersistAgentResultInput): Promise<Array<string | null>> {
+  if (!isAgentOutput(input.output)) return [];
+  const findings = input.output.findings;
+  try {
+    const sources = await resolveFindingSourceIds(prisma, input.analysisId, findings);
+    return sources.map(serializeSourceIds);
+  } catch (err) {
+    // Counts and the run identity only — never a citation.
+    log.warn("Could not record the sources of an agent's findings", {
+      analysisId: input.analysisId,
+      agentKey: input.agentKey,
+      findings: findings.length,
+      error: String(err),
+    });
+    return findings.map(() => null);
+  }
+}
+
 /** The row and its findings, through `db` (the client, or a transaction). */
 async function writeAgentResult(
   db: Prisma.TransactionClient,
   input: PersistAgentResultInput,
+  sources: ReadonlyArray<string | null>,
 ): Promise<{ persisted: PersistedAgentResult; refusedMetrics: number }> {
   // #774 — the loop's tool-call summary rides in the existing output JSON column
   // (no migration): a `toolTelemetry` sibling of the agent output's own keys.
@@ -1091,7 +1130,7 @@ async function writeAgentResult(
   const findingIds: string[] = [];
   let refusedMetrics = 0;
   if (isAgentOutput(input.output)) {
-    for (const f of input.output.findings) {
+    for (const [i, f] of input.output.findings.entries()) {
       const provenance = resolveFindingProvenance(f);
       // #1318 — count the `faithfulness` values the server did not author, so
       // the refusal below is not silent. On the model-emitted path it means a
@@ -1142,6 +1181,8 @@ async function writeAgentResult(
           // the orchestrator after the #734 grounding gate. Null for findings
           // that made no code-evidence claim (and for non-agent-output callers).
           verificationStatus: f.verificationStatus ?? null,
+          // #2446 — the sources its citations name (`findingSourceIds`).
+          sourceIds: sources[i] ?? null,
         },
       });
       findingIds.push(row.id);
@@ -1549,6 +1590,15 @@ async function replaceRequirementSet(
   // #1063 — the imported items this run was started from; `[]` on any other run,
   // which leaves every row's `sourceCandidateIds` null.
   const runSources = readSourceRequirements(metadata);
+  const labelsByIdx = input.synthesis.requirements.map((r) =>
+    evidenceLabels(r, input.findingIdsByIndex),
+  );
+  // #2446 — the sources of the findings each row rests on, in one read.
+  const sourceIdsByIdx = await sourceIdsOfFindingSets(
+    tx,
+    input.analysisId,
+    labelsByIdx.map(evidenceFindingIds),
+  );
   const ids: string[] = [];
   for (let idx = 0; idx < input.synthesis.requirements.length; idx++) {
     const r = input.synthesis.requirements[idx];
@@ -1567,7 +1617,7 @@ async function replaceRequirementSet(
     // of their own (below), so accepting the proposal leaves a version holding
     // them for Restore to return to.
     const anchored = plan.proposed !== null && plan.criteria.length > 0;
-    const labels = evidenceLabels(r, input.findingIdsByIndex);
+    const labels = labelsByIdx[idx]!;
     // #2436 — awaiting review when an author of it signed it off.
     const rowStatus = structuredId && held.has(structuredId) ? "draft" : input.reviewStatus;
     const row = await tx.requirement.create({
@@ -1579,6 +1629,7 @@ async function replaceRequirementSet(
         body: r.body,
         priority: r.priority,
         labels: JSON.stringify(labels),
+        sourceIds: sourceIdsByIdx[idx] ?? null,
         // Issue #1096 — the synthesis agent's own criteria, kept as structured
         // data instead of being collapsed into `body`. An empty array is
         // preserved as-is: downstream says "none were derived" rather than
@@ -1657,8 +1708,16 @@ async function writeElicitedRequirements(
 ): Promise<string[]> {
   const elicited = input.elicited;
   if (!elicited) return [];
+  const labelsByIdx = elicited.requirements.map((r) => evidenceLabels(r, input.findingIdsByIndex));
+  // #2446 — the sources of the findings each row rests on, in one read.
+  const sourceIdsByIdx = await sourceIdsOfFindingSets(
+    tx,
+    input.analysisId,
+    labelsByIdx.map(evidenceFindingIds),
+  );
   const ids: string[] = [];
   for (const [idx, r] of elicited.requirements.entries()) {
+    const labels = labelsByIdx[idx]!;
     const row = await tx.requirement.create({
       data: {
         analysisId: input.analysisId,
@@ -1667,7 +1726,8 @@ async function writeElicitedRequirements(
         title: r.title.slice(0, 255),
         body: r.body,
         priority: r.priority,
-        labels: JSON.stringify(evidenceLabels(r, input.findingIdsByIndex)),
+        labels: JSON.stringify(labels),
+        sourceIds: sourceIdsByIdx[idx] ?? null,
         acceptanceCriteria: JSON.stringify(r.acceptanceCriteria ?? []),
         coverage: elicited.coverages[idx] ?? null,
         verdict: elicited.verdicts[idx] ?? null,
@@ -1959,9 +2019,17 @@ export async function persistCrossDocFindings(input: {
   analysisId: string;
   findings: CrossDocFinding[];
 }): Promise<string[]> {
+  // #2446 — its evidence ids are the run's finding ids (one segment per
+  // finding): the union of their sources, read for every row at once. A row
+  // citing none was still derived from every finding of the run: NULL.
+  const sourceIdsByIdx = await sourceIdsOfFindingSets(
+    prisma,
+    input.analysisId,
+    input.findings.map((f) => f.evidenceIds ?? []),
+  );
   await prisma.crossDocFinding.deleteMany({ where: { analysisId: input.analysisId } });
   const ids: string[] = [];
-  for (const f of input.findings) {
+  for (const [idx, f] of input.findings.entries()) {
     const row = await prisma.crossDocFinding.create({
       data: {
         analysisId: input.analysisId,
@@ -1970,6 +2038,7 @@ export async function persistCrossDocFindings(input: {
         title: f.title.slice(0, 255),
         detail: f.detail,
         evidenceIds: JSON.stringify(f.evidenceIds ?? []),
+        sourceIds: sourceIdsByIdx[idx] ?? null,
         scope: f.scope ?? null,
       },
     });

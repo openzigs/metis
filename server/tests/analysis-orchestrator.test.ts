@@ -278,6 +278,11 @@ vi.mock("../src/lib/prisma.js", () => ({
           return row;
         },
       ),
+      // #2446 — a requirement's sources are read from its evidence findings.
+      // This fake records none, so every requirement reads "not recorded";
+      // the record itself is exercised against real SQLite in
+      // tests/source-provenance-2446.sqlite.test.ts.
+      findMany: vi.fn(async () => []),
     },
     requirement: {
       // Issue #769 — this fake models no review work and no prior set, so the
