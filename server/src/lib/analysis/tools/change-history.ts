@@ -113,7 +113,13 @@ export interface ChangeHistoryDeps {
   listRepos?: (projectId: string) => Promise<HistoryRepo[]>;
   /** Whether the index knows `filePath` for the connection (a source document or a symbol in it). */
   isIndexedFile?: (projectId: string, repoId: string, filePath: string) => Promise<boolean>;
-  findSymbols?: (projectId: string, repoIds: string[], symbol: string) => Promise<SymbolHit[]>;
+  /** Symbols named `symbol`, filtered by `keep` before any limit is applied. */
+  findSymbols?: (
+    projectId: string,
+    repoIds: string[],
+    symbol: string,
+    keep: (hit: SymbolHit) => boolean,
+  ) => Promise<SymbolHit[]>;
   loadVersions?: (projectId: string) => Promise<CodeVersionIndex>;
   readState?: (repoId: string) => Promise<HistoryState | null>;
   historyDir?: (repoId: string) => string;
@@ -254,38 +260,59 @@ async function indexedFile(projectId: string, repoId: string, filePath: string):
   return sym !== null;
 }
 
+/** Rows read per page while looking for symbols the caller may see. */
+const SYMBOL_SCAN_PAGE = 100;
+/** Pages read at most: past them, a name hidden this often reads as not found. */
+const SYMBOL_SCAN_PAGES = 10;
+
+/**
+ * Up to `MAX_CANDIDATES + 1` symbols named `symbol` that pass `keep` (the
+ * caller's ACL and sensitive-path check). The filter runs BEFORE the limit
+ * (#2484 review): limiting first let eleven same-named symbols in hidden files
+ * push a visible one out, a false "not found" for a restricted user.
+ */
 async function symbolsNamed(
   projectId: string,
   repoIds: string[],
   symbol: string,
+  keep: (hit: SymbolHit) => boolean = () => true,
 ): Promise<SymbolHit[]> {
-  const rows = await prisma.codeSymbol.findMany({
-    where: {
-      projectId,
-      OR: [{ qualifiedName: symbol }, { name: symbol }],
-      graph: { projectId, repoConnectionId: { in: repoIds } },
-    },
-    select: {
-      qualifiedName: true,
-      kind: true,
-      filePath: true,
-      startLine: true,
-      endLine: true,
-      graph: { select: { repoConnectionId: true } },
-    },
-    orderBy: [{ qualifiedName: "asc" }],
-    take: MAX_CANDIDATES + 1,
-  });
-  return rows
-    .filter((r) => r.graph.repoConnectionId !== null)
-    .map((r) => ({
-      repoId: r.graph.repoConnectionId!,
-      qualifiedName: r.qualifiedName,
-      kind: r.kind,
-      filePath: r.filePath,
-      startLine: r.startLine,
-      endLine: r.endLine,
-    }));
+  const kept: SymbolHit[] = [];
+  for (let page = 0; page < SYMBOL_SCAN_PAGES; page++) {
+    const rows = await prisma.codeSymbol.findMany({
+      where: {
+        projectId,
+        OR: [{ qualifiedName: symbol }, { name: symbol }],
+        graph: { projectId, repoConnectionId: { in: repoIds } },
+      },
+      select: {
+        qualifiedName: true,
+        kind: true,
+        filePath: true,
+        startLine: true,
+        endLine: true,
+        graph: { select: { repoConnectionId: true } },
+      },
+      orderBy: [{ qualifiedName: "asc" }, { id: "asc" }],
+      skip: page * SYMBOL_SCAN_PAGE,
+      take: SYMBOL_SCAN_PAGE,
+    });
+    for (const r of rows) {
+      if (r.graph.repoConnectionId === null) continue;
+      const hit: SymbolHit = {
+        repoId: r.graph.repoConnectionId,
+        qualifiedName: r.qualifiedName,
+        kind: r.kind,
+        filePath: r.filePath,
+        startLine: r.startLine,
+        endLine: r.endLine,
+      };
+      if (keep(hit)) kept.push(hit);
+      if (kept.length > MAX_CANDIDATES) return kept;
+    }
+    if (rows.length < SYMBOL_SCAN_PAGE) break;
+  }
+  return kept;
 }
 
 // ---- formatting --------------------------------------------------------------
@@ -385,8 +412,9 @@ export function createChangeHistoryTool(deps: ChangeHistoryDeps = {}): AgentTool
       !isSensitiveRepoPath(p) && (access.unrestricted || !access.isHidden(repoId, p));
     if (parsed.symbol) {
       const byId = new Map(repos.map((r) => [r.id, r] as const));
-      const hits = (await findSymbols(ctx.projectId, [...byId.keys()], parsed.symbol)).filter(
-        (h) => byId.has(h.repoId) && visible(h.repoId, h.filePath),
+      const keep = (h: SymbolHit): boolean => byId.has(h.repoId) && visible(h.repoId, h.filePath);
+      const hits = (await findSymbols(ctx.projectId, [...byId.keys()], parsed.symbol, keep)).filter(
+        keep,
       );
       if (hits.length === 0) {
         return {
@@ -481,6 +509,7 @@ export function createChangeHistoryTool(deps: ChangeHistoryDeps = {}): AgentTool
       path: target.path,
       ...(target.lines ? { lines: target.lines } : {}),
       windowStart: state.windowStart,
+      cuts: state.cuts ?? null,
       skip: parsed.cursor,
       cap: HISTORY_PAGE_SIZE,
     });

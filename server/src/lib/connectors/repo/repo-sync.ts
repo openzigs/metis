@@ -27,7 +27,7 @@ import { buildCodeGraphSchemaWiring } from "../db/db-service.js";
 import { assertConnectorIngestLease, type ConnectorIngestLease } from "../ingest-guard.js";
 import { discoverAndUpsertConnections } from "./connection-discovery.js";
 import { deepIngestFailureCount, syncFailureWarning } from "./deep-ingest-outcome.js";
-import { refreshConnectorHistory } from "./history-refresh.js";
+import { startConnectorHistoryRefresh } from "./history-refresh.js";
 import {
   fetchRepoMetadata,
   getRepoConnector,
@@ -102,8 +102,9 @@ export async function runRepoConnectorSync(
     sqlLineageOverride: refreshSchemaWiring.sqlLineageOverride,
     embedSymbols: true, // #797 — a refresh keeps symbol vectors current
   });
-  // #2338 — the commit history at the commit the graph now records (best effort).
-  if (!isNonGit) await refreshConnectorHistory(projectId, id);
+  // #2338 — the commit history at the commit the graph now records: started,
+  // not awaited, so it never delays the knowledge ingest; the signal stops it.
+  if (!isNonGit) void startConnectorHistoryRefresh(projectId, id, signal);
   abortGuard(signal);
   // Step 3: incremental RAG knowledge ingest
   const srcSummary = await ingestSourceAsKnowledge(projectId, id, a, clone.path, {

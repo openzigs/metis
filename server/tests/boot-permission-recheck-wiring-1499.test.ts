@@ -7,9 +7,13 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
-const recheck = vi.hoisted(() => ({ start: vi.fn() }));
+const recheck = vi.hoisted(() => ({ start: vi.fn(), history: vi.fn() }));
 vi.mock("../src/lib/connectors/repo/permission-recheck.js", () => ({
   startRepoPermissionRecheck: recheck.start,
+}));
+// #2338 / #2484 review — the commit-history sweep starts with the server too.
+vi.mock("../src/lib/connectors/repo/history-refresh.js", () => ({
+  startConnectorHistoryHousekeeping: recheck.history,
 }));
 
 const { listenAndStart, onServerListening } = await import("../src/index.js");
@@ -48,5 +52,12 @@ describe("#1499 — the boot re-check is started once the server listens", () =>
     recheck.start.mockClear();
     onServerListening(4000);
     expect(recheck.start).toHaveBeenCalledTimes(1);
+  });
+
+  it("onServerListening starts the commit-history housekeeping (sweep, and on every flag change)", () => {
+    recheck.history.mockClear();
+    onServerListening(4000);
+    expect(recheck.history).toHaveBeenCalledTimes(1);
+    expect(recheck.history).toHaveBeenCalledWith();
   });
 });

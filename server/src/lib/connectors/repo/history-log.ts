@@ -22,6 +22,15 @@
  *     ADR 0023 finding 5): history before the window exists or may exist;
  *   - `none`: the walk ended inside the window, so the whole history of the
  *     path (or range) is in the result.
+ *
+ * A FILE query is bounded by the window's cut commits when the fetch could
+ * compute them (`HistoryState.cuts`: commits outside the window with nothing
+ * in the window behind them). The walk excludes them (`^cut` on stdin), so it
+ * never walks to the root (#2484 review) and still loses no in-window commit,
+ * skewed dates or not. It then cannot see an older commit, so `none` is
+ * decided by a second bounded walk instead: the file's oldest commit in the
+ * window must be the one that ADDED it (`--diff-filter=A`), else `bound`.
+ * Without cuts (skewed dates) the walk is unbounded, as before.
  */
 import {
   FULL_SHA_RE,
@@ -55,6 +64,8 @@ export interface HistoryQuery {
   skip: number;
   /** In-window commits returned at most. */
   cap: number;
+  /** The window's cut commits (`HistoryState.cuts`); `null`/absent: walk the whole history. */
+  cuts?: readonly string[] | null;
   run?: GitRunner;
   timeoutMs?: number;
   maxOutputBytes?: number;
@@ -78,7 +89,7 @@ const DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 
 /** The `git` arguments of a query; exported so tests can pin the argument array. */
 export function historyLogArgs(
-  q: Pick<HistoryQuery, "gitDir" | "commitSha" | "path" | "lines">,
+  q: Pick<HistoryQuery, "gitDir" | "commitSha" | "path" | "lines" | "cuts">,
 ): string[] {
   const head = [
     ...historyReadArgs(q.gitDir),
@@ -92,7 +103,18 @@ export function historyLogArgs(
   if (q.lines) {
     return [...head, "--no-patch", `-L${q.lines.start},${q.lines.end}:${q.path}`, q.commitSha];
   }
-  return [...head, "--follow", q.commitSha, "--", q.path];
+  // The cuts, when any, arrive on stdin as `^<sha>` ({@link cutInput}).
+  const stdin = q.cuts && q.cuts.length > 0 ? ["--stdin"] : [];
+  return [...head, "--follow", ...stdin, q.commitSha, "--", q.path];
+}
+
+/** The `^<cut>` lines a bounded file query reads on stdin; `undefined` when it has none. */
+function cutInput(q: Pick<HistoryQuery, "lines" | "cuts">): string | undefined {
+  if (q.lines || !q.cuts || q.cuts.length === 0) return undefined;
+  return q.cuts
+    .filter((c) => FULL_SHA_RE.test(c))
+    .map((c) => `^${c}\n`)
+    .join("");
 }
 
 /** One `-z` record, or `null` when it is not a well-formed commit. */
@@ -137,10 +159,13 @@ export async function readHistoryLog(q: HistoryQuery): Promise<HistoryLogResult>
       end = text.indexOf("\0", consumed);
     }
   };
+  const input = cutInput(q);
+  const timeoutMs = q.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const result = await run(historyLogArgs(q), {
     env: historyReadEnv(),
-    timeoutMs: q.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    timeoutMs,
     maxOutputBytes: q.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES,
+    ...(input !== undefined ? { input } : {}),
     enough: (out) => {
       take(out, false);
       return inWindow.length >= want;
@@ -151,8 +176,14 @@ export async function readHistoryLog(q: HistoryQuery): Promise<HistoryLogResult>
   const reached = inWindow.at(-1)?.committedAt ?? null;
   if (inWindow.length >= want) return { ok: true, commits: page, more: "cap", reached };
   if (result.stopped === "timeout") return { ok: false, reason: "timeout" };
-  // The output cap stops a walk that has read further than any answer needs.
-  if (result.stopped === "output-cap") return { ok: true, commits: page, more: "bound", reached };
+  if (result.stopped === "output-cap") {
+    // Stopped mid-walk on output, not on the window: what is shown is a page,
+    // and the cursor goes on from it. Only a walk already past the window with
+    // nothing to show is `bound`; one that showed nothing yet failed.
+    if (page.length > 0) return { ok: true, commits: page, more: "cap", reached };
+    if (sawOlder) return { ok: true, commits: page, more: "bound", reached };
+    return { ok: false, reason: "failed" };
+  }
   if (result.code !== 0) {
     if (isMissingObjectError(result.stderr)) {
       return { ok: true, commits: page, more: "bound", reached };
@@ -163,5 +194,30 @@ export async function readHistoryLog(q: HistoryQuery): Promise<HistoryLogResult>
     }
     return { ok: false, reason: "failed" };
   }
-  return { ok: true, commits: page, more: sawOlder ? "bound" : "none", reached };
+  if (sawOlder) return { ok: true, commits: page, more: "bound", reached };
+  if (input === undefined) return { ok: true, commits: page, more: "none", reached };
+  // Bounded by the cuts, the walk cannot see an older commit: the history is
+  // whole only if the oldest commit it found is the one that added the file.
+  const oldest = inWindow.at(-1);
+  if (!oldest) return { ok: true, commits: page, more: "bound", reached };
+  const added = await run(
+    [
+      ...historyReadArgs(q.gitDir),
+      "log",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--no-color",
+      "--follow",
+      "--diff-filter=A",
+      "-n1",
+      "--format=%H",
+      "--stdin",
+      q.commitSha,
+      "--",
+      q.path,
+    ],
+    { env: historyReadEnv(), timeoutMs, maxOutputBytes: 1024, input },
+  );
+  const createdHere = added.code === 0 && added.stdout.trim() === oldest.sha;
+  return { ok: true, commits: page, more: createdHere ? "none" : "bound", reached };
 }

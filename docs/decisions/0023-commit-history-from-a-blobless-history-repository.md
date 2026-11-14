@@ -175,8 +175,17 @@ test against real git or by a live fetch of miniflux/v2 at the `pnpm eval:ba-qa`
   `GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1` and `GIT_NO_LAZY_FETCH=1`
   beside `--no-lazy-fetch` (and `GIT_LITERAL_PATHSPECS=1`, so a path after `--` is never a
   glob or a `:(magic)` pathspec); the history is deleted with its connector, when its
-  repository or provider changes, and at the next ingest after the tool is turned off;
-  `git` is in the server image (#2395).
+  repository or provider changes, with its project, and as soon as the tool is turned off
+  (a sweep at boot and on every change of the flag, which also removes history no live
+  connector accounts for); `git` is in the server image (#2395).
+- **The PR #2484 review changed four things.** The fetch runs beside the ingest, never
+  ahead of its knowledge step, and stops with the ingest's cancellation and at shutdown.
+  The cap holds during the download: the volume must have room for it first, and a
+  watchdog kills a fetch (and the processes git started) once the repository passes it,
+  since an explicit blob want ignores `--filter`. A too-large history is not downloaded
+  again until its cap or window changes or a week passes. And a file query stops at the
+  window's **cut commits** (outside the window, nothing in the window behind them), so it
+  never walks to the root; with skewed dates there are no cuts and it walks as before.
 - **The bound is anchored at the indexed commit**, not at the time of the fetch: the 365
   days before the indexed commit's committer date (`REPO_HISTORY_WINDOW_DAYS`). It is the
   same year for a repository indexed today, it still covers a year of activity for one

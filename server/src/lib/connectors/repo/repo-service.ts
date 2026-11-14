@@ -39,11 +39,11 @@ import { getVaultService } from "../../vault/vault-service.js";
 import { resolveRepoCloneRoot, resolveRepoClonePath } from "./clone-path.js";
 import {
   fetchHistoryRepository,
-  removeHistoryRepository,
   resolveHistoryWindowDays,
   resolveRepoHistoryMaxBytes,
   type HistoryFetchOutcome,
 } from "./history-repo.js";
+import { dropConnectorHistory, type HistoryLimits } from "./history-refresh.js";
 import { assertConnectorHostAllowed, resolveAndAssertConnectorHost } from "../network-allowlist.js";
 import {
   ConnectorError,
@@ -1741,6 +1741,7 @@ export async function fetchConnectorHistory(
   projectId: string,
   id: string,
   commitSha: string,
+  signal?: AbortSignal,
 ): Promise<HistoryFetchOutcome> {
   const conn = await getRepoConnector(projectId, id);
   const gitRepo = assertGitConnector(conn);
@@ -1761,22 +1762,17 @@ export async function fetchConnectorHistory(
     remoteUrl,
     commitSha,
     env,
-    windowDays: resolveHistoryWindowDays(),
-    maxBytes: resolveRepoHistoryMaxBytes(resolveRepoCloneMaxBytes()),
+    ...resolveConnectorHistoryLimits(),
+    ...(signal ? { signal } : {}),
   });
 }
 
-/** #2338 — remove a connector's history; logged, never thrown (the caller's write already landed). */
-async function dropConnectorHistory(id: string, why: string): Promise<void> {
-  try {
-    await removeHistoryRepository(id);
-  } catch (err) {
-    log.warn("Failed to remove a repository connector's commit history", {
-      connectorId: id,
-      why,
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
+/** #2338 — the window and size cap a history fetch uses now. */
+export function resolveConnectorHistoryLimits(): HistoryLimits {
+  return {
+    windowDays: resolveHistoryWindowDays(),
+    maxBytes: resolveRepoHistoryMaxBytes(resolveRepoCloneMaxBytes()),
+  };
 }
 
 export interface PullOrCloneResult extends ShallowCloneResult {

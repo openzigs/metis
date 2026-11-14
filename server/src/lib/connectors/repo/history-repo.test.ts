@@ -241,6 +241,84 @@ describe("fetchHistoryRepository", () => {
     await expect(fs.access(resolveRepoHistoryStatePath("c-gone"))).rejects.toThrow();
   });
 
+  it("stops a download once the repository passes its cap, before the fetch ends (#2484 review, A04)", async () => {
+    // A fetch that keeps writing until something stops it: without the
+    // watchdog it would run to its timeout and fill the volume.
+    const started = Date.now();
+    const run: GitRunner = async (args, opts) => {
+      if (!args.includes("fetch")) return runGit(args, opts);
+      const dir = resolveRepoHistoryPath("c-watch");
+      await fs.mkdir(path.join(dir, "objects", "pack"), { recursive: true });
+      await fs.writeFile(path.join(dir, "objects", "pack", "tmp_pack_x"), Buffer.alloc(4096));
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, 10_000);
+        opts.signal?.addEventListener("abort", () => {
+          clearTimeout(t);
+          resolve();
+        });
+      });
+      return {
+        code: opts.signal?.aborted ? null : 0,
+        stdout: "",
+        stderr: "",
+        stopped: opts.signal?.aborted ? "aborted" : null,
+      };
+    };
+    const out = await fetchHistoryRepository(
+      fetchInput("c-watch", { run, maxBytes: 1000, sizePollMs: 10 }),
+    );
+    expect(out.status).toBe("too_large");
+    expect(Date.now() - started).toBeLessThan(5_000);
+    await expect(fs.access(resolveRepoHistoryPath("c-watch"))).rejects.toThrow();
+    expect(await readHistoryState("c-watch")).toMatchObject({
+      status: "too_large",
+      maxBytes: 1000,
+      windowDays: 365,
+    });
+  });
+
+  it("fetches nothing when the volume has no room for the cap", async () => {
+    const calls: string[][] = [];
+    const run: GitRunner = async (args, opts) => {
+      calls.push([...args]);
+      return runGit(args, opts);
+    };
+    const out = await fetchHistoryRepository(
+      fetchInput("c-full", { run, freeBytes: async () => 10 }),
+    );
+    expect(out).toEqual({
+      status: "failed",
+      reason: "not enough free disk space for the history size cap",
+    });
+    expect(calls.filter((a) => a.includes("fetch"))).toHaveLength(0);
+  });
+
+  it("stops at the ingest's cancellation", async () => {
+    const gone = new AbortController();
+    gone.abort();
+    expect(await fetchHistoryRepository(fetchInput("c-abort", { signal: gone.signal }))).toEqual({
+      status: "failed",
+      reason: "aborted",
+    });
+    const live = new AbortController();
+    const run: GitRunner = async (args, opts) => {
+      if (args.includes("fetch")) live.abort();
+      return runGit(args, opts);
+    };
+    expect(
+      await fetchHistoryRepository(fetchInput("c-abort2", { run, signal: live.signal })),
+    ).toEqual({ status: "failed", reason: "aborted" });
+  });
+
+  it("records no cuts when committer dates are skewed, and the window's cuts when they are not", async () => {
+    // The fixture's 2019-dated child of an in-window commit: nothing is safe to cut.
+    expect(await readHistoryState("c-ready")).toMatchObject({ cuts: null });
+    const out = await fetchHistoryRepository(fetchInput("c-cut", { commitSha: shas.addG! }));
+    expect(out.status).toBe("ready");
+    // At `add g` the window starts 2025-08-01: its one boundary parent is `old change b`.
+    expect(await readHistoryState("c-cut")).toMatchObject({ cuts: [shas.oldB] });
+  });
+
   it("reads no state from a missing or malformed record", async () => {
     expect(await readHistoryState("never")).toBeNull();
     await fs.writeFile(resolveRepoHistoryStatePath("c-junk"), '{"status":"ready","commitSha":"x"}');
@@ -350,10 +428,114 @@ describe("readHistoryLog (offline, against the fetched repository)", () => {
       ok: false,
       reason: "failed",
     });
-    expect(await q("h.txt", { run: stub({ code: null, stopped: "output-cap" }) })).toMatchObject({
-      ok: true,
-      more: "bound",
+    // An output cap with nothing parsed says nothing about the history.
+    expect(await q("h.txt", { run: stub({ code: null, stopped: "output-cap" }) })).toEqual({
+      ok: false,
+      reason: "failed",
     });
+  });
+
+  it("reports an output cap hit inside the window as a page with a cursor, not as `bound`", async () => {
+    const rec = (sha: string, subject: string): string =>
+      [sha, "", "1790000000", "Ann", subject, ""].join("\u001f");
+    const stdout = `${rec("e".repeat(40), "one")}\0${rec("f".repeat(40), "two")}\0`;
+    const run: GitRunner = async () => ({ code: null, stdout, stderr: "", stopped: "output-cap" });
+    const r = await q("h.txt", { run });
+    expect(subjects(r)).toEqual(["one", "two"]);
+    expect(r).toMatchObject({ more: "cap" });
+  });
+});
+
+describe("readHistoryLog bounded by the window's cuts (#2484 review)", () => {
+  // Fetched at `add g`: window from 2025-08-01, one cut (`old change b`).
+  const cutQuery = async (p: string, run: GitRunner) => {
+    const state = await readHistoryState("c-cut");
+    if (state?.status !== "ready") throw new Error("c-cut not fetched");
+    return readHistoryLog({
+      gitDir: resolveRepoHistoryPath("c-cut"),
+      commitSha: shas.addG!,
+      path: p,
+      windowStart: state.windowStart,
+      skip: 0,
+      cap: 20,
+      cuts: state.cuts ?? null,
+      run,
+    });
+  };
+  const spy = () => {
+    const outputs: string[] = [];
+    const run: GitRunner = async (args, opts) => {
+      const r = await runGit(args, opts);
+      outputs.push(r.stdout);
+      return r;
+    };
+    return { run, outputs };
+  };
+
+  it("never walks past the window for a file that is older than it, and says `bound`", async () => {
+    const { run, outputs } = spy();
+    const r = await cutQuery("f.txt", run);
+    expect(r.ok && r.commits.map((c) => c.subject)).toEqual(["new change b", "new change d"]);
+    expect(r).toMatchObject({ more: "bound" });
+    // Neither pre-window commit was ever printed: the walk stopped at the cut.
+    expect(outputs.join("")).not.toMatch(/old change b|old add/);
+  });
+
+  it("still says `none` for a file the window added", async () => {
+    const { run } = spy();
+    const r = await cutQuery("g.txt", run);
+    expect(r.ok && r.commits.map((c) => c.subject)).toEqual(["add g"]);
+    expect(r).toMatchObject({ more: "none" });
+  });
+
+  it("passes the cuts on stdin, never as arguments", () => {
+    const args = historyLogArgs({
+      gitDir: "/h",
+      commitSha: tip,
+      path: "f.txt",
+      cuts: [shas.oldB!],
+    });
+    expect(args).toContain("--stdin");
+    expect(args.join(" ")).not.toContain(shas.oldB!);
+    // A line-range query is bounded by the missing blobs instead.
+    expect(
+      historyLogArgs({
+        gitDir: "/h",
+        commitSha: tip,
+        path: "f.txt",
+        lines: { start: 1, end: 2 },
+        cuts: [shas.oldB!],
+      }),
+    ).not.toContain("--stdin");
+  });
+});
+
+describe("runGit", () => {
+  it("caps output in BYTES, never splitting the count by UTF-16 units", async () => {
+    const cfg = path.join(base, "multibyte.cfg");
+    writeFileSync(cfg, `[a]\n\tb = ${"é".repeat(50)}\n`);
+    const r = await runGit(["config", "--file", cfg, "--get", "a.b"], {
+      env: historyReadEnv(),
+      timeoutMs: 10_000,
+      maxOutputBytes: 9,
+    });
+    expect(r.stopped).toBe("output-cap");
+    expect(Buffer.byteLength(r.stdout)).toBeLessThanOrEqual(9);
+    expect(r.stdout.startsWith("éééé")).toBe(true);
+  });
+
+  it("kills the process when its signal aborts", async () => {
+    const ac = new AbortController();
+    const started = Date.now();
+    setTimeout(() => ac.abort(), 50);
+    const r = await runGit(["-c", "alias.wait=!sleep 5", "wait"], {
+      env: { PATH: process.env.PATH ?? "" },
+      timeoutMs: 10_000,
+      maxOutputBytes: 1024,
+      signal: ac.signal,
+    });
+    expect(r.stopped).toBe("aborted");
+    expect(Date.now() - started).toBeLessThan(4_000);
   });
 });
 

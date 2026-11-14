@@ -169,8 +169,9 @@ vi.mock("../src/lib/connectors/repo/repo-service.js", () => ({
 }));
 
 // #2338 — the commit-history fetch is external ingestion too (real git, real disk).
+// #2484 review — a download that never ends: the ingest must complete anyway.
 vi.mock("../src/lib/connectors/repo/history-refresh.js", () => ({
-  refreshConnectorHistory: vi.fn(async () => ({ status: "off" })),
+  startConnectorHistoryRefresh: vi.fn(() => new Promise<void>(() => undefined)),
 }));
 
 vi.mock("../src/lib/code-graph/ingest.js", () => ({
@@ -253,7 +254,7 @@ import {
   setIngestRerunRunner,
 } from "../src/lib/connectors/ingest-guard.js";
 import { discoverAndUpsertConnections } from "../src/lib/connectors/repo/connection-discovery.js";
-import { refreshConnectorHistory } from "../src/lib/connectors/repo/history-refresh.js";
+import { startConnectorHistoryRefresh } from "../src/lib/connectors/repo/history-refresh.js";
 import { buildCodeGraphSchemaWiring } from "../src/lib/connectors/db/db-service.js";
 import { getLastJobLifecycle, genericFailureMessage } from "../src/lib/socket/job-events.js";
 import { ConnectorError } from "../src/lib/connectors/types.js";
@@ -1263,8 +1264,12 @@ describe("manual connector regeneration callers (#1356)", () => {
         const response = await ingest();
         expect(response.status).toBe(okStatus);
         expectScheduled();
-        // #2338 — every graph-building caller refreshes the commit history after the graph.
-        expect(refreshConnectorHistory).toHaveBeenCalledWith("proj_1", "repo_github_x");
+        // #2338 — every graph-building caller starts the commit-history refresh
+        // after the graph; #2484 review — without waiting for it (it never ends here).
+        expect(vi.mocked(startConnectorHistoryRefresh).mock.calls[0]?.slice(0, 2)).toEqual([
+          "proj_1",
+          "repo_github_x",
+        ]);
         if (caller === "refresh-ingest") {
           // #449 / PR #491 panel: a clean Sync says regeneration was scheduled and
           // carries no warning — the success half of the new response contract.

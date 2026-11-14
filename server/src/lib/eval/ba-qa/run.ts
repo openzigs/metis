@@ -115,7 +115,9 @@ type ArmFlag = (typeof ARM_FLAGS)[number];
  * #2338 — `tools-history` is `tools-only` plus `get_change_history`
  * (`CHAT_CHANGE_HISTORY_TOOL`): paired with `tools-only`, it measures what the
  * commit history adds on the "when and why" questions (`H*`) and that nothing
- * else regresses. Every other named arm sets that flag as it sets the primitives.
+ * else regresses. It is the ONLY arm that turns the tool on (#2484 review): the
+ * older arms keep their meaning, and stay offline-capable, because the tool
+ * needs each product's history fetched from its host first.
  */
 export const ARMS = {
   /** The server's defaults: every flag unset. */
@@ -134,7 +136,7 @@ export const ARMS = {
     RAG_RERANK: "1",
     CHAT_CODE_SEARCH_PRIMITIVES: "1",
     CHAT_CODE_CONTEXT_TOOL: "1",
-    CHAT_CHANGE_HISTORY_TOOL: "1",
+    CHAT_CHANGE_HISTORY_TOOL: "0",
   },
   "no-tools": {
     CHAT_CODE_SEARCH_TOOLS: "0",
@@ -142,7 +144,7 @@ export const ARMS = {
     RAG_RERANK: "1",
     CHAT_CODE_SEARCH_PRIMITIVES: "1",
     CHAT_CODE_CONTEXT_TOOL: "1",
-    CHAT_CHANGE_HISTORY_TOOL: "1",
+    CHAT_CHANGE_HISTORY_TOOL: "0",
   },
   "no-fused": {
     CHAT_CODE_SEARCH_TOOLS: "1",
@@ -150,7 +152,7 @@ export const ARMS = {
     RAG_RERANK: "1",
     CHAT_CODE_SEARCH_PRIMITIVES: "1",
     CHAT_CODE_CONTEXT_TOOL: "1",
-    CHAT_CHANGE_HISTORY_TOOL: "1",
+    CHAT_CHANGE_HISTORY_TOOL: "0",
   },
   "no-rerank": {
     CHAT_CODE_SEARCH_TOOLS: "1",
@@ -158,7 +160,7 @@ export const ARMS = {
     RAG_RERANK: "0",
     CHAT_CODE_SEARCH_PRIMITIVES: "1",
     CHAT_CODE_CONTEXT_TOOL: "1",
-    CHAT_CHANGE_HISTORY_TOOL: "1",
+    CHAT_CHANGE_HISTORY_TOOL: "0",
   },
   /** Fused retrieval's gain over the tools alone, with the reranker off as it ships. */
   "tools-only": {

@@ -97,7 +97,7 @@ import {
   testRepoConnector,
   updateRepoConnector,
 } from "../lib/connectors/repo/repo-service.js";
-import { refreshConnectorHistory } from "../lib/connectors/repo/history-refresh.js";
+import { startConnectorHistoryRefresh } from "../lib/connectors/repo/history-refresh.js";
 import {
   ingestDbSchema,
   ingestRepoMetadata,
@@ -360,8 +360,9 @@ async function runDeepIngest(
       // vector half. Fire-and-forget; never blocks this run.
       embedSymbols: true,
     });
-    // #2338 — the commit history at the commit the graph now records (best effort).
-    if (source.isGit) await refreshConnectorHistory(projectId, connectorId);
+    // #2338 — the commit history at the commit the graph now records: started,
+    // not awaited, so it never delays the knowledge ingest (stopped at shutdown).
+    if (source.isGit) void startConnectorHistoryRefresh(projectId, connectorId);
     emitProgress("Ingesting source code", 3);
     const srcSummary = await ingestSourceAsKnowledge(projectId, connectorId, userId, source.path, {
       boundary: source.boundary,

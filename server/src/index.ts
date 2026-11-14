@@ -14,6 +14,7 @@
 import "./lib/otel/init.js";
 import { bootServer } from "./server.js";
 import { startRepoPermissionRecheck } from "./lib/connectors/repo/permission-recheck.js";
+import { startConnectorHistoryHousekeeping } from "./lib/connectors/repo/history-refresh.js";
 import { createChildLogger } from "./lib/logger.js";
 import { prisma } from "./lib/prisma.js";
 import { ensureSchemaUpToDate } from "./lib/db/migration-guard.js";
@@ -164,6 +165,9 @@ export function isBootTolerableAIConfigError(err: unknown): boolean {
 export function onServerListening(port: number | string): void {
   log.info("METIS server listening", { port, env: process.env.NODE_ENV });
   startRepoPermissionRecheck();
+  // #2338 — remove commit history the flag or a live connector no longer
+  // accounts for, now and whenever the flag changes.
+  startConnectorHistoryHousekeeping();
 }
 
 /**

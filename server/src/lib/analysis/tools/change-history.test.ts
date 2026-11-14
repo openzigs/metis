@@ -168,6 +168,13 @@ describe("parseChangeHistoryArgs", () => {
 });
 
 describe("get_change_history", () => {
+  it("bounds the walk by the cut commits the fetch recorded", async () => {
+    const cut = "9".repeat(40);
+    const { tool, queries } = make({ state: { ...READY, cuts: [cut] } });
+    await tool.execute({ filePath: "src/feed.go" }, ctx);
+    expect(queries[0]!.cuts).toEqual([cut]);
+  });
+
   it("lists commits newest first with a commit link, the version line and the coverage line", async () => {
     const { tool, queries } = make({
       commits: [
@@ -185,6 +192,7 @@ describe("get_change_history", () => {
       cap: HISTORY_PAGE_SIZE,
     });
     expect(queries[0]!.lines).toBeUndefined();
+    expect(queries[0]!.cuts).toBeNull(); // a record with no cuts: the whole walk
     const lines = r.content.split("\n");
     expect(lines[0]).toBe(
       "Change history of src/feed.go in server, newest first, walking back from the indexed " +
@@ -409,6 +417,33 @@ describe("get_change_history", () => {
       expect(r).toMatchObject({ resultCount: 0, zeroResultKind: "ambiguous-name" });
       expect(r.content).toContain("- src/user.go::User::Refresh (method) src/user.go:10-30");
       expect(queries).toHaveLength(0);
+    });
+
+    it("filters hidden symbols BEFORE the candidate limit, so they cannot push a visible one out (#2484 review)", async () => {
+      // Eleven same-named symbols in a hidden file sort first; the visible one is twelfth.
+      const row = (filePath: string, i: number) => ({
+        qualifiedName: `${filePath}::Refresh${String(i).padStart(2, "0")}`,
+        kind: "method",
+        filePath,
+        startLine: 10,
+        endLine: 30,
+        graph: { repoConnectionId: "r1" },
+      });
+      const rows = [
+        ...Array.from({ length: 11 }, (_, i) => row("src/secret.go", i)),
+        row("src/feed.go", 99),
+      ];
+      db.symFindMany.mockImplementation(async (q: unknown) => {
+        const { skip = 0, take = rows.length } = q as { skip?: number; take?: number };
+        return rows.slice(skip, skip + take);
+      });
+      const hidden = codeAccessFilterOf([{ connectorId: "r1", path: "src/secret.go" }]);
+      const { tool, queries } = make({ findSymbols: undefined });
+      const r = await tool.execute({ symbol: "Refresh" }, { ...ctx, codeAccess: hidden });
+      expect(r.content).not.toMatch(/^No indexed symbol/);
+      expect(queries[0]).toMatchObject({ path: "src/feed.go", lines: { start: 10, end: 30 } });
+      db.symFindMany.mockReset();
+      db.symFindMany.mockImplementation(async () => []);
     });
 
     it("hides a symbol in a file the caller may not read, and says when none is found", async () => {

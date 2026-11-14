@@ -29,6 +29,7 @@
  */
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -75,7 +76,7 @@ export interface GitRun {
   stdout: string;
   stderr: string;
   /** Why the process was stopped early, if it was. */
-  stopped: "timeout" | "output-cap" | "caller" | "spawn-error" | null;
+  stopped: "timeout" | "output-cap" | "caller" | "aborted" | "spawn-error" | null;
 }
 
 export interface GitRunOptions {
@@ -91,6 +92,8 @@ export interface GitRunOptions {
    * enough instead of reading the whole history.
    */
   enough?: (stdoutSoFar: string) => boolean;
+  /** Aborting it kills the process (`aborted`): an ingest's cancellation, or the size watchdog. */
+  signal?: AbortSignal;
 }
 
 export type GitRunner = (args: readonly string[], opts: GitRunOptions) => Promise<GitRun>;
@@ -99,28 +102,53 @@ export type GitRunner = (args: readonly string[], opts: GitRunOptions) => Promis
 export const runGit: GitRunner = (args, opts) =>
   new Promise((resolve) => {
     let stdout = "";
+    // Bytes of stdout kept, counted as they arrive: the cap is in bytes, and
+    // re-measuring the whole string on every chunk would be quadratic.
+    let stdoutBytes = 0;
+    const decoder = new StringDecoder("utf8");
     let stderr = "";
     let stopped: GitRun["stopped"] = null;
     let settled = false;
+    if (opts.signal?.aborted) {
+      resolve({ code: null, stdout, stderr, stopped: "aborted" });
+      return;
+    }
+    // Its own process group (POSIX), so a stop kills what git started too: a
+    // fetch runs `git-remote-https` and `index-pack`, which would otherwise go
+    // on downloading (and hold the pipes open) after git itself is killed.
+    const group = process.platform !== "win32";
     const child = spawn("git", [...args], {
       env: opts.env,
       stdio: [opts.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
       windowsHide: true,
+      detached: group,
     });
     const stop = (why: NonNullable<GitRun["stopped"]>): void => {
       if (stopped) return;
       stopped = why;
-      child.kill("SIGKILL");
+      try {
+        if (group && child.pid !== undefined) process.kill(-child.pid, "SIGKILL");
+        else child.kill("SIGKILL");
+      } catch {
+        child.kill("SIGKILL"); // the group is gone already
+      }
     };
     const timer = setTimeout(() => stop("timeout"), opts.timeoutMs);
-    child.stdout!.setEncoding("utf8");
-    child.stdout!.on("data", (chunk: string) => {
+    const onAbort = (): void => stop("aborted");
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
+    child.stdout!.on("data", (chunk: Buffer) => {
       if (stopped) return;
-      stdout += chunk;
-      if (Buffer.byteLength(stdout) > opts.maxOutputBytes) {
-        stdout = stdout.slice(0, opts.maxOutputBytes);
+      const room = opts.maxOutputBytes - stdoutBytes;
+      if (chunk.length > room) {
+        // Keep at most the bytes that fit; a character split by the cap is dropped.
+        stdout += decoder.write(chunk.subarray(0, room));
+        stdoutBytes += room;
         stop("output-cap");
-      } else if (opts.enough?.(stdout)) stop("caller");
+        return;
+      }
+      stdoutBytes += chunk.length;
+      stdout += decoder.write(chunk);
+      if (opts.enough?.(stdout)) stop("caller");
     });
     child.stderr!.setEncoding("utf8");
     child.stderr!.on("data", (chunk: string) => {
@@ -130,6 +158,8 @@ export const runGit: GitRunner = (args, opts) =>
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", onAbort);
+      if (!stopped) stdout += decoder.end();
       resolve({ code, stdout, stderr, stopped });
     };
     child.on("error", (err) => {
@@ -203,13 +233,24 @@ export type HistoryState =
       windowDays: number;
       fetchedAt: string;
       sizeBytes: number;
+      /**
+       * The window's CUT commits: commits outside the window none of whose
+       * ancestors is inside it, so a file query can stop at them (`^cut`)
+       * without losing an in-window commit. `null` (or absent, in a record
+       * written before they existed) when committer dates are skewed, so no
+       * such set is safe: the query then walks the whole history.
+       */
+      cuts?: string[] | null;
     }
   | {
       status: "too_large";
       commitSha: string;
       fetchedAt: string;
+      /** Bytes on disk when the fetch stopped: at least `maxBytes`. */
       sizeBytes: number;
       maxBytes: number;
+      /** The window the fetch was for; absent in a record written before it was kept. */
+      windowDays?: number;
     }
   | { status: "failed"; commitSha: string; fetchedAt: string; reason: string };
 
@@ -231,7 +272,12 @@ export async function readHistoryState(connectorId: string): Promise<HistoryStat
     return null;
   }
   if (s.status === "ready" && isIso(s.windowStart) && typeof s.windowDays === "number") {
-    return s as HistoryState;
+    // A cut list that is not a list of full SHAs is never passed to git.
+    const cuts =
+      Array.isArray(s.cuts) && s.cuts.every((c) => typeof c === "string" && FULL_SHA_RE.test(c))
+        ? (s.cuts as string[])
+        : null;
+    return { ...(s as HistoryState), cuts } as HistoryState;
   }
   if (s.status === "too_large" || s.status === "failed") return s as HistoryState;
   return null;
@@ -307,6 +353,12 @@ export interface HistoryFetchInput {
   now?: () => Date;
   /** Per git call; a fetch of a large repository takes minutes (ADR 0023). */
   timeoutMs?: number;
+  /** The ingest's cancellation: aborting it kills the running git call. */
+  signal?: AbortSignal;
+  /** How often the size watchdog measures the repository during a download. */
+  sizePollMs?: number;
+  /** Free bytes on the clone volume, or `null` when it cannot be read. */
+  freeBytes?: (dir: string) => Promise<number | null>;
 }
 
 export type HistoryFetchOutcome =
@@ -317,13 +369,37 @@ export type HistoryFetchOutcome =
 const FETCH_TIMEOUT_MS = 15 * 60_000;
 /** Bytes of `rev-list` output kept: about 1.5 million object ids. */
 const LIST_MAX_BYTES = 64 * 1024 * 1024;
+const SIZE_POLL_MS = 1_000;
+/** Cut commits kept at most; past it a file query walks the whole history, as before. */
+const MAX_CUTS = 5_000;
 
 class HistoryFetchError extends Error {}
+/** The size watchdog stopped a download: the repository passed its cap. */
+class HistoryTooLargeError extends Error {
+  constructor(readonly sizeBytes: number) {
+    super("history repository passed its size cap");
+  }
+}
+
+async function volumeFreeBytes(dir: string): Promise<number | null> {
+  try {
+    const s = await fs.statfs(dir);
+    return Number(s.bavail) * Number(s.bsize);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Fetch (or refresh) `connectorId`'s history repository at `commitSha` and
  * record the outcome. Never throws: a failure removes the repository and is
  * recorded as `failed`, so the tool reads "history not fetched".
+ *
+ * The size cap holds DURING the download, not only after it (#2484 review,
+ * A04): the volume must have room for the cap before anything is fetched, and
+ * a watchdog measures the repository while each fetch runs and kills it once
+ * it passes the cap. A post-hoc check alone would let a very large repository,
+ * or a hostile mirror, fill the volume every clone, LanceDB and upload share.
  */
 export async function fetchHistoryRepository(
   input: HistoryFetchInput,
@@ -339,6 +415,7 @@ export async function fetchHistoryRepository(
       env,
       timeoutMs,
       maxOutputBytes: LIST_MAX_BYTES,
+      ...(input.signal ? { signal: input.signal } : {}),
       ...extra,
     });
     if (r.code !== 0) {
@@ -351,13 +428,67 @@ export async function fetchHistoryRepository(
   };
   const readGit = (args: string[], extra: Partial<GitRunOptions> = {}): Promise<string> =>
     git(["--no-lazy-fetch", ...args], { env: { ...env, GIT_NO_LAZY_FETCH: "1" }, ...extra });
+  /** A download, killed by the size watchdog once the repository passes the cap. */
+  const download = async (args: string[], extra: Partial<GitRunOptions> = {}): Promise<void> => {
+    const watchdog = new AbortController();
+    const relay = (): void => watchdog.abort();
+    input.signal?.addEventListener("abort", relay, { once: true });
+    let over: number | null = null;
+    let measuring = false;
+    const timer = setInterval(() => {
+      if (measuring || over !== null) return;
+      measuring = true;
+      void treeSize(dir, input.maxBytes)
+        .then((size) => {
+          if (size > input.maxBytes && over === null) {
+            over = size;
+            watchdog.abort();
+          }
+        })
+        .finally(() => {
+          measuring = false;
+        });
+    }, input.sizePollMs ?? SIZE_POLL_MS);
+    try {
+      await git(args, { ...extra, signal: watchdog.signal });
+    } catch (err) {
+      if (over !== null) throw new HistoryTooLargeError(over);
+      throw err;
+    } finally {
+      clearInterval(timer);
+      input.signal?.removeEventListener("abort", relay);
+    }
+    if (over !== null) throw new HistoryTooLargeError(over);
+  };
+  const recordTooLarge = async (sizeBytes: number): Promise<HistoryFetchOutcome> => {
+    await fs.rm(dir, { recursive: true, force: true });
+    await writeHistoryState(input.connectorId, {
+      status: "too_large",
+      commitSha: input.commitSha,
+      fetchedAt,
+      sizeBytes,
+      maxBytes: input.maxBytes,
+      windowDays: input.windowDays,
+    });
+    return { status: "too_large", sizeBytes };
+  };
   try {
     if (!FULL_SHA_RE.test(input.commitSha)) throw new HistoryFetchError("not a full commit SHA");
+    if (input.signal?.aborted) throw new HistoryFetchError("aborted");
     await fs.mkdir(resolveRepoCloneRoot(), { recursive: true });
+    // The cap must fit on the volume before a byte is fetched (what is
+    // already on disk for this history counts towards it).
+    const free = await (input.freeBytes ?? volumeFreeBytes)(resolveRepoCloneRoot());
+    if (free !== null) {
+      const present = await treeSize(dir, input.maxBytes);
+      if (free + present < input.maxBytes) {
+        throw new HistoryFetchError("not enough free disk space for the history size cap");
+      }
+    }
     await ensureBareRepository(dir, run, env, timeoutMs);
     await git(["config", "remote.origin.url", input.remoteUrl]);
     // 1. The indexed commit with every ancestor's commits and trees; no blobs.
-    await git([
+    await download([
       "fetch",
       "--quiet",
       "--no-tags",
@@ -405,12 +536,26 @@ export async function fetchHistoryRepository(
         }),
       );
     }
+    // The boundary parents are CUTS when nothing in the window is behind any
+    // of them: a file query may then stop there and lose nothing. A commit in
+    // the window behind one of them means committer dates are skewed (ADR 0023,
+    // finding 4), and the query walks the whole history instead.
+    let cuts: string[] | null = [];
+    if (boundary.length > MAX_CUTS) cuts = null;
+    else if (boundary.length > 0) {
+      const behind = await readGit(["rev-list", "-n1", since, "--stdin"], {
+        input: `${boundary.join("\n")}\n`,
+      });
+      cuts = behind.trim() === "" ? boundary : null;
+    }
     if (missing.size > 0) {
       // As git's own lazy fetch does (promisor-remote.c): with the default
       // negotiation the client advertises the commits it has, and GitHub then
       // treats every blob reachable from them as already present and sends
       // none ("did not send all necessary objects", measured on miniflux/v2).
-      await git(
+      // An explicit want ignores `--filter`, so a huge blob is sent in full:
+      // the size watchdog is what bounds this step.
+      await download(
         [
           "-c",
           "fetch.negotiationAlgorithm=noop",
@@ -426,19 +571,9 @@ export async function fetchHistoryRepository(
         { input: `${[...missing].join("\n")}\n` },
       );
     }
-    // 3. Its own cap: over it, the history goes and the connector reads "too large".
+    // 3. Its own cap, measured once more now that every download is done.
     const sizeBytes = await treeSize(dir, input.maxBytes);
-    if (sizeBytes > input.maxBytes) {
-      await fs.rm(dir, { recursive: true, force: true });
-      await writeHistoryState(input.connectorId, {
-        status: "too_large",
-        commitSha: input.commitSha,
-        fetchedAt,
-        sizeBytes,
-        maxBytes: input.maxBytes,
-      });
-      return { status: "too_large", sizeBytes };
-    }
+    if (sizeBytes > input.maxBytes) return await recordTooLarge(sizeBytes);
     await writeHistoryState(input.connectorId, {
       status: "ready",
       commitSha: input.commitSha,
@@ -446,11 +581,23 @@ export async function fetchHistoryRepository(
       windowDays: input.windowDays,
       fetchedAt,
       sizeBytes,
+      cuts,
     });
     return { status: "ready", sizeBytes, windowStart, prefetchedObjects: missing.size };
   } catch (err) {
+    if (err instanceof HistoryTooLargeError) {
+      try {
+        return await recordTooLarge(err.sizeBytes);
+      } catch {
+        /* recorded as a failure below */
+      }
+    }
     // Git's own stderr can name the remote; the reason recorded is ours only.
-    const reason = err instanceof HistoryFetchError ? err.message : "history fetch failed";
+    const reason = input.signal?.aborted
+      ? "aborted"
+      : err instanceof HistoryFetchError
+        ? err.message
+        : "history fetch failed";
     await fs.rm(dir, { recursive: true, force: true }).catch(() => undefined);
     await writeHistoryState(input.connectorId, {
       status: "failed",
