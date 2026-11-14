@@ -79,7 +79,15 @@ export interface QuarantineWriteInput {
   onlyIfUnpublished?: boolean;
   /** Durable ordinary-ingest fence, registered before parsing/embedding. */
   ingestGeneration?: string;
-  aclSubjects: AclSubject[];
+  /**
+   * #2435 — the ACL to SET on the document, for a caller that owns it
+   * (docs-gen publication passes the list it intends). Omit it to keep the
+   * document's own list: ingest read that list when it started, and a
+   * `PATCH /documents/:id/acl` saved while it parsed and embedded must stand.
+   * Either way the quarantine chunks carry the list the document holds after
+   * this write.
+   */
+  aclSubjects?: AclSubject[];
 }
 
 export interface ApprovalActor {
@@ -138,16 +146,21 @@ export async function writeQuarantine(input: QuarantineWriteInput): Promise<void
       if (!generation.count)
         throw new Error(`Document ${input.documentId} ingest generation revoked`);
     }
-    // #2356 — the ingest-time ACL write is held to `PATCH /acl`'s rule (#2261):
-    // no `group` subject the document does not already carry. Read under the
-    // row lock taken above (SQLite serialises writers anyway), so it is the ACL
-    // the write below replaces.
+    // Read under the row lock taken above (SQLite serialises writers anyway), so
+    // it is the ACL the document holds when this write commits.
     const current = await tx.document.findFirst({
       where: { id: input.documentId },
       select: { aclSubjects: true },
     });
-    const groups = newGroupSubjects(parseAclSubjects(current?.aclSubjects), input.aclSubjects);
-    if (groups.length > 0) throw new AclGroupUnsupportedError(groups);
+    const heldAcl = parseAclSubjects(current?.aclSubjects);
+    // #2356 — a caller-named ACL is held to `PATCH /acl`'s rule (#2261): no
+    // `group` subject the document does not already carry.
+    if (input.aclSubjects) {
+      const groups = newGroupSubjects(heldAcl, input.aclSubjects);
+      if (groups.length > 0) throw new AclGroupUnsupportedError(groups);
+    }
+    // #2435 — no list named: the document's own, as it stands now.
+    const aclSubjects = input.aclSubjects ?? heldAcl;
     const held = await tx.document.updateMany({
       where: {
         id: input.documentId,
@@ -184,7 +197,7 @@ export async function writeQuarantine(input: QuarantineWriteInput): Promise<void
               : {}),
             filename: input.filename,
             headings: c.headings ?? [],
-            aclSubjects: input.aclSubjects,
+            aclSubjects,
             ...(c.metadata ?? {}),
           }),
         })),
@@ -197,7 +210,7 @@ export async function writeQuarantine(input: QuarantineWriteInput): Promise<void
         chunkCount: input.chunks.length,
         processedAt: new Date(),
         errorMessage: null,
-        aclSubjects: serializeAclSubjects(input.aclSubjects),
+        ...(input.aclSubjects ? { aclSubjects: serializeAclSubjects(input.aclSubjects) } : {}),
       },
     });
   });
@@ -239,8 +252,6 @@ export async function approveDocument(
     return { chunkCount: current.chunkCount };
   }
   const doc = await readApprovableDocument(documentId);
-  const docAcl = parseAclSubjects(doc.aclSubjects);
-  const aclJson = serializeAclSubjects(docAcl);
 
   const vectorStore = deps.vectorStore ?? getVectorStore();
   const bm25 = deps.bm25 ?? getBM25Index();
@@ -259,8 +270,10 @@ export async function approveDocument(
     indexedText: string;
     position: number;
   }[] = [];
-  const sqlRows: (Parameters<typeof prisma.knowledgeChunk.create>[0]["data"] & {
+  // #2435 — no ACL yet: it is read under the row lock when the rows are written.
+  const sqlRows: (Omit<Prisma.KnowledgeChunkUncheckedCreateInput, "aclSubjects" | "metadata"> & {
     embeddingModel: string;
+    metadata: Record<string, unknown>;
   })[] = [];
   let committed = false;
   try {
@@ -322,8 +335,7 @@ export async function approveDocument(
         md5,
         embeddingModel,
         chunkerIdentity,
-        metadata: JSON.stringify({ ...(meta ?? {}), headings: meta?.headings ?? [] }),
-        aclSubjects: aclJson,
+        metadata: { ...(meta ?? {}), headings: meta?.headings ?? [] },
         vectorRef: attemptChunkIds[index],
       };
       sqlRows.push(data);
@@ -426,7 +438,24 @@ export async function approveDocument(
             ],
           });
         await tx.knowledgeChunk.deleteMany({ where: { documentId } });
-        for (const data of sqlRows) await tx.knowledgeChunk.create({ data });
+        // #2435 — the ACL the document holds now, read under the row lock taken
+        // above: a `PATCH /acl` saved since ingest started, or while this approval
+        // wrote the external stores, stands on every chunk (and in its metadata).
+        const live = await tx.document.findFirst({
+          where: { id: documentId },
+          select: { aclSubjects: true },
+        });
+        const acl = parseAclSubjects(live?.aclSubjects);
+        const aclJson = serializeAclSubjects(acl);
+        for (const { metadata, ...row } of sqlRows) {
+          await tx.knowledgeChunk.create({
+            data: {
+              ...row,
+              metadata: JSON.stringify({ ...metadata, aclSubjects: acl }),
+              aclSubjects: aclJson,
+            },
+          });
+        }
         await tx.quarantineChunk.deleteMany({ where: { documentId, ord: { gte: 0 } } });
         // The coordinated vector replay above can await external IO. Revalidate
         // live authorization again immediately before committing the selection.

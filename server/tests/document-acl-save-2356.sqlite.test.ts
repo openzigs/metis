@@ -4,7 +4,8 @@
  *     checks the group rule (#2261) against the ACL it replaces: when another
  *     save lands between its read and its write, it reads again, so a legacy
  *     group the other editor removed is refused, never written back;
- *   - the ingest-time ACL write (`writeQuarantine`) is held to the same rule.
+ *   - a quarantine write that names an ACL (`writeQuarantine`, docs-gen
+ *     publication) is held to the same rule. Ingest names none (#2435).
  */
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
@@ -200,7 +201,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     });
 
-    describe("writeQuarantine (the ingest-time ACL write)", () => {
+    describe("writeQuarantine with a caller-named ACL", () => {
       const quarantine = (aclSubjects: Array<{ kind: "user" | "role" | "group"; value: string }>) =>
         writeQuarantine({
           documentId: DOC,
@@ -222,7 +223,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(doc.indexState).not.toBe("quarantined");
       });
 
-      it("writes the document's own ACL, legacy group included, as ingest always has", async () => {
+      it("writes a list keeping a legacy group the document already holds", async () => {
         await quarantine([
           { kind: "group", value: "legacy" },
           { kind: "user", value: "alice" },
