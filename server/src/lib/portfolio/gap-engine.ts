@@ -737,25 +737,30 @@ async function retrieveShared(
  * #2354 — criteria groups one product searches for at once. Each group's model calls still run
  * one at a time, in order; a group's search starts only while the budget allows a call, so
  * once it is spent at most this many searches already started are left unused. Across the run,
- * every search also waits for {@link PORTFOLIO_RUN_SEARCH_CONCURRENCY}.
+ * every search also waits for {@link runSearchBound}.
  */
 export const PORTFOLIO_GROUP_SEARCH_CONCURRENCY = 4;
 
 /**
- * #2354 — project searches in flight at once across the whole run, every product and criteria
- * group together. 16 is the peak before group searches ran ahead: `PORTFOLIO_GAP_CONCURRENCY`
- * (4) products, each one group at a time, each up to {@link PER_REPO_SEARCH_CONCURRENCY} (4)
- * project searches. So running a product's groups ahead fills idle search slots rather than
- * multiplying the load on the search service, whose per-project timeout reads
- * `retrieval-failed` when it is contended.
+ * #2354 — searches (`ctx.search` calls) in flight at once across the whole run, every product
+ * and criteria group together: the peak before a product's groups were searched ahead, so the
+ * lookahead fills idle search slots rather than multiplying the load on the search service,
+ * whose per-project timeout reads `retrieval-failed` when it is contended. That peak was one
+ * search per product checked at once (`PORTFOLIO_GAP_CONCURRENCY`, 4), each fanning out to all
+ * of the product's projects in the default shared mode, or to one project, up to
+ * {@link PER_REPO_SEARCH_CONCURRENCY} (4) per product, with `PORTFOLIO_GAP_PER_REPO_SEARCH`:
+ * 4 searches, or 16, at the defaults.
  */
-export const PORTFOLIO_RUN_SEARCH_CONCURRENCY = 16;
+export function runSearchBound(
+  limits: Pick<PortfolioGapLimits, "concurrency" | "perRepoSearch">,
+): number {
+  return limits.concurrency * (limits.perRepoSearch ? PER_REPO_SEARCH_CONCURRENCY : 1);
+}
 
 /**
- * #2354 — admits searches across a run, first come first served, while the project searches in
- * flight fit {@link PORTFOLIO_RUN_SEARCH_CONCURRENCY}. A search weighs the projects it fans out
- * to; one heavier than the whole bound runs alone. Once the run is aborted a waiting search is
- * never started.
+ * #2354 — admits searches across a run, first come first served, while their weights in flight
+ * fit the capacity ({@link runSearchBound}; the engine weighs each search 1). One heavier than
+ * the whole capacity runs alone. Once the run is aborted a waiting search is never started.
  */
 export class SearchLimiter {
   private inUse = 0;
@@ -763,8 +768,8 @@ export class SearchLimiter {
 
   constructor(private readonly capacity: number) {}
 
-  async run<T>(projects: number, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    const weight = Math.min(this.capacity, Math.max(1, projects));
+  async run<T>(weightOf: number, fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const weight = Math.min(this.capacity, Math.max(1, weightOf));
     await this.acquire(weight, signal);
     try {
       return await fn();
@@ -1222,18 +1227,13 @@ async function evaluateParsed(
     deps.search ??
     ((opts: FederatedSearchOptions) => getFederatedSearchService().searchAcrossProjects(opts));
   // #2354 — one bound on the project searches of the whole run (every product and group).
-  const searches = new SearchLimiter(PORTFOLIO_RUN_SEARCH_CONCURRENCY);
+  const searches = new SearchLimiter(runSearchBound(limits));
   const base = {
     user,
     statement: input.statement,
     provider,
     maxTokens: resolvePortfolioMaxOutputTokens(provider),
-    search: (opts: FederatedSearchOptions) =>
-      searches.run(
-        opts.projectIds?.length ?? PORTFOLIO_RUN_SEARCH_CONCURRENCY,
-        () => search(opts),
-        deps.signal,
-      ),
+    search: (opts: FederatedSearchOptions) => searches.run(1, () => search(opts), deps.signal),
     limits,
     costOf: deps.costOf ?? defaultCostOf,
     budget: new Budget(limits),

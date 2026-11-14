@@ -1669,11 +1669,12 @@ a reading that used the cap leaves the repos `budget`. A product's criteria grou
 up to `PORTFOLIO_GROUP_SEARCH_CONCURRENCY` (4) at once, ahead of their verdict calls, which
 still run one at a time in order; a group is searched only while the budget allows a call, and
 none is started once the run is aborted. Every search of the run, across products and groups,
-also waits for one run-wide bound, `PORTFOLIO_RUN_SEARCH_CONCURRENCY` (16 project searches in
-flight, a search weighing the projects it fans out to; one heavier than 16 runs alone). 16 is
-the peak before groups were searched ahead (4 products, one group each, 4 project searches
-each), so the lookahead fills idle search slots instead of multiplying the load on federated
-search, where a project timed out by contention (3 s) reads `retrieval-failed`. A search
+also waits for one run-wide bound (`runSearchBound`): the searches in flight before groups were
+searched ahead, `PORTFOLIO_GAP_CONCURRENCY` (4) in the default shared mode, where each search
+fans out to all of a product's projects, or 4 times that (16 one-project searches) with
+`PORTFOLIO_GAP_PER_REPO_SEARCH`. So the lookahead fills search slots left idle (fewer products
+than the concurrency, or a product busy with its verdict calls) instead of multiplying the load
+on federated search, where a project timed out by contention (3 s) reads `retrieval-failed`. A search
 already running when the run is aborted finishes: `FederatedSearchOptions` takes no signal.
 
 **What grouping costs (#2354, measured).** The real engine and `buildRepoVerdictPrompt` against

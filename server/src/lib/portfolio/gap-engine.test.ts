@@ -48,7 +48,6 @@ const {
   MAX_QUERY_CHARS,
   MAX_SCOPE_PRODUCTS,
   PORTFOLIO_GROUP_SEARCH_CONCURRENCY,
-  PORTFOLIO_RUN_SEARCH_CONCURRENCY,
   SearchLimiter,
   clipText,
   criteriaGroups,
@@ -930,7 +929,8 @@ describe("#2354 — what a run spent before it, and its searches, count against 
           live.now -= 1;
           return found([hit("rc-p1", "a.ts", "a")]);
         },
-        limits: { ...limits, maxCriteria: 8 },
+        // One product of four checked at once: the run's bound leaves it four search slots.
+        limits: { ...limits, concurrency: 4, maxCriteria: 8 },
       },
     );
     // Six groups of eight: four searched at once, never more.
@@ -991,33 +991,47 @@ describe("#2354 — one bound on the run's searches", () => {
   const requirements = (n: number) => Array.from({ length: n }, (_, i) => `Requirement ${i + 1}`);
   const noEvidence = () => JSON.stringify({ criteria: [] });
 
-  it("products and their groups together never search more projects at once than the bound", async () => {
-    // Four products of eight projects, six groups each: unbounded, 4 x 4 x 8 = 128 at once.
+  /** The most searches, and project searches, in flight at once over a run of 4 products. */
+  async function peak(perRepoSearch: boolean): Promise<{ calls: number; projects: number }> {
+    // Four products of eight projects, six groups each: unbounded, 4 x 4 searches at once.
     portfolio(4, 8);
-    const live = { now: 0, max: 0 };
+    const live = { calls: 0, projects: 0 };
+    const max = { calls: 0, projects: 0 };
     await evaluatePortfolioGap(
       USER,
       { statement: "Requirements", criteria: requirements(48), ...ALL },
       {
         provider: provider(noEvidence),
         search: async ({ projectIds = [] }) => {
-          live.now += projectIds.length;
-          live.max = Math.max(live.max, live.now);
+          live.calls += 1;
+          live.projects += projectIds.length;
+          max.calls = Math.max(max.calls, live.calls);
+          max.projects = Math.max(max.projects, live.projects);
           await new Promise((r) => setTimeout(r, 5));
-          live.now -= projectIds.length;
+          live.calls -= 1;
+          live.projects -= projectIds.length;
           return found([]);
         },
-        limits: { ...limits, concurrency: 4, maxCriteria: 8 },
+        limits: { ...limits, concurrency: 4, maxCriteria: 8, perRepoSearch },
       },
     );
-    expect(live.max).toBe(16);
-    expect(PORTFOLIO_RUN_SEARCH_CONCURRENCY).toBe(16);
+    return max;
+  }
+
+  it("shared searches: no more at once across the run than one per product checked", async () => {
+    // Unbounded, 16 searches of 8 projects (128); before groups were searched ahead, 4 (32).
+    expect(await peak(false)).toEqual({ calls: 4, projects: 32 });
+  });
+
+  it("per-repo searches: no more project searches at once than before groups ran ahead", async () => {
+    // Unbounded, 4 products x 4 groups x 4 projects (64); before, 4 x 4 (16).
+    expect(await peak(true)).toEqual({ calls: 16, projects: 16 });
   });
 
   it("no search starts once the run is aborted, not even one already waiting its turn", async () => {
-    // One product of sixteen projects: each group's search fills the bound, so the groups
+    // One product checked at a time: each group's search fills the bound, so the groups
     // searched ahead wait their turn behind the first.
-    portfolio(1, 16);
+    portfolio(1, 3);
     const controller = new AbortController();
     let searches = 0;
     const run = evaluatePortfolioGap(
@@ -1031,7 +1045,7 @@ describe("#2354 — one bound on the run's searches", () => {
           await new Promise((r) => setTimeout(r, 5));
           return found([]);
         },
-        limits: { ...limits, maxCriteria: 8 },
+        limits: { ...limits, concurrency: 1, maxCriteria: 8 },
         signal: controller.signal,
       },
     );
