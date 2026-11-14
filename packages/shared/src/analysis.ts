@@ -1650,6 +1650,17 @@ export interface AnalysisLiveAgent {
 }
 
 /**
+ * #2447 — the title a finding, requirement or cross-document finding shows in
+ * place of its own when the reader cannot see a source it draws on. The row
+ * stays in the result (never the whole result hidden), with `restricted: true`.
+ */
+export const RESTRICTED_SOURCE_TITLE = "Restricted";
+
+/** #2447 — the body or detail shown with {@link RESTRICTED_SOURCE_TITLE}. */
+export const RESTRICTED_SOURCE_BODY =
+  "This draws on sources you don't have access to, so its content is hidden.";
+
+/**
  * Snapshot of an analysis returned by `GET /api/analyses/:id` and pushed over
  * Socket.IO when the run completes.
  */
@@ -1767,6 +1778,12 @@ export interface AnalysisSnapshot {
        * must never be rendered as a bad score.
        */
       faithfulness?: FindingFaithfulness | null;
+      /**
+       * #2447 — the reader cannot see a source this finding cites: its title
+       * and body are {@link RESTRICTED_SOURCE_TITLE} / {@link RESTRICTED_SOURCE_BODY},
+       * and it carries no citations or tags. Absent otherwise.
+       */
+      restricted?: true;
     }>;
     errorMessage: string | null;
   }>;
@@ -1861,6 +1878,12 @@ export interface AnalysisSnapshot {
      * requirement the viewer could otherwise approve; absent otherwise.
      */
     selfApprovalForbidden?: true;
+    /**
+     * #2447 — the reader cannot see a source this requirement draws on: its
+     * text is the restricted placeholder and it carries no criteria, labels or
+     * evidence. Absent otherwise.
+     */
+    restricted?: true;
   }>;
   /**
    * Epic #203 (#221) — first-class cross-document conflict / contradiction /

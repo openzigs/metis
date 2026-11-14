@@ -34,6 +34,20 @@ import {
   type SemanticRequirementSearch,
 } from "./requirements-chat-tools.js";
 
+// #2447 — which requirements the reader may not see. Empty unless a test sets
+// it; the reader each call was asked for is kept so a test can check whose it was.
+const redaction = vi.hoisted(() => ({
+  hidden: new Set<string>(),
+  readers: [] as unknown[],
+}));
+vi.mock("../analysis/source-redaction.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../analysis/source-redaction.js")>()),
+  restrictedIds: vi.fn(async (reader: unknown, rows: Array<{ id: string }>) => {
+    redaction.readers.push(reader);
+    return new Set(rows.map((r) => r.id).filter((id) => redaction.hidden.has(id)));
+  }),
+}));
+
 interface Row {
   id: string;
   projectId: string;
@@ -681,6 +695,101 @@ describe("get_requirement (#1030)", () => {
     const res = await tool.exec({ requirementId: "r-db" }, { sessionId: "s", userId: "u" });
     expect(res.isError).toBe(true);
     expect(findFirst).not.toHaveBeenCalled();
+  });
+});
+
+describe("redact on read (#2447)", () => {
+  const restrictDb = () => {
+    redaction.hidden = new Set(["r-db"]);
+    redaction.readers = [];
+  };
+  const restore = () => {
+    redaction.hidden = new Set();
+  };
+
+  it("lists a requirement the user cannot see as its placeholder, with no labels or counts", async () => {
+    restrictDb();
+    try {
+      const { prisma } = stubPrisma(ROWS);
+      const res = await createListRequirementsTool({ prisma, semantic: noSemantic }).exec({}, ctx);
+      const listed = (
+        res.data as { requirements: Array<{ id: string; title: string; labels: string[] }> }
+      ).requirements.find((r) => r.id === "r-db");
+      expect(listed).toMatchObject({ title: "Restricted", labels: [], codeLinks: 0 });
+      expect(res.text).not.toContain("Store orders");
+      expect(res.text).not.toContain("persistence");
+    } finally {
+      restore();
+    }
+  });
+
+  it("never matches it by words or by label, so a search tells nothing of its text", async () => {
+    restrictDb();
+    try {
+      const { prisma } = stubPrisma(ROWS);
+      const tool = createListRequirementsTool({ prisma, semantic: noSemantic });
+      const byWords = await tool.exec({ query: "orders" }, ctx);
+      const byLabel = await tool.exec({ label: "persistence" }, ctx);
+      const ids = (r: typeof byWords) =>
+        (r.data as { requirements: Array<{ id: string }> }).requirements.map((x) => x.id);
+      expect(ids(byWords)).not.toContain("r-db");
+      expect(ids(byLabel)).not.toContain("r-db");
+    } finally {
+      restore();
+    }
+  });
+
+  it("drops a meaning hit on it too", async () => {
+    restrictDb();
+    try {
+      const { prisma } = stubPrisma(ROWS);
+      const semantic: SemanticRequirementSearch = async () => [
+        { requirementId: "r-db", score: 0.9 },
+      ];
+      const res = await createListRequirementsTool({ prisma, semantic }).exec(
+        { query: "persist sales" },
+        ctx,
+      );
+      const ids = (res.data as { requirements: Array<{ id: string }> }).requirements.map(
+        (r) => r.id,
+      );
+      expect(ids).not.toContain("r-db");
+    } finally {
+      restore();
+    }
+  });
+
+  it("refuses to read it in full", async () => {
+    restrictDb();
+    try {
+      const { prisma } = stubPrisma(ROWS);
+      const chain = vi.fn(async (_p: string, id: string) => emptyChain(id));
+      const res = await createGetRequirementTool({ prisma, chain }).exec(
+        { requirementId: "r-db" },
+        ctx,
+      );
+      expect(res.isError).toBe(true);
+      expect(res.text).toContain("does not have access");
+      expect(res.text).not.toContain("Store orders");
+      expect(chain).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it("reads as the shared audience in a shared session, and as the user otherwise", async () => {
+    restrictDb();
+    try {
+      const { prisma } = stubPrisma(ROWS);
+      const tool = createListRequirementsTool({ prisma, semantic: noSemantic });
+      await tool.exec({}, ctx);
+      await tool.exec({}, { ...ctx, aclAudience: "shared" });
+      const [own, shared] = redaction.readers;
+      expect(typeof own).toBe("function");
+      expect(shared).toMatchObject({ sharedAudience: true, userId: "u" });
+    } finally {
+      restore();
+    }
   });
 });
 

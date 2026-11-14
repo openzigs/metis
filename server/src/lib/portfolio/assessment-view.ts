@@ -22,6 +22,7 @@ import { z } from "zod";
 import {
   FINDING_VERDICTS,
   REQUIREMENT_VERDICTS,
+  RESTRICTED_SOURCE_TITLE,
   portfolioOtherLinkKinds,
   portfolioRestrictedRule,
   type AuthPayload,
@@ -34,6 +35,7 @@ import { prisma } from "../prisma.js";
 import { buildProductAccessWhere, productRepoReadAccess } from "../products/product-access.js";
 import { canAccessProjectDiscussions } from "../discussions/access.js";
 import { getPortfolioAssessment } from "./assessment-store.js";
+import { restrictedIds, userSourceReader } from "../analysis/source-redaction.js";
 import { impactOverview, impactSentence } from "./report-overview.js";
 import {
   portfolioSummary,
@@ -102,6 +104,37 @@ export async function resolveReaderAccess(user: AuthPayload): Promise<ReaderAcce
  * workspace's readers their statement. So an assessment with no readable
  * product row yet (`pending`, `running`, `failed`) is its starter's alone.
  */
+/**
+ * #2447 — what of an assessment's source the reader cannot see: every word of
+ * it (`all`, a single requirement resting on a source they cannot see), or the
+ * titles of the change request's requirements that do. Their text is the
+ * statement, the criteria, the not-checked list, the model's restatement and
+ * its prose.
+ */
+async function hiddenSource(
+  access: ReaderAccess,
+  a: PortfolioAssessment,
+): Promise<{ all: boolean; titles: string[] }> {
+  const none = { all: false, titles: [] as string[] };
+  if (access.admin) return none;
+  const where = a.sourceRequirementId
+    ? { id: a.sourceRequirementId }
+    : a.sourceAnalysisId
+      ? { analysisId: a.sourceAnalysisId }
+      : null;
+  if (!where) return none;
+  const rows = await prisma.requirement.findMany({
+    where,
+    select: { id: true, analysisId: true, sourceIds: true, title: true },
+  });
+  const hidden = await restrictedIds(userSourceReader(access.user.userId), rows);
+  if (hidden.size === 0) return none;
+  return {
+    all: a.sourceRequirementId !== null && a.sourceRequirementId !== undefined,
+    titles: rows.filter((r) => hidden.has(r.id)).map((r) => r.title.trim()),
+  };
+}
+
 async function mayRead(access: ReaderAccess, a: PortfolioAssessment): Promise<boolean> {
   if (access.admin) return true;
   if (a.sourceProjectId && !(await access.canReadProject(a.sourceProjectId))) return false;
@@ -396,6 +429,11 @@ export async function viewPortfolioAssessment(
 ): Promise<PortfolioAssessmentView | null> {
   const a = await getPortfolioAssessment(id);
   if (!a || !(await mayRead(access, a))) return null;
+  // #2447 — a source requirement the reader cannot see: its text goes.
+  const hidden = await hiddenSource(access, a);
+  const sourceHidden = hidden.all || hidden.titles.length > 0;
+  const fromHidden = (text: string) =>
+    hidden.all || hidden.titles.some((t) => t.length > 0 && text.trim().startsWith(t));
 
   const connections = access.admin
     ? null
@@ -541,13 +579,16 @@ export async function viewPortfolioAssessment(
   // #1624 — the model's prose was written about what the run saw. A reader who sees
   // less gets the deterministic summary instead, and no impact paragraphs: either
   // could describe a product, repo or path withheld from them.
-  const seesLess = changed || withheldImpact;
+  const seesLess = changed || withheldImpact || sourceHidden;
   const nameOf = (productId: string) =>
     readableProduct(productId) ? (names.get(productId) ?? null) : null;
   const report = a.report && {
     ...a.report,
     // A model requirement may name a product this reader cannot read.
-    requirements: a.report.requirements.filter((r) => r.mentions.every(readableProduct)),
+    // #2447 — the model's restatement of a requirement the reader cannot see.
+    requirements: sourceHidden
+      ? []
+      : a.report.requirements.filter((r) => r.mentions.every(readableProduct)),
     products: seesLess
       ? []
       : a.report.products.filter(
@@ -560,26 +601,32 @@ export async function viewPortfolioAssessment(
     a.hostProductId !== null && readableProduct(a.hostProductId) ? a.hostProductId : null;
   return {
     ...a,
+    statement: hidden.all ? RESTRICTED_SOURCE_TITLE : a.statement,
+    notChecked: a.notChecked.map((n) =>
+      fromHidden(n.text) ? { ...n, text: RESTRICTED_SOURCE_TITLE } : n,
+    ),
     hostProductId,
-    products,
+    products: sourceHidden ? products.map((p) => withoutHiddenCriteria(p, fromHidden)) : products,
     repos: a.repos.filter((r) => readableProduct(r.productId) && keepRepo(r.repoConnectionId)),
     verdict,
     portfolioVerdict: verdict === null ? null : storedPortfolioVerdict(verdict),
     summary:
-      seesLess && verdict !== null
-        ? [
-            portfolioSummary(verdict, results, summaryScope),
-            impactOverview(
-              products.map((p) => ({
-                ...p,
-                otherVia: portfolioOtherLinkKinds(p.technicalDetail, p.via),
-              })),
-              nameOf,
-            ),
-          ]
-            .filter(Boolean)
-            .join("\n\n")
-        : a.summary,
+      sourceHidden && verdict === null
+        ? ""
+        : seesLess && verdict !== null
+          ? [
+              portfolioSummary(verdict, results, summaryScope),
+              impactOverview(
+                products.map((p) => ({
+                  ...p,
+                  otherVia: portfolioOtherLinkKinds(p.technicalDetail, p.via),
+                })),
+                nameOf,
+              ),
+            ]
+              .filter(Boolean)
+              .join("\n\n")
+          : a.summary,
     report,
     // #1963 — so the page's headline can say which unchecked products were left out.
     notInScope: [...summaryScope.notInScope].sort(),
@@ -599,6 +646,27 @@ export async function viewPortfolioAssessment(
         },
       ),
     ),
+  };
+}
+
+/** #2447 — a product row with each criterion drawn from a hidden requirement as the placeholder. */
+function withoutHiddenCriteria<P extends { technicalDetail: Record<string, unknown> }>(
+  p: P,
+  fromHidden: (text: string) => boolean,
+): P {
+  const criteria = (p.technicalDetail as { criteria?: unknown }).criteria;
+  if (!Array.isArray(criteria)) return p;
+  return {
+    ...p,
+    technicalDetail: {
+      ...p.technicalDetail,
+      criteria: criteria.map((c: unknown) => {
+        const criterion = (c as { criterion?: unknown } | null)?.criterion;
+        return typeof criterion === "string" && fromHidden(criterion)
+          ? { ...(c as object), criterion: RESTRICTED_SOURCE_TITLE }
+          : c;
+      }),
+    },
   };
 }
 

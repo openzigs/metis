@@ -35,6 +35,8 @@ import {
   traceabilityPreAuthRateLimiter,
 } from "../middleware/traceability-gaps-rate-limit.js";
 import { AppError } from "../middleware/error-handler.js";
+import { prisma } from "../lib/prisma.js";
+import { restrictedIds, userSourceReader } from "../lib/analysis/source-redaction.js";
 import * as reqSpec from "../lib/traceability/requirement-spec-mapping.js";
 import * as specCode from "../lib/traceability/spec-code-mapping.js";
 import {
@@ -68,6 +70,26 @@ const projectIdOf = (req: Request) => paramOf(req, "projectId", "PROJECT_REQUIRE
 const requirementIdOf = (req: Request) => paramOf(req, "requirementId", "REQUIREMENT_REQUIRED");
 const specIdOf = (req: Request) => paramOf(req, "specId", "SPEC_REQUIRED");
 
+/**
+ * #2447 — a requirement resting on a source the caller cannot see answers as
+ * an unknown one does (the chain shows its title and body). An unknown id
+ * falls through to the chain's own 404, so both read the same.
+ */
+async function assertRequirementSourcesVisible(
+  userId: string,
+  projectId: string,
+  requirementId: string,
+): Promise<void> {
+  const row = await prisma.requirement.findFirst({
+    where: { id: requirementId, projectId, deletedAt: null },
+    select: { id: true, analysisId: true, sourceIds: true },
+  });
+  if (!row) return;
+  if ((await restrictedIds(userSourceReader(userId), [row])).size > 0) {
+    throw new AppError(404, "REQUIREMENT_NOT_FOUND", "requirement not found in this project");
+  }
+}
+
 export function traceabilityRouter(): Router {
   const r = Router({ mergeParams: true });
 
@@ -83,6 +105,7 @@ export function traceabilityRouter(): Router {
     async (req, res) => {
       const projectId = projectIdOf(req);
       const requirementId = requirementIdOf(req);
+      await assertRequirementSourcesVisible(actorOf(req).id, projectId, requirementId);
       // Default behaviour (no `includeLinked`) is byte-for-byte the #229 chain.
       if (String(req.query.includeLinked) !== "true") {
         res.json(ok(await getRequirementChain(projectId, requirementId)));

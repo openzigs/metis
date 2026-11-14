@@ -25,9 +25,16 @@
  * Every value is a bound parameter.
  */
 import { Prisma, prisma, resolveDatabaseProvider, type DatabaseProvider } from "../prisma.js";
+import { restrictedIds, type SourceReader } from "../analysis/source-redaction.js";
 
 /** The picker answers at most this many requirements. */
 export const REQUIREMENT_PICKER_LIMIT = 20;
+
+/**
+ * #2447 — matches the picker reads before it leaves out what the caller cannot
+ * see, so restricted matches rarely leave it short of a full answer.
+ */
+export const REQUIREMENT_PICKER_FETCH = REQUIREMENT_PICKER_LIMIT * 5;
 
 /**
  * #2218 — the longest term matched, in characters; the rest is ignored. The term
@@ -79,6 +86,7 @@ export function requirementMatchQuery(
   provider: DatabaseProvider,
   projectId: string,
   needle: string,
+  limit: number = REQUIREMENT_PICKER_LIMIT,
 ): Prisma.Sql {
   const titleMatch =
     provider === "sqlite"
@@ -92,7 +100,7 @@ export function requirementMatchQuery(
       AND a."deletedAt" IS NULL
       AND ${titleMatch}
     ORDER BY r."createdAt" DESC, r."id" DESC
-    LIMIT ${REQUIREMENT_PICKER_LIMIT}`;
+    LIMIT ${limit}`;
 }
 
 /**
@@ -105,6 +113,7 @@ export async function searchProjectRequirements(
   projectId: string,
   term: string,
   provider: DatabaseProvider = resolveDatabaseProvider(),
+  limit: number = REQUIREMENT_PICKER_LIMIT,
 ): Promise<RequirementPick[]> {
   const live = { projectId, deletedAt: null, analysis: { deletedAt: null } };
   // The id tie-break keeps the order stable when createdAt repeats.
@@ -117,13 +126,13 @@ export async function searchProjectRequirements(
     return prisma.requirement.findMany({
       where: live,
       orderBy,
-      take: REQUIREMENT_PICKER_LIMIT,
+      take: limit,
       select,
     });
   }
 
   const hits = await prisma.$queryRaw<Array<{ id: string }>>(
-    requirementMatchQuery(provider, projectId, needle),
+    requirementMatchQuery(provider, projectId, needle, limit),
   );
   if (hits.length === 0) return [];
 
@@ -134,4 +143,23 @@ export async function searchProjectRequirements(
     orderBy,
     select,
   });
+}
+
+/**
+ * #2447 — the picks `reader` may see: a requirement resting on a source they
+ * cannot see is left out, so the picker never names it nor confirms a word of
+ * its title. One read of the picks' recorded sources, scoped to the project.
+ */
+export async function visibleRequirementPicks(
+  projectId: string,
+  picks: RequirementPick[],
+  reader: SourceReader,
+): Promise<RequirementPick[]> {
+  if (picks.length === 0) return picks;
+  const rows = await prisma.requirement.findMany({
+    where: { projectId, id: { in: picks.map((p) => p.id) } },
+    select: { id: true, analysisId: true, sourceIds: true },
+  });
+  const hidden = await restrictedIds(reader, rows);
+  return hidden.size === 0 ? picks : picks.filter((p) => !hidden.has(p.id));
 }

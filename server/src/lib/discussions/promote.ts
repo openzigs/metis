@@ -23,6 +23,7 @@
  * Authorization is the caller's responsibility (the route runs `canAccessThread`
  * first); this helper assumes access has been granted.
  */
+import { serializeSourceIds } from "../analysis/source-ids.js";
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
 import { sourcelessRunTitle } from "../analysis/change-request.js";
@@ -138,6 +139,10 @@ export async function promoteMessageToRequirement(input: PromoteInput): Promise<
         body: message.body,
         type: input.type ?? "feature",
         priority: input.priority ?? "medium",
+        // #2447 — its text is a discussion message the project already reads,
+        // not output of the run it is filed under: it drew on no document. NULL
+        // would read as resting on that run's whole corpus.
+        sourceIds: serializeSourceIds({ documentIds: [], chunkIds: [] }),
       },
       select: { id: true },
     });

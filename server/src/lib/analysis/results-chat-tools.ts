@@ -43,6 +43,8 @@
 import { z } from "zod";
 import {
   FINDING_SEVERITIES,
+  RESTRICTED_SOURCE_BODY,
+  RESTRICTED_SOURCE_TITLE,
   governingStaleNote,
   hasPermission as defaultHasPermission,
   type AuthPayload,
@@ -52,6 +54,7 @@ import {
   type RoleKey,
 } from "@metis/shared";
 import { prisma } from "../prisma.js";
+import { chatToolReader, loadSourceGuard } from "./source-redaction.js";
 import type { ToolContext, ToolDefinition, ToolResult } from "../ai/types.js";
 import { AppError } from "../../middleware/error-handler.js";
 import { resolveDurableRole } from "../auth/durable-roles.js";
@@ -313,24 +316,66 @@ export function createGetAnalysisTool(
                   derivation: true,
                   confidence: true,
                   verificationStatus: true,
+                  sourceIds: true,
                 },
               },
             },
           },
           crossDocFindings: {
-            select: { id: true, kind: true, severity: true, title: true, detail: true },
+            select: {
+              id: true,
+              kind: true,
+              severity: true,
+              title: true,
+              detail: true,
+              sourceIds: true,
+            },
           },
         },
       });
       if (!a) return notFound("analysis", args.analysisId, LIST_ANALYSES_TOOL_NAME);
 
+      // #2447 — a finding the user cannot see a source of is its placeholder:
+      // the model is never handed its text to cite. Ids and severity stay.
+      const guarded = (row: { sourceIds: string | null }) => ({
+        analysisId: a.id,
+        sourceIds: row.sourceIds,
+      });
+      const guard = await loadSourceGuard(chatToolReader(ctx), [
+        ...a.agentResults.flatMap((r) => r.findings.map(guarded)),
+        ...a.crossDocFindings.map(guarded),
+      ]);
+      const findingRows = a.agentResults.flatMap((r) =>
+        r.findings.map(({ sourceIds, ...f }) =>
+          guard.canSee(guarded({ sourceIds }))
+            ? { ...f, agentKey: r.agentKey }
+            : {
+                ...f,
+                agentKey: r.agentKey,
+                title: RESTRICTED_SOURCE_TITLE,
+                body: RESTRICTED_SOURCE_BODY,
+                verificationStatus: null,
+                restricted: true as const,
+              },
+        ),
+      );
+      const crossDocRows = a.crossDocFindings.map(({ sourceIds, ...f }) =>
+        guard.canSee(guarded({ sourceIds }))
+          ? f
+          : {
+              ...f,
+              title: RESTRICTED_SOURCE_TITLE,
+              detail: RESTRICTED_SOURCE_BODY,
+              restricted: true as const,
+            },
+      );
+
       const worst = args.minSeverity ? severityRank(args.minSeverity) : Infinity;
       const keep = (s: string) => severityRank(s) <= worst;
-      const findings = a.agentResults
-        .flatMap((r) => r.findings.map((f) => ({ ...f, agentKey: r.agentKey })))
+      const findings = findingRows
         .filter((f) => keep(f.severity))
         .sort((x, y) => severityRank(x.severity) - severityRank(y.severity));
-      const crossDoc = a.crossDocFindings
+      const crossDoc = crossDocRows
         .filter((f) => keep(f.severity))
         .sort((x, y) => severityRank(x.severity) - severityRank(y.severity));
       const limit = args.limit ?? 30;
@@ -534,7 +579,12 @@ export function createGetImpactAnalysisTool(
       );
       let detail: ImpactAnalysisDetail;
       try {
-        detail = await loadAccessibleImpactDetail(reader.actor, args.impactAnalysisId);
+        // #2447 — redacted for who reads the answer (a shared thread: everyone).
+        detail = await loadAccessibleImpactDetail(
+          reader.actor,
+          args.impactAnalysisId,
+          chatToolReader(ctx),
+        );
       } catch (err) {
         if (err instanceof AppError && err.statusCode === 404) return missing;
         throw err;

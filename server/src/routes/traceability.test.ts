@@ -34,6 +34,12 @@ const mockPrisma = {
   $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
 };
 vi.mock("../lib/prisma.js", () => ({ prisma: mockPrisma }));
+// #2447 — the chain's source check is pinned over a real database in
+// tests/source-redaction-2447.sqlite.test.ts; here nothing is restricted.
+vi.mock("../lib/analysis/source-redaction.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/analysis/source-redaction.js")>()),
+  restrictedIds: async () => new Set<string>(),
+}));
 
 vi.mock("../middleware/auth.js", () => ({
   requireAuth: (req: unknown, _res: unknown, next: () => void) => {

@@ -31,6 +31,7 @@
  * `lib/portfolio/interrupted-assessments.ts` fails one whose refreshes
  * stopped, so a restart never leaves an assessment `running` for ever (#1657).
  */
+import { userSourceReader } from "../lib/analysis/source-redaction.js";
 import { Router } from "express";
 import {
   PORTFOLIO_STATEMENT_MAX_CHARS,
@@ -92,6 +93,7 @@ import type { ReadStoredFile } from "../lib/impact-analysis/document-source.js";
 import { buildProvider } from "../lib/ai/providers/factory.js";
 import {
   assertHasRequirements,
+  restrictedNotChecked,
   changeRequestRef,
   loadChangeRequestSource,
   readableChangeRequest,
@@ -241,8 +243,9 @@ interface RunSource {
  * past what one check reads, and criteria past the cap, are returned in
  * `notChecked`. A document's requirements are read when the run starts
  * ({@link resolveDocumentSource}); until then its statement names the document.
+ * Exported for its #2447 test.
  */
-async function gapInputFor(
+export async function gapInputFor(
   user: AuthPayload,
   body: ReturnType<typeof createPortfolioAssessmentSchema.parse>,
 ): Promise<RunSource> {
@@ -272,8 +275,10 @@ async function gapInputFor(
   if (body.analysisId !== undefined) {
     // #2345 — the change request's own requirements, read with the caller's
     // project access (404 for an unreadable one), never taken from the form.
-    const changeRequest = await loadChangeRequestSource(body.analysisId, (projectId) =>
-      canAccessProjectDiscussions({ id: user.userId, role: user.role }, projectId),
+    const changeRequest = await loadChangeRequestSource(
+      body.analysisId,
+      (projectId) => canAccessProjectDiscussions({ id: user.userId, role: user.role }, projectId),
+      userSourceReader(user.userId),
     );
     assertHasRequirements(changeRequest);
     const criteria = boundedRequirements(
@@ -289,7 +294,8 @@ async function gapInputFor(
         sourceProjectId: changeRequest.projectId,
         ...scoped,
       }),
-      notChecked: criteria.notChecked,
+      // #2447 — the requirements left out for their sources, counted.
+      notChecked: [...restrictedNotChecked(changeRequest), ...criteria.notChecked],
       documentId: null,
       analysisId: changeRequest.id,
       preApproval: changeRequest.requirements.some((r) => !r.approved),

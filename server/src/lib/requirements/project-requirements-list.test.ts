@@ -43,8 +43,9 @@ describe("listProjectRequirements title search (#2347)", () => {
     expect(sql.sql).toMatch(/"title" ILIKE \?/);
     // #2347 review — the cap keeps the rows the list shows first, deterministically.
     expect(sql.sql).toMatch(/ORDER BY "updatedAt" DESC, "id" ASC\s+LIMIT \?/);
-    // One past the cap, to tell "exactly the cap" from "more than it".
-    expect(sql.values).toEqual(["p-1", "%50\\%\\_off\\\\%", 5001]);
+    // One past the cap, to tell "exactly the cap" from "more than it"; #2447 —
+    // read a page at a time from an offset, so hidden matches are read past.
+    expect(sql.values).toEqual(["p-1", "%50\\%\\_off\\\\%", 5001, 0]);
     const where = count.mock.calls[0][0].where;
     expect(where).toMatchObject({ projectId: "p-1", deletedAt: null, id: { in: ["r-1"] } });
   });

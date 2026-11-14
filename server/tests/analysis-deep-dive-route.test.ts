@@ -28,6 +28,18 @@ const projects = new Map<string, { id: string; name: string; deletedAt: Date | n
 const analyses = new Map<string, { id: string; projectId: string; deletedAt: Date | null }>();
 const findings = new Map<string, FindingRow>();
 
+// #2447 — redaction is tested over a real database
+// (tests/source-redaction-2447.sqlite.test.ts); this file's fakes hold no
+// source records, so nothing is restricted here.
+vi.mock("../src/lib/analysis/source-redaction.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/analysis/source-redaction.js")>();
+  return {
+    ...actual,
+    loadSourceGuard: vi.fn(async () => actual.OPEN_SOURCE_GUARD),
+    restrictedIds: vi.fn(async () => new Set<string>()),
+  };
+});
+
 vi.mock("../src/lib/prisma.js", async () => {
   const { withRouteAuth } = await import("./helpers/route-auth-prisma.js");
   const prisma = withRouteAuth({

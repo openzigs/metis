@@ -57,6 +57,10 @@ vi.mock("../lib/prisma.js", () => ({
   prisma: {
     analysis: { findFirst: analysisFindFirst },
     project: { findUnique: vi.fn(async () => ({ workspaceId: null })) },
+    // #2447 — the entry's visibility is pinned over a real database in
+    // tests/source-redaction-2447.sqlite.test.ts; here no approval is found
+    // by it, so the edit service decides as before.
+    approvalRequest: { findFirst: vi.fn(async () => null) },
   },
 }));
 

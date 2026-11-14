@@ -12,6 +12,7 @@ import {
   portfolioImpactTier,
   portfolioNotCheckedText,
   portfolioRequirementCoverage,
+  restrictedRequirementsLeftOutSentence,
   type PortfolioCoverage,
   type PortfolioImpactKind,
 } from "./portfolio-assessment.js";
@@ -40,6 +41,23 @@ describe("#2272 — what a check did not check", () => {
       "Not checked in 3 repositories: the check's budget ran out first.",
     );
     expect(portfolioNotCheckedText({ reason: "budget", count: 1 })).toContain("in 1 repository:");
+    // #2447 — counts only: never a title of what was left out.
+    expect(portfolioNotCheckedText({ reason: "restricted-source", count: 2 })).toBe(
+      "Not checked: they rest on documents the person who started this check cannot see.",
+    );
+    expect(portfolioNotCheckedText({ reason: "restricted-source", count: 1 })).toBe(
+      "Not checked: it rests on a document the person who started this check cannot see.",
+    );
+  });
+
+  it("#2447 — says how many requirements were left out for their sources, counts only", () => {
+    expect(restrictedRequirementsLeftOutSentence(0)).toBeNull();
+    expect(restrictedRequirementsLeftOutSentence(1)).toBe(
+      "1 requirement was left out: it rests on a document you can't see.",
+    );
+    expect(restrictedRequirementsLeftOutSentence(3)).toBe(
+      "3 requirements were left out: they rest on documents you can't see.",
+    );
   });
 
   it("lists each requirement checked with the products found implementing it", () => {

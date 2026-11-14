@@ -207,6 +207,45 @@ describe("getGapReport", () => {
     expect(r.databaseChanges![0]!.consumers).toHaveLength(1);
   });
 
+  it("#2447 — leaves out the database changes of a requirement the reader sees restricted", async () => {
+    const schemaImpact = new Map<string, GapReportSchemaImpactInput>([
+      [
+        "req-1",
+        {
+          rows: [
+            {
+              objectKind: "column",
+              tableName: "public.users",
+              columnName: "locked_at",
+              columnType: "timestamptz",
+              changeKind: "add-column",
+              suggestedDdl: "ALTER TABLE public.users ADD COLUMN locked_at timestamptz;",
+              source: "orm",
+              reconciliation: "matched",
+              confidence: 0.85,
+            },
+          ],
+          consumers: [],
+        },
+      ],
+    ]);
+    const base = snapshot();
+    const report = await getGapReport("an-1", {
+      loadSnapshot: vi
+        .fn()
+        .mockResolvedValue(
+          snapshot({ requirements: [{ ...base.requirements[0]!, restricted: true }] }),
+        ),
+      loadSchemaImpact: vi.fn().mockResolvedValue(schemaImpact),
+    });
+    expect(report!.requirements[0]!.databaseChanges).toBeUndefined();
+    const open = await getGapReport("an-1", {
+      loadSnapshot: vi.fn().mockResolvedValue(snapshot()),
+      loadSchemaImpact: vi.fn().mockResolvedValue(schemaImpact),
+    });
+    expect(open!.requirements[0]!.databaseChanges).toBeDefined();
+  });
+
   it("omits databaseChanges when no schema-impact loader is wired (backward compatible)", async () => {
     const report = await getGapReport("an-1", {
       loadSnapshot: vi.fn().mockResolvedValue(snapshot()),

@@ -199,6 +199,8 @@ export interface AnalysisFinding {
    * NOTHING and must be rendered distinctly from `"low"` (#1110).
    */
   supportPanel?: FindingSupportPanel | null;
+  /** #2447 — the viewer cannot see a source it cites: its text is the placeholder. */
+  restricted?: true;
 }
 
 export interface AgentResultSummary {
@@ -293,6 +295,8 @@ export interface RequirementSummary {
    * self-approval, so their Approve would be refused. Absent otherwise.
    */
   selfApprovalForbidden?: true;
+  /** #2447 — the viewer cannot see a source it draws on: its text is the placeholder. */
+  restricted?: true;
 }
 
 export interface AnalysisListItem {
@@ -395,6 +399,8 @@ export interface CrossDocFindingSummary {
    */
   evidence?: ResolvedEvidenceRef[];
   scope: "self" | "pairwise" | null;
+  /** #2447 — the viewer cannot see a source it draws on: its text is the placeholder. */
+  restricted?: true;
 }
 
 /** Epic #203 (#221) — bundle of cross-doc findings on the snapshot. */

@@ -149,7 +149,10 @@ describe("GET /api/projects/:projectId/analyses/:id/traceability", () => {
     const res = await request(app).get("/api/projects/proj-1/analyses/analysis-1/traceability");
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true, data: MATRIX });
-    expect(getTraceabilityMatrix).toHaveBeenCalledWith("analysis-1");
+    // #2447 — the snapshot is read redacted for the caller.
+    expect(getTraceabilityMatrix).toHaveBeenCalledWith("analysis-1", {
+      loadSnapshot: expect.any(Function),
+    });
   });
 
   it("streams CSV with attachment headers for ?format=csv", async () => {

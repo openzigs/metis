@@ -10,9 +10,11 @@
  * its project), live, and not rejected or deferred: a rejected requirement is
  * not part of the change, a deferred one not part of this change.
  */
+import type { PortfolioNotChecked } from "@metis/shared";
 import { AppError } from "../../middleware/error-handler.js";
 import { prisma } from "../prisma.js";
 import { clampTitle, sourcelessRunTitle } from "./change-request.js";
+import { restrictedIds, type SourceReader } from "./source-redaction.js";
 
 /** A requirement of a change request, as a check reads it. */
 export interface ChangeRequestRequirement {
@@ -29,6 +31,11 @@ export interface ChangeRequestSource {
   projectId: string;
   title: string;
   requirements: ChangeRequestRequirement[];
+  /**
+   * #2447 — how many requirements were left out because they rest on a source
+   * the reader cannot see. A count only: never which.
+   */
+  restrictedLeftOut: number;
 }
 
 /** The review statuses whose requirements a change request's checks include. */
@@ -41,6 +48,11 @@ export const CHECKED_REVIEW_STATUSES = ["draft", "approved"] as const;
 export async function loadChangeRequestSource(
   analysisId: string,
   canReadProject: (projectId: string) => Promise<boolean>,
+  /**
+   * #2447 — who starts the check. A requirement resting on a source they
+   * cannot see is left out: its text would be sent to the check for them.
+   */
+  reader: SourceReader,
 ): Promise<ChangeRequestSource> {
   const run = await readableChangeRequest(analysisId, canReadProject);
   if (!run) throw new AppError(404, "NOT_FOUND", "Change request not found");
@@ -52,19 +64,31 @@ export async function loadChangeRequestSource(
       OR: [{ reviewStatus: null }, { reviewStatus: { in: [...CHECKED_REVIEW_STATUSES] } }],
     },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-    select: { id: true, title: true, body: true, acceptanceCriteria: true, reviewStatus: true },
+    select: {
+      id: true,
+      title: true,
+      body: true,
+      acceptanceCriteria: true,
+      reviewStatus: true,
+      analysisId: true,
+      sourceIds: true,
+    },
   });
+  const restricted = await restrictedIds(reader, rows);
   return {
     id: run.id,
     projectId: run.projectId,
     title: run.title?.trim() ? clampTitle(run.title) : sourcelessRunTitle(run.startedAt),
-    requirements: rows.map((r) => ({
-      id: r.id,
-      title: r.title,
-      body: r.body,
-      acceptanceCriteria: r.acceptanceCriteria,
-      approved: r.reviewStatus === "approved",
-    })),
+    restrictedLeftOut: restricted.size,
+    requirements: rows
+      .filter((r) => !restricted.has(r.id))
+      .map((r) => ({
+        id: r.id,
+        title: r.title,
+        body: r.body,
+        acceptanceCriteria: r.acceptanceCriteria,
+        approved: r.reviewStatus === "approved",
+      })),
   };
 }
 
@@ -83,6 +107,22 @@ export async function readableChangeRequest(
     select: { id: true, projectId: true, title: true, startedAt: true },
   });
   return run && (await canReadProject(run.projectId)) ? run : null;
+}
+
+/**
+ * #2447 — the not-checked entry a portfolio check records for the requirements
+ * left out because its starter cannot see their sources: a count, never a title.
+ */
+export function restrictedNotChecked(source: ChangeRequestSource): PortfolioNotChecked[] {
+  const n = source.restrictedLeftOut;
+  if (n <= 0) return [];
+  return [
+    {
+      text: n === 1 ? "1 requirement" : `${n} requirements`,
+      reason: "restricted-source",
+      count: n,
+    },
+  ];
 }
 
 /** A change request with no requirement to check is a 400, said in words. */

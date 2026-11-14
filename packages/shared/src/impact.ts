@@ -1146,4 +1146,10 @@ export interface CreateImpactAnalysisResponse {
   id: string;
   status: ImpactAnalysisStatus;
   projectIds: string[];
+  /**
+   * #2447 — for a run started from a change request: how many of its
+   * requirements were left out because the starter cannot see their sources.
+   * Absent when none was. A count only.
+   */
+  requirementsLeftOut?: number;
 }

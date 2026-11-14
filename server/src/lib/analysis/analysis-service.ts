@@ -26,6 +26,7 @@ import {
   serializeSourceIds,
   sourceIdsOfFindingSets,
 } from "./source-ids.js";
+import { loadSourceGuard, redactAnalysisSnapshot, type SourceReader } from "./source-redaction.js";
 import {
   analysisFailedAgents,
   openQuestionCount,
@@ -2366,7 +2367,17 @@ export async function listAnalysesForProject(projectId: string) {
   }));
 }
 
-export async function getAnalysisSnapshot(id: string): Promise<AnalysisSnapshot | null> {
+export async function getAnalysisSnapshot(
+  id: string,
+  opts: {
+    /**
+     * #2447 — who reads it: every finding, requirement and cross-document
+     * finding they cannot see a source of is the restricted placeholder.
+     * Omitted only by an internal read that shows no one the rows.
+     */
+    reader?: SourceReader;
+  } = {},
+): Promise<AnalysisSnapshot | null> {
   const row = await prisma.analysis.findFirst({
     where: { id, deletedAt: null },
     include: {
@@ -2400,7 +2411,7 @@ export async function getAnalysisSnapshot(id: string): Promise<AnalysisSnapshot 
   // #2222 — the version each requirement was analysed at, so the findings it
   // was synthesised from are marked stale once a person edits it.
   const analysed = await analysedVersions(row.requirements);
-  return {
+  const full: AnalysisSnapshot = {
     ...snapshot,
     ...details,
     requirements: snapshot.requirements.map((r) => ({
@@ -2423,6 +2434,52 @@ export async function getAnalysisSnapshot(id: string): Promise<AnalysisSnapshot 
         }
       : null,
   };
+  return opts.reader ? redactSnapshotFor(opts.reader, row, full) : full;
+}
+
+/**
+ * #2447 — `snapshot` as `reader` may see it (`redactAnalysisSnapshot`): the
+ * stored sources come from the rows already read, plus one read of the
+ * cross-document findings' when the run has any.
+ */
+async function redactSnapshotFor(
+  reader: SourceReader,
+  row: {
+    id: string;
+    agentResults: Array<{ findings: Array<{ id: string; sourceIds: string | null }> }>;
+    requirements: Array<{
+      id: string;
+      sourceIds: string | null;
+      promotedStructuredId: string | null;
+    }>;
+  },
+  snapshot: AnalysisSnapshot,
+): Promise<AnalysisSnapshot> {
+  const crossDocRows = snapshot.crossDocFindings?.findings.length
+    ? await prisma.crossDocFinding.findMany({
+        where: { analysisId: row.id },
+        select: { id: true, sourceIds: true },
+      })
+    : [];
+  const sources = {
+    findings: new Map(
+      row.agentResults.flatMap((a) => a.findings.map((f) => [f.id, f.sourceIds] as const)),
+    ),
+    requirements: new Map(row.requirements.map((r) => [r.id, r.sourceIds] as const)),
+    promotedStructuredIds: new Map(
+      row.requirements.map((r) => [r.id, r.promotedStructuredId] as const),
+    ),
+    crossDocFindings: new Map(crossDocRows.map((r) => [r.id, r.sourceIds] as const)),
+  };
+  const guard = await loadSourceGuard(reader, [
+    { analysisId: row.id, sourceIds: null },
+    ...[...sources.findings.values(), ...sources.requirements.values()].map((sourceIds) => ({
+      analysisId: row.id,
+      sourceIds,
+    })),
+    ...crossDocRows.map((r) => ({ analysisId: row.id, sourceIds: r.sourceIds })),
+  ]);
+  return redactAnalysisSnapshot(snapshot, sources, guard);
 }
 
 /**
@@ -2598,6 +2655,12 @@ export async function loadFindingForDeepDive(input: {
   projectId: string;
   analysisId: string;
   findingId: string;
+  /**
+   * #2447 — who reads it. A finding they cannot see a source of is `null`,
+   * the same answer as an unknown one: a deep dive or a publish sends its
+   * text on, so there is no placeholder to give.
+   */
+  reader: SourceReader;
 }): Promise<{
   id: string;
   title: string;
@@ -2644,6 +2707,10 @@ export async function loadFindingForDeepDive(input: {
   // and no agent key to report. The `where` above already excludes it; this is
   // the fail-CLOSED narrowing that keeps tsc's proof of that honest.
   if (!row?.agentResult) return null;
+  const guard = await loadSourceGuard(input.reader, [
+    { analysisId: input.analysisId, sourceIds: row.sourceIds },
+  ]);
+  if (!guard.canSee({ analysisId: input.analysisId, sourceIds: row.sourceIds })) return null;
 
   const ev = parseEvidence(row.evidence);
   const agentKey = SAFE_AGENT_KEYS.has(row.agentResult.agentKey)

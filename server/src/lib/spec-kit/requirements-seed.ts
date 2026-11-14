@@ -22,11 +22,13 @@
 import {
   SPEC_KIT_REQUIREMENTS_NOT_APPROVED_CODE,
   SPEC_KIT_REQUIREMENTS_NOT_FOUND_CODE,
+  SPEC_KIT_REQUIREMENTS_RESTRICTED_CODE,
   SPEC_KIT_REQUIREMENTS_TOO_LARGE_CODE,
   parseAcceptanceCriteria,
 } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { parseRequirementLabels } from "../analysis/requirement-labels.js";
+import { restrictedIds, sharedSourceReader } from "../analysis/source-redaction.js";
 import { scrubRequirementFenceLookalikes } from "../ai/tool-runtime/fence-scrub.js";
 import { truncateAtWord } from "./features.js";
 import { DEFAULT_SPEC_KIT_MAX_OUTPUT_TOKENS } from "./output-budget.js";
@@ -102,6 +104,8 @@ export async function loadApprovedRequirements(
       acceptanceCriteria: true,
       reviewStatus: true,
       labels: true,
+      analysisId: true,
+      sourceIds: true,
     },
   });
   const byId = new Map(rows.map((r) => [r.id, r]));
@@ -112,6 +116,18 @@ export async function loadApprovedRequirements(
       SPEC_KIT_REQUIREMENTS_NOT_FOUND_CODE,
       `Requirements not found in this project: ${missing.join(", ")}`,
       missing,
+    );
+  }
+  // #2447 — the feature's spec is read by the whole project (#2314), so it is
+  // built only from requirements the shared audience can see.
+  const hidden = await restrictedIds(sharedSourceReader(), rows);
+  const restricted = wanted.filter((id) => hidden.has(id));
+  if (restricted.length > 0) {
+    throw new SpecKitRequirementSeedError(
+      422,
+      SPEC_KIT_REQUIREMENTS_RESTRICTED_CODE,
+      `These requirements draw on sources not everyone in the project can see: ${restricted.join(", ")}`,
+      restricted,
     );
   }
   const notApproved = wanted.filter((id) => {

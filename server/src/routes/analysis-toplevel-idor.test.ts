@@ -93,6 +93,8 @@ vi.mock("../lib/prisma.js", () => ({
   prisma: {
     analysis: { findFirst: analysisFindFirst },
     project: { findUnique: projectFindUnique },
+    // #2447 — the PATCH reads the requirement's sources before the edit.
+    requirement: { findFirst: vi.fn(async () => null) },
   },
 }));
 
@@ -165,6 +167,12 @@ vi.mock("../lib/analysis/index.js", () => ({
 
 vi.mock("../lib/change-analysis/requirement-diff-service.js", () => ({
   getRequirementDiff: vi.fn(),
+}));
+// #2447 — the redaction itself is tested over a real database
+// (tests/source-redaction-2447.sqlite.test.ts); here nothing is restricted.
+vi.mock("../lib/analysis/source-redaction.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/analysis/source-redaction.js")>()),
+  restrictedIds: vi.fn(async () => new Set<string>()),
 }));
 vi.mock("../lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 vi.mock("../lib/ai/index.js", () => ({

@@ -34,6 +34,7 @@ import {
   useImpactAnalyses,
   useImpactAnalysis,
   useCreateImpactAnalysis,
+  impactStartedMessage,
   useProjectUsageClassification,
   useCrossProjectImpact,
   useMarkTableFeedback,
@@ -333,5 +334,15 @@ describe("useCreateImpactAnalysis", () => {
     });
     expect(res.id).toBe("ia-0000000002");
     expect(impactAnalysisApi.create).toHaveBeenCalled();
+  });
+});
+
+describe("impactStartedMessage (#2447)", () => {
+  it("says how many requirements were left out for their sources, never which", () => {
+    expect(impactStartedMessage({})).toBe("Impact analysis started");
+    expect(impactStartedMessage({ requirementsLeftOut: 0 })).toBe("Impact analysis started");
+    expect(impactStartedMessage({ requirementsLeftOut: 2 })).toBe(
+      "Impact analysis started. 2 requirements were left out: they rest on documents you can't see.",
+    );
   });
 });

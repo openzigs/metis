@@ -99,6 +99,12 @@ const projectFindUnique = vi.fn(async ({ where }: { where: { id: string } }) => 
 const projectFindFirst = vi.fn(async ({ where }: { where: { id?: string } }) => {
   return (where.id ? PROJECTS[where.id] : null) ?? null;
 });
+// #2447 — whether the caller sees the run as a whole is pinned over a real
+// database in tests/source-redaction-2447.sqlite.test.ts; here they do.
+vi.mock("../lib/analysis/source-redaction.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/analysis/source-redaction.js")>()),
+  loadSourceGuard: async () => ({ canSee: () => true, canSeeRun: () => true }),
+}));
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
     analysis: { findFirst: analysisFindFirst },
@@ -469,6 +475,8 @@ describe("analyses/:id/* — cross-project scope (#1097)", () => {
         projectId: "proj-b",
         analysisId: "ana-b",
         findingId: "find-1",
+        // #2447 — redacted for the caller.
+        reader: expect.any(Function),
       });
     });
   });
@@ -498,6 +506,8 @@ describe("analyses/:id/* — cross-project scope (#1097)", () => {
         projectId: "proj-b",
         analysisId: "ana-b",
         findingId: "find-1",
+        // #2447 — redacted for the caller.
+        reader: expect.any(Function),
       });
     });
   });

@@ -82,6 +82,12 @@ vi.mock("../lib/prisma.js", async () => ({
 // lib/discussions/access.test.ts).
 const canAccessProjectDiscussions = vi.fn();
 const canAccessThread = vi.fn();
+// #2447 — the picker's source redaction is pinned over a real database in
+// tests/source-redaction-2447.sqlite.test.ts; here nothing is restricted.
+vi.mock("../lib/analysis/source-redaction.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/analysis/source-redaction.js")>()),
+  restrictedIds: async () => new Set<string>(),
+}));
 vi.mock("../lib/discussions/access.js", () => ({
   canAccessThread: (...a: unknown[]) => canAccessThread(...a),
   canAccessProjectDiscussions: (...a: unknown[]) => canAccessProjectDiscussions(...a),
@@ -572,7 +578,8 @@ describe("discussions routes", () => {
       expect(res.status).toBe(200);
       expect(res.body.data.map((r: { id: string }) => r.id)).toEqual(["r3", "r1"]);
       const [{ values }] = queryRaw.mock.calls[0] as [{ values: unknown[] }];
-      expect(values).toEqual(["p1", "%Mark ALL%", 20]);
+      // #2447 — read past the 20 answered, so hidden matches do not leave it short.
+      expect(values).toEqual(["p1", "%Mark ALL%", 100]);
       expect(requirementFindMany).toHaveBeenCalledWith(
         expect.objectContaining({ where: { projectId: "p1", id: { in: ["r3", "r1"] } } }),
       );
@@ -601,9 +608,19 @@ describe("discussions routes", () => {
 
     it("answers at most 20 requirements for a blank term, with no SQL match", async () => {
       canAccessProjectDiscussions.mockResolvedValue(true);
-      requirementFindMany.mockResolvedValue(rows);
-      await request(app).get("/discussions/requirements?projectId=p1&q=%20%20");
-      expect(requirementFindMany).toHaveBeenCalledWith(expect.objectContaining({ take: 20 }));
+      const many = Array.from({ length: 25 }, (_, i) => ({
+        id: `r-${i}`,
+        title: `Requirement ${i}`,
+        analysisId: "a1",
+        createdAt: new Date(),
+      }));
+      requirementFindMany.mockResolvedValue(many);
+      const res = await request(app).get("/discussions/requirements?projectId=p1&q=%20%20");
+      // #2447 — read 100, so restricted ones do not leave it short; answer 20.
+      expect(requirementFindMany).toHaveBeenCalledWith(expect.objectContaining({ take: 100 }));
+      expect(res.body.data.map((r: { id: string }) => r.id)).toEqual(
+        many.slice(0, 20).map((r) => r.id),
+      );
       expect(queryRaw).not.toHaveBeenCalled();
     });
 

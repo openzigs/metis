@@ -31,6 +31,7 @@ import { toast } from "sonner";
 import {
   SPEC_KIT_FROM_REQUIREMENTS_MAX_IDS,
   SPEC_KIT_REQUIREMENTS_NOT_APPROVED_CODE,
+  SPEC_KIT_REQUIREMENTS_RESTRICTED_CODE,
   SPEC_KIT_REQUIREMENTS_NOT_FOUND_CODE,
 } from "@metis/shared";
 import { ApiError } from "@/lib/api-client";
@@ -83,7 +84,8 @@ export function refusedRequirementIds(err: unknown): string[] | null {
   if (!(err instanceof ApiError)) return null;
   if (
     err.code !== SPEC_KIT_REQUIREMENTS_NOT_APPROVED_CODE &&
-    err.code !== SPEC_KIT_REQUIREMENTS_NOT_FOUND_CODE
+    err.code !== SPEC_KIT_REQUIREMENTS_NOT_FOUND_CODE &&
+    err.code !== SPEC_KIT_REQUIREMENTS_RESTRICTED_CODE
   ) {
     return null;
   }
@@ -108,6 +110,9 @@ function describeFailure(err: unknown): string {
   }
   if (err instanceof ApiError && err.code === SPEC_KIT_REQUIREMENTS_NOT_FOUND_CODE) {
     return "These requirements are not in this project:";
+  }
+  if (err instanceof ApiError && err.code === SPEC_KIT_REQUIREMENTS_RESTRICTED_CODE) {
+    return "These requirements draw on sources not everyone in the project can see, so they can't start a Spec Kit feature:";
   }
   return describeSpecKitError(err);
 }

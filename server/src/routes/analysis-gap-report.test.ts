@@ -78,6 +78,12 @@ vi.mock("../lib/analysis/index.js", () => ({
   getRequirementDatabaseChanges,
 }));
 
+// #2447 — the redaction itself is tested over a real database
+// (tests/source-redaction-2447.sqlite.test.ts); here nothing is restricted.
+vi.mock("../lib/analysis/source-redaction.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/analysis/source-redaction.js")>()),
+  restrictedIds: vi.fn(async () => new Set<string>()),
+}));
 vi.mock("../lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 vi.mock("../lib/ai/index.js", () => ({
   buildProvider: vi.fn(() => ({})),
@@ -171,6 +177,8 @@ describe("GET /api/projects/:projectId/analyses/:id/gap-report", () => {
     expect(getGapReport).toHaveBeenCalledWith("analysis-1", {
       loadSchemaImpact: undefined,
       page: { page: 1, pageSize: 10 },
+      // #2447 — the snapshot is read redacted for the caller.
+      loadSnapshot: expect.any(Function),
     });
   });
 
@@ -192,6 +200,7 @@ describe("GET /api/projects/:projectId/analyses/:id/gap-report", () => {
       databaseAware,
       sqlLineageCoverage: null,
       page: { page: 2, pageSize: 5 },
+      loadSnapshot: expect.any(Function),
     });
   });
 
@@ -231,7 +240,7 @@ describe("GET /api/projects/:projectId/analyses/:id/gap-report/requirements/:req
     expect(res.body.error.code).toBe("REQUIREMENT_NOT_FOUND");
     expect(requirementFindFirst).toHaveBeenCalledWith({
       where: { id: "req-1", analysisId: "analysis-1", projectId: "proj-1", deletedAt: null },
-      select: { id: true },
+      select: { id: true, analysisId: true, sourceIds: true },
     });
     expect(getRequirementDatabaseChanges).not.toHaveBeenCalled();
   });
