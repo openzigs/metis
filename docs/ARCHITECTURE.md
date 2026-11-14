@@ -3045,7 +3045,9 @@ decision on that row is audited the same way before the delete (#2017).
   one after the permission check, `GOVERNING_RECHECK_LIMIT_MAX` default 30 per 15 minutes,
   `GOVERNING_RECHECK_PREAUTH_LIMIT_MAX` default 20000, `GOVERNING_RECHECK_LIMIT_WINDOW_MS`;
   `GOVERNING_RECHECK_RATE_LIMITED`), and the request's `close` aborts the model calls: a re-check
-  aborted before its findings are written stores nothing and writes no answer.
+  aborted before its findings are written stores nothing and writes no answer. The handler
+  listens for `close` before its first await and also reads the response and socket state, so a
+  client gone during the rate limiter's store call runs no model call either (#2311).
 
 **Stale findings (#2222).** A governing finding is keyed by the requirement as the run analysed it
 (`AC-2`), and the stored requirements an analyst edits join to it only through their

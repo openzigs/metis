@@ -103,6 +103,20 @@ describe("recheckGoverningRequirement — cancelled (#2281)", () => {
     expect(deps.auditCreate).not.toHaveBeenCalled();
   });
 
+  it("#2311 — a signal that aborts during the requirement read: cancelled, no model call", async () => {
+    const ac = new AbortController();
+    deps.findFirst.mockImplementation(async () => {
+      ac.abort();
+      return { id: "r1", title: "T", body: "B", acceptanceCriteria: null, version: 2 };
+    });
+    expect(await recheckGoverningRequirement(input(ac.signal))).toEqual({
+      ok: false,
+      reason: "cancelled",
+    });
+    expect(deps.decide).not.toHaveBeenCalled();
+    expect(deps.produce).not.toHaveBeenCalled();
+  });
+
   it("a findings run that rejects on the abort: cancelled, nothing stored; any other rejection is thrown", async () => {
     const ac = new AbortController();
     deps.decide.mockResolvedValue(set());
