@@ -82,6 +82,43 @@ export function buildCodePermalink(
   );
 }
 
+/** #2338 — a GitLab connector's web origin: its API base URL's (https only), else gitlab.com. */
+function gitlabWebOrigin(apiBaseUrl: string | null): string | null {
+  if (!apiBaseUrl) return "https://gitlab.com";
+  try {
+    const u = new URL(apiBaseUrl);
+    return u.protocol === "https:" ? u.origin : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #2338 — a link to commit `sha` (ADR 0023): `/commit/<sha>` on GitHub and
+ * GitHub Enterprise, `/-/commit/<sha>` on GitLab, built from the connector's
+ * stored coordinates only; `null` for any other connector type or an unsafe
+ * coordinate. `URL.origin` drops any userinfo in a stored base URL.
+ */
+export function buildCommitPermalink(
+  repo: PermalinkRepoSource | null | undefined,
+  sha: string,
+): string | null {
+  if (!repo || !SHA_RE.test(sha)) return null;
+  const owner = repo.ownerOrOrg ?? "";
+  const name = repo.repoName ?? "";
+  if (!NAME_RE.test(owner) || !NAME_RE.test(name)) return null;
+  const path = `${encodeURIComponent(owner)}/${encodeURIComponent(name)}`;
+  if (repo.provider === "github" || repo.provider === "github_enterprise") {
+    const origin = githubWebOrigin(repo.provider, repo.apiBaseUrl);
+    return origin ? `${origin}/${path}/commit/${sha}` : null;
+  }
+  if (repo.provider === "gitlab") {
+    const origin = gitlabWebOrigin(repo.apiBaseUrl);
+    return origin ? `${origin}/${path}/-/commit/${sha}` : null;
+  }
+  return null;
+}
+
 /** One repository's indexed version. */
 export interface RepoCodeVersion {
   commitSha: string | null;

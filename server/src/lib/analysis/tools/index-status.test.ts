@@ -4,10 +4,15 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-const status = vi.hoisted(() => ({ load: vi.fn() }));
+const status = vi.hoisted(() => ({ load: vi.fn(), consistency: vi.fn() }));
 vi.mock("../../ai/index-status.js", async (original) => ({
   ...(await original<typeof import("../../ai/index-status.js")>()),
   loadProjectIndexStatus: status.load,
+}));
+
+vi.mock("../../code-graph/index-consistency.js", async (original) => ({
+  ...(await original<typeof import("../../code-graph/index-consistency.js")>()),
+  loadIndexConsistencySummary: status.consistency,
 }));
 
 import { UNRESTRICTED_CODE_ACCESS } from "./code-access.js";
@@ -31,7 +36,13 @@ describe("get_index_status (#2326)", () => {
       { projectId: "someone-elses-project" },
       { projectId: "p1", codeAccess: UNRESTRICTED_CODE_ACCESS },
     );
-    expect(status.load).toHaveBeenCalledWith("p1", { access: UNRESTRICTED_CODE_ACCESS });
+    expect(status.load).toHaveBeenCalledWith("p1", {
+      access: UNRESTRICTED_CODE_ACCESS,
+      consistency: expect.any(Function),
+    });
+    // #2346 — the consistency check runs on the session's project too.
+    await status.load.mock.calls.at(-1)![1].consistency();
+    expect(status.consistency).toHaveBeenLastCalledWith("p1");
     expect(out.content).toContain('Project "Acme": index healthy; 3 knowledge document(s).');
     expect(out.isError).toBeUndefined();
     // A status report is not project content: no count, so no "project lookup".
@@ -44,7 +55,7 @@ describe("get_index_status (#2326)", () => {
       content: "Error: this chat's project no longer exists.",
       isError: true,
     });
-    expect(status.load).toHaveBeenLastCalledWith("gone", {});
+    expect(status.load).toHaveBeenLastCalledWith("gone", { consistency: expect.any(Function) });
   });
 
   it("is a chat code tool an agent allowlist can name, offered unless turned off", () => {
@@ -54,5 +65,13 @@ describe("get_index_status (#2326)", () => {
       INDEX_STATUS_TOOL_NAME,
     );
     expect(indexStatusTool.parameters).toEqual({ type: "object", properties: {} });
+  });
+
+  it("#2338 — offers get_change_history only when asked (CHAT_CHANGE_HISTORY_TOOL, off by default)", () => {
+    expect(CHAT_CODE_TOOL_NAMES).toContain("get_change_history");
+    expect(getChatCodeTools().map((t) => t.name)).not.toContain("get_change_history");
+    expect(getChatCodeTools({ changeHistory: true }).map((t) => t.name)).toContain(
+      "get_change_history",
+    );
   });
 });

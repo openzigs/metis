@@ -37,6 +37,13 @@ import { prisma } from "../../prisma.js";
 import { isUniqueViolation, uniqueViolationTarget } from "../../db/prisma-errors.js";
 import { getVaultService } from "../../vault/vault-service.js";
 import { resolveRepoCloneRoot, resolveRepoClonePath } from "./clone-path.js";
+import {
+  fetchHistoryRepository,
+  resolveHistoryWindowDays,
+  resolveRepoHistoryMaxBytes,
+  type HistoryFetchOutcome,
+} from "./history-repo.js";
+import { dropConnectorHistory, type HistoryLimits } from "./history-refresh.js";
 import { assertConnectorHostAllowed, resolveAndAssertConnectorHost } from "../network-allowlist.js";
 import {
   ConnectorError,
@@ -678,6 +685,8 @@ export async function updateRepoConnector(
     // A rename that lost a race for the label.
     throw patch.label === undefined ? err : await labelTakenOr(err, projectId, patch.label);
   }
+  // #2338 — the old repository's commit history is not this binding's.
+  if (rebinds) await dropConnectorHistory(id, "rebound");
   audit({
     actor: { id: actorId },
     action: "connector.repo.update",
@@ -696,6 +705,8 @@ export async function deleteRepoConnector(projectId: string, id: string, actorId
     where: { id },
     data: { deletedAt: new Date(), status: "disabled" },
   });
+  // #2338 — commit text can carry secrets and personal data: it goes with the connector.
+  await dropConnectorHistory(id, "deleted");
   // #475/#492 — an upload connector's stored archive and extraction go with
   // it. The row is already deleted, so a failed removal is logged, not surfaced.
   if (existing.uploadPath) {
@@ -1716,6 +1727,52 @@ export async function shallowCloneRepo(
   });
   const commitSha = await readCloneHeadSha(target);
   return { path: target, sizeBytes, commitSha };
+}
+
+/**
+ * #2338 — fetch (or refresh) connector `id`'s commit-history repository at
+ * `commitSha`, the commit its code graph was just built from (ADR 0023). The
+ * same host check, clone URL and auth header as a clone; the history is a
+ * separate repository, so a failed or oversized fetch costs the history and
+ * nothing else. Throws only for a connector that is not a live git connector
+ * of the project; every git failure is an outcome.
+ */
+export async function fetchConnectorHistory(
+  projectId: string,
+  id: string,
+  commitSha: string,
+  signal?: AbortSignal,
+): Promise<HistoryFetchOutcome> {
+  const conn = await getRepoConnector(projectId, id);
+  const gitRepo = assertGitConnector(conn);
+  await assertHostFromBaseUrl(conn.apiBaseUrl);
+  const remoteUrl = buildCloneUrl({
+    ...conn,
+    ownerOrOrg: gitRepo.ownerOrOrg,
+    repoName: gitRepo.repoName,
+  });
+  const token = await resolveSecret(conn.secretRef);
+  // The token travels as a header in the environment (`basicAuthConfigEnv`),
+  // never in argv or in the stored remote URL.
+  const env = token
+    ? authenticatedGitEnv(token)
+    : { ...forwardedGitEnv(), GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1" };
+  return fetchHistoryRepository({
+    connectorId: id,
+    remoteUrl,
+    commitSha,
+    env,
+    ...resolveConnectorHistoryLimits(),
+    ...(signal ? { signal } : {}),
+  });
+}
+
+/** #2338 — the window and size cap a history fetch uses now. */
+export function resolveConnectorHistoryLimits(): HistoryLimits {
+  return {
+    windowDays: resolveHistoryWindowDays(),
+    maxBytes: resolveRepoHistoryMaxBytes(resolveRepoCloneMaxBytes()),
+  };
 }
 
 export interface PullOrCloneResult extends ShallowCloneResult {

@@ -46,6 +46,9 @@ vi.mock("../prisma.js", () => ({
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn((await import("../prisma.js")).prisma),
     ),
+    // #2446 — a requirement reads its evidence findings' sources; this fake
+    // records none (real SQLite: tests/source-provenance-2446.sqlite.test.ts).
+    finding: { findMany: vi.fn(async () => []) },
     requirement: {
       // Issue #769 — this fake models no review work and no prior set, so the
       // replacement guard proceeds; the guard itself is exercised against a real

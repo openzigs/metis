@@ -6,6 +6,8 @@ import {
   SymbolEmbeddingPipeline,
   formatSymbolForEmbedding,
   computeSymbolHash,
+  renameStableKeys,
+  type StoredSymbolVector,
   type SymbolForEmbedding,
   type SymbolEmbeddingStore,
   type EmbedService,
@@ -286,5 +288,189 @@ describe("SymbolEmbeddingPipeline", () => {
     });
 
     expect(store.upserted[0].vector).toHaveLength(384);
+  });
+});
+
+// ---- #2346: rename-stable reuse --------------------------------------------
+
+describe("renameStableKeys (#2346)", () => {
+  const text = (filePath: string, pkg: string | null, body = "  return 1;") =>
+    [
+      `function f in ${filePath}`,
+      ...(pkg ? [`package: ${pkg}`] : []),
+      "function f() {",
+      body,
+      "}",
+    ].join("\n");
+
+  it("is the same for a rename within a directory", () => {
+    expect(renameStableKeys(text("src/a.ts", "src"), "src/a.ts").exact).toBe(
+      renameStableKeys(text("src/b.ts", "src"), "src/b.ts").exact,
+    );
+  });
+
+  it("differs in `exact` but not in `moved` when the directory (and so the package line) changes", () => {
+    const a = renameStableKeys(text("src/billing/a.ts", "billing"), "src/billing/a.ts");
+    const b = renameStableKeys(text("src/finance/a.ts", "finance"), "src/finance/a.ts");
+    expect(a.exact).not.toBe(b.exact);
+    expect(a.moved).toBe(b.moved);
+  });
+
+  it("keeps a declared package that is not the directory", () => {
+    const a = renameStableKeys(text("internal/reader/f.go", "reader"), "internal/reader/f.go");
+    const b = renameStableKeys(text("internal/fetcher/f.go", "reader"), "internal/fetcher/f.go");
+    expect(a.exact).toBe(b.exact);
+  });
+
+  it("takes a module symbol's file name out with its path", () => {
+    const a = renameStableKeys("module a.ts in src/a.ts\nbody", "src/a.ts");
+    const b = renameStableKeys("module b.ts in src/b.ts\nbody", "src/b.ts");
+    expect(a.exact).toBe(b.exact);
+    // ...but not a function that happens to share it.
+    expect(renameStableKeys("function a.ts in src/a.ts\nbody", "src/a.ts").exact).not.toBe(
+      renameStableKeys("function b.ts in src/b.ts\nbody", "src/b.ts").exact,
+    );
+  });
+
+  it("differs whenever the body differs", () => {
+    expect(renameStableKeys(text("src/a.ts", "src"), "src/a.ts").exact).not.toBe(
+      renameStableKeys(text("src/b.ts", "src", "  return 2;"), "src/b.ts").exact,
+    );
+  });
+
+  it("leaves a header that does not name the path as it is", () => {
+    const k = renameStableKeys("function f in elsewhere.ts\nx", "src/a.ts");
+    expect(k.exact).toBe(computeSymbolHash("function f in elsewhere.ts\nx"));
+  });
+});
+
+class ReusingStore extends MockEmbeddingStore {
+  stored: StoredSymbolVector[] = [];
+  reads: string[][] = [];
+  async getStoredVectors(_projectId: string, symbolIds: string[]): Promise<StoredSymbolVector[]> {
+    this.reads.push(symbolIds);
+    return this.stored.filter((v) => symbolIds.includes(v.symbolId));
+  }
+}
+
+describe("SymbolEmbeddingPipeline — reuse across a rename (#2346)", () => {
+  const moved = makeSymbol({
+    symbolId: "new-1",
+    filePath: "src/renamed.ts",
+    signature: undefined,
+    docstring: undefined,
+  });
+  const oldText = formatSymbolForEmbedding({
+    ...moved,
+    symbolId: "old-1",
+    filePath: "src/index.ts",
+  });
+  const oldVector = Array(384).fill(0.7);
+
+  const storeWithOld = () => {
+    const store = new ReusingStore();
+    store.hashes.set("old-1", computeSymbolHash(oldText));
+    store.stored.push({
+      symbolId: "old-1",
+      vector: oldVector,
+      text: oldText,
+      filePath: "src/index.ts",
+      embeddingModel: "test-model",
+    });
+    return store;
+  };
+
+  it("writes the gone symbol's vector under the new id, with the new path and text, and embeds nothing", async () => {
+    const store = storeWithOld();
+    const embed = new MockEmbedService();
+    const result = await new SymbolEmbeddingPipeline(store, embed).run({
+      projectId: "p",
+      symbols: [moved],
+    });
+
+    expect(embed.callCount).toBe(0);
+    expect(result).toMatchObject({ embedded: 0, reused: 1, skipped: 0, deleted: 1 });
+    expect(store.upserted).toHaveLength(1);
+    const row = store.upserted[0]!;
+    expect(row.vector).toBe(oldVector);
+    expect(row.metadata).toMatchObject({
+      symbolId: "new-1",
+      filePath: "src/renamed.ts",
+      text: formatSymbolForEmbedding(moved),
+      contentHash: computeSymbolHash(formatSymbolForEmbedding(moved)),
+      embeddingModel: "test-model",
+    });
+    expect(store.deletedIds).toEqual(["old-1"]);
+  });
+
+  it("embeds a symbol whose content changed, reusing nothing", async () => {
+    const store = storeWithOld();
+    const embed = new MockEmbedService();
+    const changed = { ...moved, bodyLines: ["  return 2;"] };
+    const result = await new SymbolEmbeddingPipeline(store, embed).run({
+      projectId: "p",
+      symbols: [changed],
+    });
+    expect(embed.callCount).toBe(1);
+    expect(result).toMatchObject({ embedded: 1, reused: 0 });
+  });
+
+  it("reads nothing back when no vector is stale, or the store cannot read one", async () => {
+    const store = storeWithOld();
+    store.hashes.clear();
+    await new SymbolEmbeddingPipeline(store, new MockEmbedService()).run({
+      projectId: "p",
+      symbols: [moved],
+    });
+    expect(store.reads).toEqual([]);
+
+    const plain = new MockEmbeddingStore();
+    plain.hashes.set("old-1", "h");
+    const embed = new MockEmbedService();
+    const r = await new SymbolEmbeddingPipeline(plain, embed).run({
+      projectId: "p",
+      symbols: [moved],
+    });
+    expect(r).toMatchObject({ embedded: 1, reused: 0 });
+  });
+
+  it("reads stale vectors in bounded chunks and skips one with no text or no vector", async () => {
+    const store = storeWithOld();
+    // The match sits in the second chunk of stale ids: 600 ids come first.
+    const oldHash = store.hashes.get("old-1")!;
+    store.hashes.clear();
+    for (let i = 0; i < 600; i++) store.hashes.set(`gone-${i}`, "h");
+    store.hashes.set("old-1", oldHash);
+    store.stored.unshift(
+      {
+        symbolId: "gone-0",
+        vector: [],
+        text: oldText,
+        filePath: "src/index.ts",
+        embeddingModel: "m",
+      },
+      { symbolId: "gone-1", vector: [1], text: "", filePath: "src/index.ts", embeddingModel: "m" },
+    );
+    const result = await new SymbolEmbeddingPipeline(store, new MockEmbedService()).run({
+      projectId: "p",
+      symbols: [moved],
+    });
+    expect(store.reads.every((ids) => ids.length <= 500)).toBe(true);
+    expect(store.reads.length).toBe(2);
+    expect(result.reused).toBe(1);
+    expect(store.upserted[0]!.vector).toBe(oldVector);
+  });
+
+  it("reuses one stored vector for two new symbols with the same content", async () => {
+    const store = storeWithOld();
+    const embed = new MockEmbedService();
+    const copy = { ...moved, symbolId: "new-2", filePath: "src/copy.ts" };
+    const result = await new SymbolEmbeddingPipeline(store, embed).run({
+      projectId: "p",
+      symbols: [moved, copy],
+    });
+    expect(embed.callCount).toBe(0);
+    expect(result.reused).toBe(2);
+    expect(store.upserted.map((r) => r.metadata.symbolId).sort()).toEqual(["new-1", "new-2"]);
   });
 });

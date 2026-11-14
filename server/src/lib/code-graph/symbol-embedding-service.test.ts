@@ -671,6 +671,44 @@ describe("createSymbolEmbeddingStore", () => {
     // An old-generation vector is not a reason to SKIP re-embedding a symbol.
     expect(await symbolStore.getExistingHashes(PROJECT)).toEqual(new Map());
   });
+
+  it("#2346 — reads a gone symbol's vector back for reuse, the active model's only", async () => {
+    const symbolStore = createSymbolEmbeddingStore(deps());
+    const vrow = (id: string, embeddingModel: string) => ({
+      id,
+      vector: [1, 2, 3],
+      metadata: {
+        chunkId: id,
+        documentId: id,
+        filename: `src/${id}.ts`,
+        position: 0,
+        text: `function ${id} in src/${id}.ts`,
+        embeddingModel,
+      },
+    });
+    await store.upsert(symbolVectorsId(PROJECT), [
+      vrow("gone", MODEL),
+      vrow("gone-old", "previous-generation"),
+    ]);
+
+    expect(await symbolStore.getStoredVectors!(PROJECT, ["gone", "gone-old", "never"])).toEqual([
+      {
+        symbolId: "gone",
+        vector: [1, 2, 3],
+        text: "function gone in src/gone.ts",
+        filePath: "src/gone.ts",
+        embeddingModel: MODEL,
+      },
+    ]);
+    expect(await symbolStore.getStoredVectors!(PROJECT, [])).toEqual([]);
+    // A store that cannot read rows back offers no reuse at all.
+    const plain = Object.assign(Object.create(Object.getPrototypeOf(store)), store, {
+      getRows: undefined,
+    }) as LocalVectorStore;
+    expect(
+      createSymbolEmbeddingStore({ ...deps(), store: plain }).getStoredVectors,
+    ).toBeUndefined();
+  });
 });
 
 // ---- The Prisma repo + the port -------------------------------------------

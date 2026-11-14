@@ -49,6 +49,7 @@ import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-
 import { applyClarificationsToRequirements } from "./clarification-enrichment.js";
 import { ELICITED_NFR_LABEL } from "./elicited-nfr-requirements.js";
 import { parseRequirementLabels } from "./requirement-labels.js";
+import { evidenceFindingIds, sourceIdsOfFindings, unionStoredSourceIds } from "./source-ids.js";
 import {
   ambiguousPromotionRecords,
   promotionMatchingRecord,
@@ -245,6 +246,21 @@ export async function applyWithheldReplacement(input: {
         } else if (step.kind === "update") {
           if (await updateReviewed(tx, step.current, step.proposed, input.actorId)) {
             result.updated++;
+            // #2446 — the row keeps its evidence and takes the proposal's
+            // text: it now rests on the sources of both. Not content: no version.
+            const stored = await tx.requirement.findUniqueOrThrow({
+              where: { id: step.current.id },
+              select: { sourceIds: true },
+            });
+            await tx.requirement.update({
+              where: { id: step.current.id },
+              data: {
+                sourceIds: unionStoredSourceIds(
+                  stored.sourceIds,
+                  await proposedSourceIds(tx, input.analysisId, step.proposed),
+                ),
+              },
+            });
           }
           rowIdByIndex[indexOf(step.proposed)] = step.current.id;
           // #1202 — the row now IS the newer run's structured requirement, so
@@ -281,6 +297,8 @@ export async function applyWithheldReplacement(input: {
                 : {}),
               analysisId: input.analysisId,
               projectId: input.projectId,
+              // #2446 — the sources of the findings it rests on.
+              sourceIds: await proposedSourceIds(tx, input.analysisId, step.proposed),
               ...(pair.proposal.reviewStatus
                 ? { reviewStatus: heldRow ? "draft" : pair.proposal.reviewStatus }
                 : {}),
@@ -365,6 +383,23 @@ export async function applyWithheldReplacement(input: {
     );
   }
   return outcome;
+}
+
+/**
+ * #2446 — the stored sources of a proposed row: those of the findings its
+ * labels cite. A finding a later run replaced no longer reads, so the row
+ * records none (`sourceIdsOfFindings`).
+ */
+function proposedSourceIds(
+  tx: Prisma.TransactionClient,
+  analysisId: string,
+  proposed: WithheldProposalRow,
+): Promise<string | null> {
+  return sourceIdsOfFindings(
+    tx,
+    analysisId,
+    evidenceFindingIds(parseRequirementLabels(proposed.labels)),
+  );
 }
 
 /**

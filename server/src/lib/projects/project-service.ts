@@ -311,6 +311,11 @@ export async function deleteProject(projectId: string, actor: ProjectActor) {
   // re-judged now that the write has committed.
   await evictProjectRoom(projectId);
   await fireArchiveHooks(projectId);
+  // #2338 — commit text can carry secrets and personal data; a deleted
+  // project's connectors are never deleted one by one, so their history goes
+  // here. Best effort: it never throws.
+  const { removeProjectHistories } = await import("../connectors/repo/history-refresh.js");
+  await removeProjectHistories(projectId);
 }
 
 export async function getProject(projectId: string) {

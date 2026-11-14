@@ -32,11 +32,12 @@ describe("arms", () => {
       "tools-only",
       "tools-primitives",
       "tools-context",
+      "tools-history",
     ]) {
       expect(parseArm(arm)).toBe(arm);
     }
     expect(() => parseArm("both")).toThrow(
-      /default, off, on, no-tools, no-fused, no-rerank, tools-only, tools-primitives, tools-context/,
+      /default, off, on, no-tools, no-fused, no-rerank, tools-only, tools-primitives, tools-context, tools-history/,
     );
     // An inherited Object key is not an arm.
     expect(() => parseArm("toString")).toThrow(/not toString/);
@@ -77,8 +78,10 @@ describe("arms", () => {
     expect(env.OTHER).toBe("kept");
     const on = applyArmEnv(env, "on");
     for (const k of ARM_FLAGS) {
-      expect(env[k]).toBe("1");
-      expect(on[k]).toBe("1");
+      // #2338 — every flag but the history tool, which only `tools-history` sets.
+      const want = k === "CHAT_CHANGE_HISTORY_TOOL" ? "0" : "1";
+      expect(env[k]).toBe(want);
+      expect(on[k]).toBe(want);
     }
   });
 
@@ -96,7 +99,9 @@ describe("arms", () => {
     } as const;
     for (const [arm, flag] of Object.entries(dropped)) {
       applyArmEnv(env, arm as keyof typeof dropped);
-      for (const k of ARM_FLAGS) expect(env[k]).toBe(k === flag ? "0" : "1");
+      for (const k of ARM_FLAGS) {
+        expect(env[k]).toBe(k === flag || k === "CHAT_CHANGE_HISTORY_TOOL" ? "0" : "1");
+      }
     }
     applyArmEnv(env, "tools-only");
     for (const k of ARM_FLAGS) expect(env[k]).toBe(k === "CHAT_CODE_SEARCH_TOOLS" ? "1" : "0");
@@ -114,6 +119,38 @@ describe("arms", () => {
       expect(env[k]).toBe(
         k === "CHAT_CODE_SEARCH_TOOLS" || k === "CHAT_CODE_CONTEXT_TOOL" ? "1" : "0",
       );
+    }
+    // #2338 — the history arm is tools-only plus exactly get_change_history.
+    expect(ARM_FLAGS).toContain("CHAT_CHANGE_HISTORY_TOOL");
+    applyArmEnv(env, "tools-history");
+    for (const k of ARM_FLAGS) {
+      expect(env[k]).toBe(
+        k === "CHAT_CODE_SEARCH_TOOLS" || k === "CHAT_CHANGE_HISTORY_TOOL" ? "1" : "0",
+      );
+    }
+    expect(embedRuntimeFor("tools-history")).toBe("worker");
+  });
+
+  it("turns the history tool on in the tools-history arm only, so older arms keep their meaning", () => {
+    // #2484 review — the tool needs each product's history fetched from its
+    // host: an `on` or `no-*` arm that set it would change meaning and need the network.
+    for (const arm of [
+      "off",
+      "on",
+      "no-tools",
+      "no-fused",
+      "no-rerank",
+      "tools-only",
+      "tools-primitives",
+      "tools-context",
+      "tools-history",
+    ] as const) {
+      const env: NodeJS.ProcessEnv = {};
+      applyArmEnv(env, arm);
+      expect([arm, env.CHAT_CHANGE_HISTORY_TOOL]).toEqual([
+        arm,
+        arm === "tools-history" ? "1" : "0",
+      ]);
     }
   });
 });

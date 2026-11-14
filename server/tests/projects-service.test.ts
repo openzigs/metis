@@ -42,6 +42,10 @@ const workspaces = new Map<string, MockWorkspace>();
 const evictProjectRoom = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => {}));
 vi.mock("../src/lib/socket/project-room-eviction.js", () => ({ evictProjectRoom }));
 
+// #2338 / #2484 review — a deleted project's commit history goes with it.
+const removeProjectHistories = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => 0));
+vi.mock("../src/lib/connectors/repo/history-refresh.js", () => ({ removeProjectHistories }));
+
 vi.mock("../src/lib/prisma.js", () => ({
   prisma: {
     auditLog: { create: vi.fn(async () => ({})) },
@@ -342,13 +346,16 @@ describe("deleteProject", () => {
     expect(after).toBeNull();
     expect(hook).toHaveBeenCalledWith(p.id);
     expect(evictProjectRoom).toHaveBeenCalledWith(p.id);
+    expect(removeProjectHistories).toHaveBeenCalledWith(p.id);
   });
 
   it("rejects non-owners", async () => {
     const p = await createProject({ name: "A", slug: "a" }, owner);
     evictProjectRoom.mockClear();
+    removeProjectHistories.mockClear();
     await expect(deleteProject(p.id, someoneElse)).rejects.toMatchObject({ status: 403 });
     expect(evictProjectRoom).not.toHaveBeenCalled();
+    expect(removeProjectHistories).not.toHaveBeenCalled();
   });
 });
 

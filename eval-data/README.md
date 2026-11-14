@@ -866,21 +866,23 @@ Each question is its own one-turn chat session, run through production's chat pi
 `eval:chat-cache`. A question scoped to both products is asked the way chat takes it today,
 as an unscoped session with no retrieval (`chatSessionScope`, mirroring
 `server/src/routes/ai.ts`). Every arm sets `CHAT_CODE_SEARCH_TOOLS`,
-`CHAT_FUSED_CODE_RETRIEVAL`, `RAG_RERANK`, `CHAT_CODE_SEARCH_PRIMITIVES` and
-`CHAT_CODE_CONTEXT_TOOL` itself, whatever the shell or `.env` says (#2243, #2327, #2412):
+`CHAT_FUSED_CODE_RETRIEVAL`, `RAG_RERANK`, `CHAT_CODE_SEARCH_PRIMITIVES`,
+`CHAT_CODE_CONTEXT_TOOL` and `CHAT_CHANGE_HISTORY_TOOL` itself, whatever the shell or `.env`
+says (#2243, #2327, #2412, #2338):
 
-| Arm | Code-search tools | Fused code retrieval | Reranker | Search primitives | Context tool |
-|---|---|---|---|---|---|
-| `off` | off | off | off | off | off |
-| `on` | on | on | on | on | on |
-| `no-tools` | off | on | on | on | on |
-| `no-fused` | on | off | on | on | on |
-| `no-rerank` | on | on | off | on | on |
-| `tools-only` | on | off | off | off | off |
-| `tools-primitives` | on | off | off | on | off |
-| `tools-context` | on | off | off | off | on |
-| `mcp` | on | off | off | off | off |
-| `default` | unset: the server's default | unset | unset | unset | unset |
+| Arm | Code-search tools | Fused code retrieval | Reranker | Search primitives | Context tool | History tool |
+|---|---|---|---|---|---|---|
+| `off` | off | off | off | off | off | off |
+| `on` | on | on | on | on | on | off |
+| `no-tools` | off | on | on | on | on | off |
+| `no-fused` | on | off | on | on | on | off |
+| `no-rerank` | on | on | off | on | on | off |
+| `tools-only` | on | off | off | off | off | off |
+| `tools-primitives` | on | off | off | on | off | off |
+| `tools-context` | on | off | off | off | on | off |
+| `tools-history` | on | off | off | off | off | on |
+| `mcp` | on | off | off | off | off | off |
+| `default` | unset: the server's default | unset | unset | unset | unset | unset |
 
 Each session in the JSON records the tools it called, in order (`toolNames`, #2327).
 
@@ -894,6 +896,16 @@ which were measured without them; `tools-only` is the arm that still matches #22
 Since #2412 they also set `CHAT_CODE_CONTEXT_TOOL=1`, so they offer `search_code_context`, and an
 `on` or `no-*` run from then on does not reproduce an earlier one either. `tools-only` and
 `tools-primitives` set it off, so they still match their earlier runs.
+
+#2338 adds `get_change_history` (`CHAT_CHANGE_HISTORY_TOOL`), and only `tools-history` turns it
+on: the `on` and `no-*` arms keep it off, so they keep their meaning and run with no network
+beyond the model. The question set (version 3) adds three "when and why did this change"
+questions, `H1`–`H3`, whose facts come from the commit history of `internal/model/feed.go`
+before the pinned commit, so an arm's totals from version 3 on are not comparable with earlier
+ones. The `tools-history` arm first fetches each product's history repository at its pinned commit
+(docs/decisions/0023), once; the window is the year before that commit, so the answers do not
+age out. `tools-history` paired with `tools-only` measures the tool: the `H*` questions for the
+gain, the rest for a regression. The tool stays off by default until that pair is run.
 
 An arm with the reranker on runs the embedder inline so the reranker can share the main
 thread (#222). On macOS such an arm can abort with `libc++abi: … mutex lock failed` as it

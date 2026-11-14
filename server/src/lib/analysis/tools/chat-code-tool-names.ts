@@ -54,10 +54,24 @@ export const CHAT_CODE_TOOL_DESCRIPTORS: ReadonlyArray<{
     risk: "low",
   },
   {
+    // #2346 — a file's symbols and spans (offered when CHAT_FILE_OUTLINE_TOOL is on).
+    name: "get_file_outline",
+    description:
+      "List the symbols one file declares, each with its kind, file:line span and parent symbol.",
+    risk: "low",
+  },
+  {
     // #2329 — whole symbols for a question (offered when CHAT_CODE_CONTEXT_TOOL is on).
     name: "search_code_context",
     description:
       "Whole functions and classes for a question about the code, adjacent matches merged, each with a file:line locator.",
+    risk: "low",
+  },
+  {
+    // #2338 — commit history (offered when CHAT_CHANGE_HISTORY_TOOL is on).
+    name: "get_change_history",
+    description:
+      "When and why code changed: the commits that touched a file, line range or symbol, with date, subject and link.",
     risk: "low",
   },
 ];
