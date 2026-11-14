@@ -16,6 +16,7 @@
  *
  * #2292 — the check holds across a document's concurrent descriptions (`BudgetGate`), and a
  * call cut off by its deadline is metered on what the provider reported before it stopped.
+ * #2317 — and across the project's documents being ingested at once.
  */
 import type { AIProvider, ChatMessage, TokenUsage } from "../ai/types.js";
 import { partialUsageOf } from "../ai/partial-usage.js";
@@ -259,11 +260,11 @@ async function noteUnmetered(
 }
 
 /**
- * #2292 — admits one document's description calls against the project's budget.
+ * #2292 — admits description calls against the project's budget.
  *
  * `docxToMarkdown` describes several images at once, and a budget check reads only usage
  * already metered, so every concurrent call would pass a check made before any of them was
- * written. Each call admitted here therefore reserves what one call of this document costs:
+ * written. Each call admitted here therefore reserves what one call costs:
  * a call starts alongside others only while the project's remaining budget covers it and
  * every call in flight. Until a call has been metered that cost is estimated
  * ({@link ESTIMATED_TOKENS_PER_DESCRIPTION}), so a provider that never reports usage does not
@@ -271,18 +272,31 @@ async function noteUnmetered(
  * fit waits for one in flight to finish and be metered, then checks again. That wait is reported
  * to the converter's clock, so it counts against the bounded wait for budget room and not against
  * the image's own call deadline. A project with no budget is never held back.
+ *
+ * #2317 — one gate per project, shared by every document of it being ingested at once
+ * ({@link withProjectGate}), so two Word files reserve against the same remaining budget and
+ * each sees the other's calls in flight. A check that a call finished during is read again: its
+ * read may have begun before that call's write landed, and with nothing then in flight a stale
+ * snapshot would admit a call the budget no longer covers.
  */
 class BudgetGate {
   private inFlight = 0;
-  /** The most tokens one call of this document has counted against the budget. */
+  /** Calls released so far; a check during which this moved may predate a release's write. */
+  private releases = 0;
+  /** The most tokens one call of this project's current documents has counted against the budget. */
   private perCall: number | undefined;
   private readonly waiting = new Set<() => void>();
+  /** Calls between entering {@link withProjectGate} and leaving it; the gate is dropped at zero. */
+  users = 0;
 
   constructor(private readonly projectId: string) {}
 
   async admit(signal?: AbortSignal, clock?: DescriptionClock): Promise<void> {
     for (;;) {
+      const releases = this.releases;
       const snapshot = await checkBudget(this.projectId);
+      // #2317 — a call finished during the check: read the ledger again, after its write.
+      if (this.releases !== releases) continue;
       if (this.fits(snapshot)) {
         this.inFlight += 1;
         clock?.admitted();
@@ -300,6 +314,7 @@ class BudgetGate {
 
   release(): void {
     this.inFlight -= 1;
+    this.releases += 1;
     const wake = [...this.waiting];
     this.waiting.clear();
     for (const w of wake) w();
@@ -329,22 +344,47 @@ class BudgetGate {
   }
 }
 
+/** #2317 — the gate of each project with a description waiting or in flight. */
+const projectGates = new Map<string, BudgetGate>();
+
+/**
+ * Run `use` on the project's shared gate, created on first use and dropped once no call holds
+ * it, so a project's next ingest starts again from the estimate.
+ */
+async function withProjectGate<T>(
+  projectId: string,
+  use: (gate: BudgetGate) => Promise<T>,
+): Promise<T> {
+  let gate = projectGates.get(projectId);
+  if (!gate) {
+    gate = new BudgetGate(projectId);
+    projectGates.set(projectId, gate);
+  }
+  gate.users += 1;
+  try {
+    return await use(gate);
+  } finally {
+    gate.users -= 1;
+    if (gate.users === 0) projectGates.delete(projectId);
+  }
+}
+
 /** The project's metered, budget-gated describer on `provider`. */
 function budgetedDescriber(scope: ImageDescriptionScope, provider: AIProvider): ImageDescriber {
   if (!canDescribeImages(provider)) return async () => null;
-  const gate = new BudgetGate(scope.projectId);
-  const call = providerImageDescriber(provider, {
-    onUsage: async (usage, model) => gate.spent(await meter(scope, provider, usage, model)),
-    onUnmetered: (err) => noteUnmetered(scope, provider, err),
-  });
-  return async (image, signal, clock) => {
-    await gate.admit(signal, clock);
-    try {
-      return await call(image, signal);
-    } finally {
-      gate.release();
-    }
-  };
+  return (image, signal, clock) =>
+    withProjectGate(scope.projectId, async (gate) => {
+      const call = providerImageDescriber(provider, {
+        onUsage: async (usage, model) => gate.spent(await meter(scope, provider, usage, model)),
+        onUnmetered: (err) => noteUnmetered(scope, provider, err),
+      });
+      await gate.admit(signal, clock);
+      try {
+        return await call(image, signal);
+      } finally {
+        gate.release();
+      }
+    });
 }
 
 /**
