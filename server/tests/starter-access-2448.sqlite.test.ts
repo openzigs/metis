@@ -458,10 +458,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(row.sourceIds).toBeNull();
       expect(row.agentResult?.readSourceIds).toBeNull();
       // It may rest on anything the project holds: only a reader who can see all of it.
-      expect((await snapshotAs("bob", id)).agents.at(-1)!.findings[0]!.title).toBe(
-        RESTRICTED_SOURCE_TITLE,
-      );
-      expect((await snapshotAs("alice", id)).agents.at(-1)!.findings[0]!.title).toBe(FINDING_TITLE);
+      expect(
+        (await snapshotAs("bob", id)).agents.find((a) => a.agentKey === "code")!.findings[0]!.title,
+      ).toBe(RESTRICTED_SOURCE_TITLE);
+      expect(
+        (await snapshotAs("alice", id)).agents.find((a) => a.agentKey === "code")!.findings[0]!
+          .title,
+      ).toBe(FINDING_TITLE);
     });
 
     it("a requirement synthesised on Alice's run rests on the run as a whole", async () => {

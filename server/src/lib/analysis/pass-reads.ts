@@ -302,6 +302,21 @@ export async function readsWithStarterAccess(
   return run?.sourceAccess === SOURCE_ACCESS_STARTER;
 }
 
+/**
+ * Whether what run `analysisId` wrote may rest on a restricted read: a
+ * `starter` run whose stored passes read a restricted file, or whose read set
+ * cannot be told (fail closed). A run whose passes all read nothing restricted
+ * (a project with no access lists) is as open as a `shared` one.
+ */
+export async function mayRestOnRestrictedRead(
+  analysisId: string,
+  db: Pick<PrismaClient, "analysis" | "agentResult"> = defaultPrisma,
+): Promise<boolean> {
+  if (!(await readsWithStarterAccess(analysisId, db))) return false;
+  const stored = await storedReadSet(db, analysisId);
+  return stored === null || stored.size > 0;
+}
+
 /** The stored form of a read set (`AgentResult.readSourceIds`). */
 export function serializeReadSet(documentIds: readonly string[]): string {
   return serializeSourceIds({ documentIds: [...documentIds], chunkIds: [] });

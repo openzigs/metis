@@ -255,8 +255,8 @@ import { seedRequirementCodeLinksFromFindings } from "../traceability/seed-code-
 import { persistAgentPhaseResults, runEnabledCustomAgents } from "./custom-agent-phase.js";
 import {
   currentPassReads,
+  mayRestOnRestrictedRead,
   passCodeAccess,
-  readsWithStarterAccess,
   withPassReads,
 } from "./pass-reads.js";
 import { redactRunCapability } from "./source-redaction.js";
@@ -3390,11 +3390,12 @@ export class AnalysisOrchestrator {
       // #2448 — the reviewed list, its web research and its approvals rest on
       // the run as a whole, with no record of their own: on a run a person
       // started they are never seeded from a code finding, which may rest on
-      // a restricted file only that person can read.
-      // A marker that cannot be read is treated as `starter` (fail closed).
-      const starter = await readsWithStarterAccess(input.analysisId).catch(() => true);
+      // a restricted file only that person can read. A run whose passes read
+      // nothing restricted seeds from its code findings as a shared run does.
+      // A marker or read set that cannot be read is treated as restricted.
+      const restricted = await mayRestOnRestrictedRead(input.analysisId).catch(() => true);
       const flat = (await readFlattenedFindings(input.analysisId)).filter(
-        (f) => !starter || f.agentKey !== "code",
+        (f) => !restricted || f.agentKey !== "code",
       );
       const docFindings = flat.filter((f) => f.agentKey === "document");
       const source = docFindings.length > 0 ? docFindings : flat;

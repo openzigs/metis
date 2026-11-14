@@ -15,6 +15,7 @@ vi.mock("../rag/acl.js", async (importOriginal) => ({
 import {
   beginPassReads,
   currentPassReads,
+  mayRestOnRestrictedRead,
   passCodeAccess,
   readSetForPersist,
   readsWithStarterAccess,
@@ -289,5 +290,17 @@ describe("withPassReads and readSetForPersist (#2448)", () => {
       await readsWithStarterAccess("a", fakeDb({ projectId: "p1", sourceAccess: "shared" })),
     ).toBe(false);
     expect(await readsWithStarterAccess("a", fakeDb(null))).toBe(false);
+  });
+
+  it("mayRestOnRestrictedRead: only a starter run that read a restricted file, or cannot tell", async () => {
+    const shared = { projectId: "p1", sourceAccess: "shared" };
+    const read = (r: string | null) => [{ agentKey: "code", readSourceIds: r }];
+    expect(await mayRestOnRestrictedRead("a", fakeDb(shared, [], read(null)))).toBe(false);
+    expect(await mayRestOnRestrictedRead("a", fakeDb(STARTER, [], read(ids([]))))).toBe(false);
+    expect(await mayRestOnRestrictedRead("a", fakeDb(STARTER))).toBe(false);
+    expect(await mayRestOnRestrictedRead("a", fakeDb(STARTER, [], read(ids(["d-vault"]))))).toBe(
+      true,
+    );
+    expect(await mayRestOnRestrictedRead("a", fakeDb(STARTER, [], read(null)))).toBe(true);
   });
 });
