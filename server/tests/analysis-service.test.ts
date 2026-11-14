@@ -451,6 +451,20 @@ afterEach(() => {
 });
 
 describe("createAnalysis", () => {
+  it("marks a person's run starter, and honours an explicit sourceAccess (#2448)", async () => {
+    const base = {
+      projectId: "proj-abcdefghij",
+      startedById: "user-1234567890",
+      agentKeys: [],
+    };
+    const { prisma } = await import("../src/lib/prisma.js");
+    const created = () => vi.mocked(prisma.analysis.create).mock.calls.at(-1)![0].data.sourceAccess;
+    await createAnalysis(base);
+    expect(created()).toBe("starter");
+    await createAnalysis({ ...base, sourceAccess: "shared" });
+    expect(created()).toBe("shared");
+  });
+
   it("persists agentKeys and document subset in metadata", async () => {
     const a = await createAnalysis({
       projectId: "proj-abcdefghij",

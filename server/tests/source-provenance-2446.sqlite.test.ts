@@ -230,7 +230,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     describe("a run's marker", () => {
-      it("a run started now reads `shared`; a run from before #2446 keeps NULL", async () => {
+      it("a run a person starts reads `starter` (#2448), a scheduled one `shared`; a run from before #2446 keeps NULL", async () => {
         const started = await createAnalysis({
           projectId: PROJECT,
           startedById: ALICE,
@@ -239,6 +239,15 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         });
         expect(
           (await db.analysis.findUniqueOrThrow({ where: { id: started.id } })).sourceAccess,
+        ).toBe("starter");
+        const scheduled = await createAnalysis({
+          projectId: PROJECT,
+          startedById: "system",
+          agentKeys: ["code"],
+          title: "Nightly",
+        });
+        expect(
+          (await db.analysis.findUniqueOrThrow({ where: { id: scheduled.id } })).sourceAccess,
         ).toBe("shared");
         // A row written without the marker (as every row before the migration
         // was) is not backfilled: it reads NULL, the shared-audience rule.
