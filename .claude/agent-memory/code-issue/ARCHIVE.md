@@ -101,3 +101,7 @@ memory files it points to stay in the store.
 - [Cap gendoc-sized ids](project_gendoc-ids-are-long.md) — id caps (cursor, schema, path) must fit ~94-char gendoc- ids (#469)
 - [Tests can pin a bug](project_tests-can-lock-in-bugs.md) — grep tests for the old constant before calling it a regression (#483)
 - [Workspace delete is soft](project_workspace-delete-is-soft.md) — filter deletedAt in membership scope and at sinks (#549, #561)
+- [Run 10 fix review lessons](project_run10-fix-review-lessons.md) — plain-text views; metadata writers; AbortError mocks; throttle (#1593-#1601) (retired 2026-11-14: pointer budget; the file stays)
+- [Localization eval lessons](project_localization-eval-and-gap-retrieval-lessons.md) — cap spend; unpriced; stale DB=A7O; flags forced (retired 2026-11-14: pointer budget; the file stays)
+- [Stacked PR squash conflicts](project_stacked-pr-squash-conflicts.md) — keep HEAD; union scripts/exports (retired 2026-11-14: pointer budget; the file stays)
+- [Borrow/governing lessons](project_review-lessons-borrowed-and-governing.md) — filter before dedupe; regex FNs; sibling merged? (retired 2026-11-14: pointer budget; the file stays)
