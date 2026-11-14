@@ -64,9 +64,17 @@ function listText(items: readonly string[]): string {
     : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
 }
 
-/** The marker on a required field's label. */
+/**
+ * The marker on a required field's label. Hidden from assistive technology:
+ * the input's `required` already says so, and the label stays the field's name.
+ */
 function Required() {
-  return <span className="text-muted-foreground"> (required)</span>;
+  return (
+    <span aria-hidden="true" className="text-muted-foreground">
+      {" "}
+      (required)
+    </span>
+  );
 }
 
 export function GoverningUploadDialog({ workspaceId, target, onClose }: Props) {

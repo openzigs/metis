@@ -85,6 +85,15 @@ describe("parseMentions", () => {
   it("normalises to lowercase", () => {
     expect(parseMentions("@Alice @BOB")).toEqual(["alice", "bob"]);
   });
+
+  // #2220 — the same handles the UI shows as mention chips.
+  it("ends a handle before a trailing dot or dash, so a sentence-final mention notifies", () => {
+    expect(parseMentions("Thanks @priya. And @bo-")).toEqual(["priya", "bo"]);
+  });
+
+  it("does not read an email address as a mention", () => {
+    expect(parseMentions("mail ana@example.com")).toEqual([]);
+  });
 });
 
 describe("resolveUsernames", () => {

@@ -19,6 +19,14 @@ describe("splitMentions", () => {
     ]);
   });
 
+  it("allows a handle starting with an underscore, as the server does", () => {
+    expect(splitMentions("cc @_svc.")).toEqual([
+      { text: "cc " },
+      { mention: "_svc" },
+      { text: "." },
+    ]);
+  });
+
   it("leaves an email address, a lone @ and plain text alone", () => {
     expect(splitMentions("mail ana@example.com @ now")).toEqual([
       { text: "mail ana@example.com @ now" },

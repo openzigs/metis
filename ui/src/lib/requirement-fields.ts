@@ -70,17 +70,33 @@ export function requirementListItems(field: string, value: unknown): string[] | 
   return field === "labels" ? items.filter((l) => !isHiddenRequirementLabel(l)) : items;
 }
 
-/** The items only one side holds: what a list change removed and what it added. */
+/**
+ * What a list change removed and added, counted per occurrence so a
+ * duplicated item is an addition, and whether only the order changed (#2220:
+ * compared as sets, a reorder or a duplicate read as "no field changes").
+ */
 export function listChange(
   from: readonly string[],
   to: readonly string[],
-): { removed: string[]; added: string[] } {
-  const before = new Set(from);
-  const after = new Set(to);
-  return {
-    removed: from.filter((x) => !after.has(x)),
-    added: to.filter((x) => !before.has(x)),
-  };
+): { removed: string[]; added: string[]; reordered: boolean } {
+  const unmatched = new Map<string, number>();
+  for (const x of to) unmatched.set(x, (unmatched.get(x) ?? 0) + 1);
+  const removed: string[] = [];
+  for (const x of from) {
+    const left = unmatched.get(x) ?? 0;
+    if (left > 0) unmatched.set(x, left - 1);
+    else removed.push(x);
+  }
+  const added: string[] = [];
+  for (const x of [...to].reverse()) {
+    const left = unmatched.get(x) ?? 0;
+    if (left > 0) {
+      unmatched.set(x, left - 1);
+      added.unshift(x);
+    }
+  }
+  const reordered = removed.length + added.length === 0 && from.some((x, i) => x !== to[i]);
+  return { removed, added, reordered };
 }
 
 /** A scalar value as text; `—` for none. Markers never show (#1581). */

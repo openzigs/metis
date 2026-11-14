@@ -312,6 +312,17 @@ describe("RequirementHistoryTab", () => {
     expect(screen.queryByTestId("history-original-version")).toBeNull();
     unmount();
 
+    // Only the source decides here: version 0 is not listed, but with no edit
+    // recorded the "original" is the current text, not an earlier version.
+    list.mockResolvedValueOnce({
+      ...page([entry(1)]),
+      original: { version: 0, snapshot: { title: "T" }, source: "current" },
+    });
+    const second = render(<RequirementHistoryTab requirementId="req-1" />);
+    await screen.findByRole("button", { name: /Version 1/ });
+    expect(screen.queryByTestId("history-original-version")).toBeNull();
+    second.unmount();
+
     list.mockResolvedValueOnce({
       ...page([entry(2), entry(1)]),
       original: { version: 1, snapshot: { title: "T" }, source: "reversed" },

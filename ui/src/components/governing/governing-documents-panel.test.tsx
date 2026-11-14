@@ -578,6 +578,9 @@ describe("GoverningDocumentsPanel", () => {
     for (const label of [/^File/, /^Title/, /^Revision label/, /^Effective date/]) {
       expect(within(dialog).getByLabelText(label).closest("div")).toHaveTextContent("(required)");
     }
+    // The visible marker is for sighted readers; the input's own `required`
+    // tells a screen reader, so its name is not "Title (required)".
+    expect(within(dialog).getByRole("textbox", { name: "Title" })).toBeRequired();
     const upload = within(dialog).getByRole("button", { name: "Upload" });
     expect(upload).toBeDisabled();
     expect(upload).toHaveAccessibleDescription(

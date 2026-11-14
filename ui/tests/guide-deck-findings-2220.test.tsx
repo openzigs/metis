@@ -133,7 +133,26 @@ describe("requirement fields for readers (#2220)", () => {
   });
 
   it("finds what a list change removed and added", () => {
-    expect(listChange(["a", "b"], ["b", "c"])).toEqual({ removed: ["a"], added: ["c"] });
+    expect(listChange(["a", "b"], ["b", "c"])).toEqual({
+      removed: ["a"],
+      added: ["c"],
+      reordered: false,
+    });
+  });
+
+  it("counts a duplicated item, and reports a pure reorder", () => {
+    expect(listChange(["a"], ["a", "a"])).toEqual({ removed: [], added: ["a"], reordered: false });
+    expect(listChange(["a", "a", "b"], ["a", "b"])).toEqual({
+      removed: ["a"],
+      added: [],
+      reordered: false,
+    });
+    expect(listChange(["a", "b"], ["b", "a"])).toEqual({ removed: [], added: [], reordered: true });
+    expect(listChange(["a", "b"], ["a", "b"])).toEqual({
+      removed: [],
+      added: [],
+      reordered: false,
+    });
   });
 
   it("writes a snapshot one criterion per line, under readable names", () => {
@@ -188,6 +207,31 @@ describe("VersionDiff — list fields (#2220)", () => {
     );
     expect(screen.queryByTestId("diff-field-labels")).toBeNull();
     expect(screen.getByTestId("diff-field-title")).toHaveTextContent("Title");
+  });
+
+  it("shows a reorder of the criteria as the order before and after", () => {
+    render(
+      <VersionDiff
+        changedFields={{
+          acceptanceCriteria: { from: '["First","Second"]', to: '["Second","First"]' },
+        }}
+      />,
+    );
+    const row = screen.getByTestId("diff-field-acceptanceCriteria");
+    expect(row).toHaveTextContent("Order changed");
+    expect(within(row).getByTestId("diff-from")).toHaveTextContent("1. First 2. Second");
+    expect(within(row).getByTestId("diff-to")).toHaveTextContent("1. Second 2. First");
+  });
+
+  it("shows a duplicated criterion as added", () => {
+    render(
+      <VersionDiff
+        changedFields={{ acceptanceCriteria: { from: '["Same"]', to: '["Same","Same"]' } }}
+      />,
+    );
+    const row = screen.getByTestId("diff-field-acceptanceCriteria");
+    expect(within(row).getByTestId("diff-to")).toHaveTextContent("Same");
+    expect(within(row).queryByTestId("diff-from")).toBeNull();
   });
 
   it("with nothing visible left, says no field changed", () => {
