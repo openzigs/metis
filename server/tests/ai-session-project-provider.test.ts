@@ -511,6 +511,41 @@ describe("POST /api/ai/sessions does not reveal whether an unreachable project e
     expect(prisma.project.findFirst).not.toHaveBeenCalled();
   });
 
+  it("records the named ids and the degradation in the audit trail only, never in the response", async () => {
+    seedMine("proj_a");
+    seedForeign("proj_foreign");
+    const { getAuditService } = await import("../src/lib/audit/audit-service.js");
+    const record = vi.spyOn(getAuditService(), "record");
+    try {
+      const sessionCreates = () =>
+        record.mock.calls.map(([e]) => e).filter((e) => e.action === "ai.session.create");
+      for (const body of [
+        { title: "Demo", projectId: "proj_foreign" },
+        { title: "Demo", projectIds: ["proj_a", "proj_foreign"] },
+      ]) {
+        record.mockClear();
+        const res = await auth(request(makeApp()).post("/api/ai/sessions").send(body));
+        expect(res.status).toBe(201);
+        expect(JSON.stringify(res.body)).not.toContain("scopeDegraded");
+        const [entry] = sessionCreates();
+        expect(entry?.metadata).toMatchObject({
+          scopeDegraded: "stale-project",
+          requestedProjectIds: body.projectId ? [body.projectId] : body.projectIds,
+        });
+      }
+      // A scope that applied as asked adds neither key.
+      record.mockClear();
+      await auth(
+        request(makeApp()).post("/api/ai/sessions").send({ title: "Demo", projectId: "proj_a" }),
+      );
+      const [entry] = sessionCreates();
+      expect(entry?.metadata).not.toHaveProperty("scopeDegraded");
+      expect(entry?.metadata).not.toHaveProperty("requestedProjectIds");
+    } finally {
+      record.mockRestore();
+    }
+  });
+
   it("still fails loudly (500) when the access read itself errors, creating nothing", async () => {
     seedMine("proj_a");
     const { prisma } = await import("../src/lib/prisma.js");

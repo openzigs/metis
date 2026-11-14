@@ -783,6 +783,64 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(res.body.data.session.projectId).toBe("p-ws");
       });
 
+      describe("#2440 — an admin passes the access check, so the live-row read decides", () => {
+        // `checkProjectAccess` returns early for an admin, so an unknown or a
+        // soft-deleted id comes back reachable; only the live-row read (with
+        // its `deletedAt: null`) keeps it out of the session.
+        const adminToken = () =>
+          issueTokens({
+            userId: IDS.bob,
+            username: "admin",
+            role: "admin",
+            permissions: [],
+            workspaces: [],
+          }).accessToken;
+        beforeAll(async () => {
+          await db.project.upsert({
+            where: { id: "p-soft-deleted" },
+            create: {
+              id: "p-soft-deleted",
+              name: "p-soft-deleted",
+              slug: "p-soft-deleted",
+              createdById: IDS.alice,
+              workspaceId: "ws-1",
+              deletedAt: new Date(),
+            },
+            update: {},
+          });
+        });
+        const cases: Array<{ name: string; body: Record<string, unknown> }> = [
+          { name: "an unknown id via projectId", body: { projectId: "p-never-existed" } },
+          { name: "a soft-deleted project via projectId", body: { projectId: "p-soft-deleted" } },
+          {
+            name: "an unknown id in a multi-product scope",
+            body: { projectIds: ["p-ws", "p-never-existed"] },
+          },
+          {
+            name: "a soft-deleted project in a multi-product scope",
+            body: { projectIds: ["p-ws", "p-soft-deleted"] },
+          },
+        ];
+        for (const c of cases) {
+          it(`degrades ${c.name} to an unscoped session`, async () => {
+            const res = await createSession(adminToken(), c.body);
+            expect(res.status, res.text).toBe(201);
+            expect(res.body.data.scope).toMatchObject({ degraded: true, reason: "stale-project" });
+            const row = await db.aISession.findUniqueOrThrow({
+              where: { id: res.body.data.session.id },
+            });
+            expect(row.projectId).toBeNull();
+            expect(row.scopeProjectIds).toBeNull();
+          });
+        }
+        it("binds a live multi-product scope (positive control)", async () => {
+          const res = await createSession(adminToken(), { projectIds: ["p-ws", IDS.project] });
+          expect(res.status, res.text).toBe(201);
+          expect(res.body.data.scope.degraded).toBe(false);
+          expect(res.body.data.session.scopeProjectIds).toEqual(["p-ws", IDS.project]);
+        });
+      });
+
       it("a project that no longer exists still degrades to an unscoped session (#607, unchanged)", async () => {
         const res = await createSession(bob, { projectId: "p-gone" });
         expect(res.status, res.text).toBe(201);

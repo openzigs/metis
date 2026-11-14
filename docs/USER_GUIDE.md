@@ -3571,8 +3571,11 @@ make answers more complete, and citation precision did not improve.
 
 A chat that is not scoped to a project is offered no tools. Administrators can
 turn the METIS and MCP tools off with `CHAT_TOOLS=false`. A chat can be scoped
-only to a project you can open: asking for another workspace's project is
-refused as "not found", and no chat is created.
+only to a project you can open. If you ask for a project you cannot open,
+because it was deleted or because it belongs to a workspace you are not in, the
+chat still starts, unscoped, and shows the notice that the selected project is
+no longer available. Both cases look the same, so a project id does not reveal
+whether that project exists.
 
 **Tool activity.** In Chat and in the Workbench, each tool call appears under
 the conversation as it happens: running, waiting for your approval, done, or an error. Open a call to

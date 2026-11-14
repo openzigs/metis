@@ -1504,11 +1504,11 @@ export function aiRouter(): Router {
       requestedProjectIds.length === 1 ? requestedProjectIds[0] : null;
     let scopeProjectIds: string[] | null = null;
     if (requestedProjectIds.length > 1) {
-      // Every id is checked (no short-circuit), so an unknown id and an
-      // unreachable one cost the same reads.
-      const reachable: boolean[] = [];
-      for (const id of requestedProjectIds)
-        reachable.push(await canReachLiveProject(req.user!, id));
+      // Every id is checked, all at once (no short-circuit), so an unknown id
+      // and an unreachable one cost the same reads whatever their position.
+      const reachable = await Promise.all(
+        requestedProjectIds.map((id) => canReachLiveProject(req.user!, id)),
+      );
       const live = await prisma.project.findMany({
         where: { id: { in: requestedProjectIds }, deletedAt: null },
         select: { id: true },
@@ -1718,6 +1718,12 @@ export function aiRouter(): Router {
         skillCount: initialSkillIds.length,
         ...(scopeProjectIds ? { scopeProjectIds } : {}),
         ...(scopeWorkspaceId ? { scopeWorkspaceId } : {}),
+        // #2440 — the response answers an unknown and a foreign id alike; the
+        // audit trail (server-side only) still records which ids were named,
+        // so cross-workspace probing stays visible to a security reviewer.
+        ...(scopeDegradationReason
+          ? { scopeDegraded: scopeDegradationReason, requestedProjectIds }
+          : {}),
       },
     });
     // #607 — echo the applied scope so the client can surface a degraded
