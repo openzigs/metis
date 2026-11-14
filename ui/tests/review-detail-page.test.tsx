@@ -316,6 +316,76 @@ describe("<ReviewDetailPage />", () => {
     await waitFor(() => expect(screen.getByText(/Failed to load review/i)).toBeInTheDocument());
   });
 
+  // #2224 — the #2219 UI where it is mounted: removing the page's
+  // `reviewStatus` prop or its Request re-review branch left every test green.
+  describe("a requirement edited after the approval (#2219, #2224)", () => {
+    const REQUESTER: AuthUser = {
+      ...REVIEWER,
+      id: "u-req",
+      username: "rita",
+      displayName: "Rita Requester",
+      role: "coordinator",
+    };
+    const editedSinceApproval = (over: Partial<ReviewRequest> = {}) =>
+      makeReview({
+        status: "approved",
+        items: [
+          {
+            id: "i-1",
+            requirementId: "req-1",
+            generatedDocumentId: null,
+            pinnedVersion: 1,
+            requirement: { id: "req-1", title: "Login requirement", version: 2 },
+            generatedDocument: null,
+          },
+        ],
+        ...over,
+      });
+
+    it("flags the item and says so in the header", async () => {
+      getMock.mockResolvedValue(detail(editedSinceApproval()));
+      renderPage();
+      expect(await screen.findByTestId("review-item-out-of-date")).toHaveTextContent(
+        "v2 differs from the approved v1",
+      );
+      expect(screen.getByTestId("review-out-of-date-banner")).toHaveTextContent(
+        "1 requirement changed since approval.",
+      );
+    });
+
+    it("offers the requester Request re-review", async () => {
+      getMock.mockResolvedValue(detail(editedSinceApproval()));
+      renderPage(REQUESTER);
+      expect(await screen.findByRole("button", { name: "Request re-review" })).toBeInTheDocument();
+    });
+
+    it("offers nothing and flags nothing while every pin is current", async () => {
+      getMock.mockResolvedValue(detail(makeReview({ status: "approved" })));
+      renderPage(REQUESTER);
+      await screen.findByRole("heading", { name: "Sprint 12 sign-off" });
+      expect(screen.queryByRole("button", { name: "Request re-review" })).not.toBeInTheDocument();
+      expect(screen.queryByTestId("review-out-of-date-banner")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("review-item-out-of-date")).not.toBeInTheDocument();
+    });
+
+    it("keeps linking the earlier round's baseline while a re-review runs", async () => {
+      getMock.mockResolvedValue(
+        detail(
+          makeReview({
+            baseline: { id: "b-1", name: "Sprint 12 sign-off", createdAt: "2026-06-03T00:00:00Z" },
+          }),
+        ),
+      );
+      renderPage();
+      await screen.findByRole("heading", { name: "Sprint 12 sign-off" });
+      expect(screen.getByText(/Baseline from the earlier approval/)).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Sprint 12 sign-off" })).toHaveAttribute(
+        "href",
+        "/projects/p-1/baselines/b-1",
+      );
+    });
+  });
+
   it("shows a loading state while fetching", () => {
     getMock.mockReturnValue(new Promise(() => {}));
     renderPage();

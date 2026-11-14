@@ -36,7 +36,8 @@ vi.mock("../src/lib/socket/registry.js", () => ({ getSocketServer: () => null })
 const { createReviewRequest, submitReview, recordDecision, reopenReview } =
   await import("../src/lib/reviews/review-service.js");
 const { notifyReviewedRequirementEdited } = await import("../src/lib/reviews/notify.js");
-const { readRequirementApproval } = await import("../src/lib/reviews/requirement-approval.js");
+const { readRequirementApproval, flagApprovalReopened } =
+  await import("../src/lib/reviews/requirement-approval.js");
 const { updateRequirementWithHistory } =
   await import("../src/lib/requirements/requirement-version-service.js");
 
@@ -194,13 +195,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(reopened?.status).toBe("in_review");
       expect(reopened?.items[0].pinnedVersion).toBe(2);
       expect(reopened?.assignments.map((a) => a.decision)).toEqual(["pending"]);
-      // The earlier round's baseline is kept, detached from the review.
-      expect(reopened?.baseline).toBeNull();
-      expect(await db.baseline.findUnique({ where: { id: first!.id } })).not.toBeNull();
+      // #2224 — named in words, and still the review's while the re-review
+      // runs, so the review page keeps linking it.
+      expect(first!.name).toBe("Security sign-off");
+      expect(reopened?.baseline?.id).toBe(first!.id);
       const audit = await db.auditLog.findMany({
         where: { targetId: reviewId, action: "review.reopen" },
       });
       expect(audit).toHaveLength(1);
+
+      // #2224 — a manual baseline already holds the round's name: the
+      // approval takes the next free one instead of failing on the unique name.
+      await db.baseline.create({
+        data: { projectId: PROJECT, name: "Security sign-off (round 2)", createdById: REQUESTER },
+      });
 
       const decided = await recordDecision(REVIEWER, reviewId, "approved");
       expect(decided.status).toBe("approved");
@@ -209,12 +217,204 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         include: { items: true },
       });
       expect(second?.reviewRequestId).toBe(reviewId);
-      expect(second?.name).toBe(`${first!.name} round 2`);
+      expect(second?.name).toBe("Security sign-off (round 2) (2)");
+      // The earlier round's baseline is kept, detached from the review now.
+      const kept = await db.baseline.findUnique({ where: { id: first!.id } });
+      expect(kept?.reviewRequestId).toBeNull();
       expect(second?.items.map((i) => i.version)).toEqual([2]);
       expect(
         (await db.requirement.findUnique({ where: { id: REQ }, select: { reviewStatus: true } }))
           ?.reviewStatus,
       ).toBe("approved");
+    });
+
+    // #2224 — a version bump that told nobody (a system writer) used to
+    // silence every later analyst edit: notify keyed on `pin === fromVersion`.
+    it("an analyst edit after a silent system bump still tells the review's people, once", async () => {
+      const REQ_C = "req-2224-c";
+      await db.requirement.create({
+        data: {
+          id: REQ_C,
+          projectId: PROJECT,
+          analysisId: ANALYSIS,
+          title: "Session timeout",
+          body: "15 minutes",
+        },
+      });
+      const created = (await createReviewRequest(REQUESTER, PROJECT, {
+        title: "Session sign-off",
+        policy: "all",
+        reviewerIds: [REVIEWER],
+        items: [{ requirementId: REQ_C }],
+      })) as { id: string };
+      await submitReview(REQUESTER, created.id, false);
+      await recordDecision(REVIEWER, created.id, "approved");
+      const toldOfC = async (userId: string) =>
+        (await notificationsFor(userId)).filter((n) => n.href === `/reviews/${created.id}`);
+
+      // A system write (no actor) bumps v0 → v1 and sends nothing.
+      await updateRequirementWithHistory(db as never, {
+        requirementId: REQ_C,
+        patch: { body: "15 minutes of inactivity" },
+        actorId: null,
+        projectId: PROJECT,
+      });
+      const analystEdit = async (body: string) => {
+        const result = await updateRequirementWithHistory(db as never, {
+          requirementId: REQ_C,
+          patch: { body },
+          actorId: EDITOR,
+          projectId: PROJECT,
+          reopenApproval: true,
+        });
+        await notifyReviewedRequirementEdited({
+          requirementId: REQ_C,
+          fromVersion: result.version - 1,
+          toVersion: result.version,
+          actorId: EDITOR,
+        });
+      };
+
+      await analystEdit("30 minutes of inactivity");
+      for (const userId of [REQUESTER, REVIEWER]) {
+        const rows = await toldOfC(userId);
+        expect(rows).toHaveLength(1);
+        expect(rows[0].message).toContain("approved v0");
+      }
+
+      await analystEdit("45 minutes of inactivity");
+      expect(await toldOfC(REQUESTER)).toHaveLength(1);
+      expect(await toldOfC(REVIEWER)).toHaveLength(1);
+    });
+
+    // #2224 — a reopened requirement read "draft", like one never reviewed.
+    it("flags a requirement an approved review pinned and that was edited since, in its own project only", async () => {
+      const REQ_D = "req-2224-d";
+      await db.requirement.create({
+        data: {
+          id: REQ_D,
+          projectId: PROJECT,
+          analysisId: ANALYSIS,
+          title: "Audit log",
+          body: "a",
+        },
+      });
+      const created = (await createReviewRequest(REQUESTER, PROJECT, {
+        title: "Audit sign-off",
+        policy: "all",
+        reviewerIds: [REVIEWER],
+        items: [{ requirementId: REQ_D }],
+      })) as { id: string };
+      await submitReview(REQUESTER, created.id, false);
+      await recordDecision(REVIEWER, created.id, "approved");
+      const readRow = async () => {
+        const r = await db.requirement.findUniqueOrThrow({
+          where: { id: REQ_D },
+          select: { id: true, version: true, reviewStatus: true },
+        });
+        return { ...r, reviewStatus: r.reviewStatus ?? "draft" };
+      };
+
+      // Approved and current: nothing to say.
+      expect((await flagApprovalReopened(PROJECT, [await readRow()]))[0]).not.toHaveProperty(
+        "approvalReopened",
+      );
+
+      await updateRequirementWithHistory(db as never, {
+        requirementId: REQ_D,
+        patch: { body: "b" },
+        actorId: EDITOR,
+        projectId: PROJECT,
+        reopenApproval: true,
+      });
+      const edited = await readRow();
+      expect(edited.reviewStatus).toBe("draft");
+      const [flagged] = await flagApprovalReopened(PROJECT, [edited]);
+      expect(flagged.approvalReopened).toEqual({
+        reviewId: created.id,
+        reviewTitle: "Audit sign-off",
+        approvedVersion: 0,
+      });
+      // Another project's read never names this project's review.
+      const [elsewhere] = await flagApprovalReopened(OTHER_PROJECT, [edited]);
+      expect(elsewhere).not.toHaveProperty("approvalReopened");
+    });
+
+    // #2224 review — only a requirement that reads draft is "awaiting re-review".
+    it("does not flag a requirement the analyst rejected after the edit", async () => {
+      const row = { id: REQ, version: 99, reviewStatus: "rejected" };
+      expect((await flagApprovalReopened(PROJECT, [row]))[0]).not.toHaveProperty(
+        "approvalReopened",
+      );
+    });
+
+    // #2224 review — the most recent approval governs the flag.
+    it("names no review when the newest approved review pins the current version", async () => {
+      const REQ_E = "req-2224-e";
+      await db.requirement.create({
+        data: {
+          id: REQ_E,
+          projectId: PROJECT,
+          analysisId: ANALYSIS,
+          title: "Retention",
+          body: "a",
+        },
+      });
+      const approve = async (title: string) => {
+        const r = (await createReviewRequest(REQUESTER, PROJECT, {
+          title,
+          policy: "all",
+          reviewerIds: [REVIEWER],
+          items: [{ requirementId: REQ_E }],
+        })) as { id: string };
+        await submitReview(REQUESTER, r.id, false);
+        await recordDecision(REVIEWER, r.id, "approved");
+        return r.id;
+      };
+      await approve("Retention sign-off 1");
+      await updateRequirementWithHistory(db as never, {
+        requirementId: REQ_E,
+        patch: { body: "b" },
+        actorId: EDITOR,
+        projectId: PROJECT,
+        reopenApproval: true,
+      });
+      await approve("Retention sign-off 2");
+      // Status moved off approved without a version bump: the newest approval
+      // pins the current version, so the older one must not be named.
+      await db.requirement.update({ where: { id: REQ_E }, data: { reviewStatus: "draft" } });
+      const current = await db.requirement.findUniqueOrThrow({
+        where: { id: REQ_E },
+        select: { id: true, version: true, reviewStatus: true },
+      });
+      const [row] = await flagApprovalReopened(PROJECT, [
+        { ...current, reviewStatus: current.reviewStatus ?? "draft" },
+      ]);
+      expect(row).not.toHaveProperty("approvalReopened");
+    });
+
+    // #2224 review — a re-review left with no pins still detaches the old baseline.
+    it("re-approving a review whose requirement was deleted detaches the earlier baseline", async () => {
+      const REQ_F = "req-2224-f";
+      await db.requirement.create({
+        data: { id: REQ_F, projectId: PROJECT, analysisId: ANALYSIS, title: "Backups", body: "a" },
+      });
+      const created = (await createReviewRequest(REQUESTER, PROJECT, {
+        title: "Backups sign-off",
+        policy: "all",
+        reviewerIds: [REVIEWER],
+        items: [{ requirementId: REQ_F }],
+      })) as { id: string };
+      await submitReview(REQUESTER, created.id, false);
+      await recordDecision(REVIEWER, created.id, "approved");
+      const first = await db.baseline.findFirstOrThrow({ where: { reviewRequestId: created.id } });
+      await reopenReview(REQUESTER, created.id, false);
+      await db.requirement.delete({ where: { id: REQ_F } });
+      const decided = await recordDecision(REVIEWER, created.id, "approved");
+      expect(decided.baselineId).toBeNull();
+      expect(
+        (await db.baseline.findUniqueOrThrow({ where: { id: first.id } })).reviewRequestId,
+      ).toBeNull();
     });
 
     // #2223 review — approving a review pinned at v0 must not approve the v1

@@ -218,6 +218,7 @@ import {
 } from "../lib/analysis/clarify-csv.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { dispatchReviewedRequirementEdited } from "../lib/reviews/notify.js";
+import { flagApprovalReopened } from "../lib/reviews/requirement-approval.js";
 import { buildProvider, loadAIConfig } from "../lib/ai/index.js";
 import { getKnowledgeService } from "../lib/rag/knowledge-service.js";
 import { sharedAudienceRetriever } from "../lib/analysis/document-access.js";
@@ -852,16 +853,24 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // project does not allow self-approval, so the card explains Approve
       // before the click (as the Requirements list does, #2452). Not while the
       // page polls a run in progress: see `selfApprovalFlagDue`.
-      const requirements = await flagSelfApprovalForbidden(
+      const flagsDue = req.user !== undefined && selfApprovalFlagDue(snapshot);
+      const flagged = await flagSelfApprovalForbidden(
         snapshot.projectId,
         snapshot.requirements,
-        req.user && selfApprovalFlagDue(snapshot)
+        req.user && flagsDue
           ? {
               userId: req.user.userId,
               canApprove: hasPermission(req.user.role, "requirement.approve"),
             }
           : undefined,
       );
+      // #2224 — a requirement an approved review pinned and that was edited
+      // since says so, with the review, rather than reading "draft". It names
+      // the review, so only for a reader of reviews; same polling rule.
+      const requirements =
+        req.user && flagsDue && hasPermission(req.user.role, "review.read")
+          ? await flagApprovalReopened(snapshot.projectId, flagged)
+          : flagged;
       res.json(ok({ ...snapshot, requirements }));
     },
   );

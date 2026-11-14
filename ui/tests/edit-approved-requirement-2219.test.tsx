@@ -36,6 +36,7 @@ import { queryKeys } from "@/lib/query-keys";
 import { reviewsApi, type ReviewItem, type ReviewRequest } from "@/lib/reviews-api";
 import { RequirementApprovalWarning } from "@/components/requirements/RequirementApprovalWarning";
 import {
+  outOfDateCount,
   outOfDateVersion,
   ReviewItemCard,
   reviewOutOfDate,
@@ -251,6 +252,13 @@ describe("the review card — a requirement edited after its pin", () => {
         makeReview({ items: [item({ requirement: { id: "r", title: "t", version: 1 } })] }),
       ),
     ).toBe(false);
+  });
+
+  it("outOfDateCount counts each out-of-date pin once, and only on a standing review", () => {
+    const current = item({ requirement: { id: "r", title: "t", version: 1 } });
+    expect(outOfDateCount(makeReview({ items: [item(), current, item()] }))).toBe(2);
+    expect(outOfDateCount(makeReview({ items: [current] }))).toBe(0);
+    expect(outOfDateCount(makeReview({ status: "rejected", items: [item()] }))).toBe(0);
   });
 
   it("snapshotDiff lists exactly the fields that differ", () => {

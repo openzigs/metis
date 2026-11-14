@@ -6603,12 +6603,20 @@ An approval is of a wording, so editing that wording reopens it:
   a **Request re-review** button on such a review. After a confirmation
   it puts the review back to **In review** on each requirement's current
   version, clears every reviewer's decision and asks them again. The
-  baseline the first approval created is kept, and the next approval
-  creates a new one (named "… round 2").
+  baseline the first approval created is kept (the review page shows it
+  as "Baseline from the earlier approval" while the re-review runs), and
+  the next approval creates a new one, named "<review title> (round 2)".
+  A banner at the top of the review counts the requirements edited since
+  the approval.
 - **Who is told.** The review's reviewers and requester get one
-  notification, on the first edit after the approval (not on every
-  save), linking to the review. The person who made the edit is not
-  notified.
+  notification for each version they approved, linking to the review: a
+  second edit before the re-review does not notify again, and an edit
+  after the re-review does. An edit made by an import re-sync notifies
+  too. The person who made the edit is not notified.
+- **The requirement says it is waiting.** On the analysis page, an
+  edited requirement whose approval was reopened reads "Changed since
+  approval · awaiting re-review" and links to the review, instead of
+  "draft". A requirement you rejected or deferred keeps that status.
 - **The analysis results say they judged the old wording (#2222).**
   Once a requirement is edited, the governing findings that checked its
   earlier wording are marked **Stale** in the Governing rules panel,

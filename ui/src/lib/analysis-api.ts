@@ -41,6 +41,7 @@ import type {
   RequirementCriteriaProposal,
   SharedCriteriaRecord,
   GoverningQuestionLink,
+  RequirementApprovalReopened,
 } from "@metis/shared";
 
 export type {
@@ -295,6 +296,11 @@ export interface RequirementSummary {
    * self-approval, so their Approve would be refused. Absent otherwise.
    */
   selfApprovalForbidden?: true;
+  /**
+   * #2224 — a formal review approved an earlier version and it was edited
+   * since, so it awaits a re-review. Absent otherwise.
+   */
+  approvalReopened?: RequirementApprovalReopened;
   /** #2447 — the viewer cannot see a source it draws on: its text is the placeholder. */
   restricted?: true;
 }

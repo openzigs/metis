@@ -16,6 +16,7 @@ import type { PrismaClient } from "@prisma/client";
 import { isCheckpointEditor } from "../analysis/checkpoint-authorship.js";
 import { clearCriteriaFlag, hasCriteriaFlag } from "../analysis/clarification-criteria-flag.js";
 import {
+  heldReviewStatus,
   mergeHiddenRequirementLabels,
   parseRequirementLabels,
 } from "../analysis/requirement-labels.js";
@@ -410,7 +411,8 @@ export interface UpdateWithHistoryParams {
    * Issue #2219 — an analyst's edit: when it changes the content of an approved
    * requirement, the approval was of the old wording, so the same write moves
    * `reviewStatus` back to `draft` (awaiting review). An explicit
-   * `untrackedData.reviewStatus` wins. Off for system writers.
+   * `untrackedData.reviewStatus` wins. #2224 — an import re-sync that rewrites
+   * the wording sets it too; other system writers leave it off.
    */
   reopenApproval?: boolean;
   /**
@@ -437,15 +439,15 @@ export interface UpdateWithHistoryParams {
 }
 
 /**
- * Issue #2219 — whether a requirement row holds an approval: the typed column,
- * else a legacy `review:approved` label (the precedence every reader uses).
+ * Issue #2219 — whether a requirement row holds an approval. #2224 — read
+ * through {@link heldReviewStatus}, the precedence every review path uses (the
+ * typed column, else the first legacy `review:*` label), rather than a copy of
+ * it that differed on a row carrying several `review:*` labels.
  */
 export function holdsApproval(row: { reviewStatus?: unknown; labels?: unknown }): boolean {
-  if (row.reviewStatus !== null && row.reviewStatus !== undefined) {
-    return row.reviewStatus === "approved";
-  }
+  const column = typeof row.reviewStatus === "string" ? row.reviewStatus : null;
   const labels = typeof row.labels === "string" ? row.labels : null;
-  return parseRequirementLabels(labels).includes("review:approved");
+  return heldReviewStatus(column, labels) === "approved";
 }
 
 /** The status an approval goes back to when its wording is edited (#2219). */

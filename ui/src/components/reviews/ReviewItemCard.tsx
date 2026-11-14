@@ -49,9 +49,18 @@ export function outOfDateVersion(item: ReviewItem, status: ReviewStatus): number
   return current !== undefined && current !== item.pinnedVersion ? current : null;
 }
 
+/**
+ * #2224 — how many requirements in `review` were edited after their pin while
+ * the review still stands on its pins. The banner's count and the re-review
+ * button's gate both read this one predicate.
+ */
+export function outOfDateCount(review: Pick<ReviewRequest, "items" | "status">): number {
+  return review.items.filter((item) => outOfDateVersion(item, review.status) !== null).length;
+}
+
 /** #2219 — whether any requirement in `review` was edited after its pin. */
 export function reviewOutOfDate(review: Pick<ReviewRequest, "items" | "status">): boolean {
-  return review.items.some((item) => outOfDateVersion(item, review.status) !== null);
+  return outOfDateCount(review) > 0;
 }
 
 /**

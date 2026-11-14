@@ -384,6 +384,55 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(await sync()).toMatchObject({ updatedCount: 0, keptLocalCount: 0, divergedCount: 0 });
     });
 
+    // #2224 — only analyst paths reopened an approval; a re-sync rewriting an
+    // approved requirement kept it approved under wording nobody approved.
+    it("a re-sync that rewrites an approved requirement returns it to awaiting review and tells the review", async () => {
+      issues = [ghIssue(90)];
+      await sync();
+      const id = await importedId(90);
+      await approve(id);
+      await db.requirement.update({ where: { id }, data: { reviewStatus: "approved" } });
+
+      issues = [ghIssue(90, { body: "Rewritten upstream" })];
+      expect(await sync()).toMatchObject({ updatedCount: 1 });
+
+      expect(await row(id)).toMatchObject({
+        body: "Rewritten upstream",
+        version: 1,
+        reviewStatus: "draft",
+      });
+      // The review's requester is told (post-commit, fire-and-forget).
+      await vi.waitFor(async () => {
+        const told = await db.notification.findMany({
+          where: { userId: ANALYST, type: "review_item_changed" },
+        });
+        expect(told.some((n) => n.href === `/reviews/rr-1220-${seq}`)).toBe(true);
+      });
+    });
+
+    // #2224 — the route's `dispatchReviewedRequirementEdited` after a
+    // take-source had no test: removing it left every test green.
+    it("Take the source version tells the approved review's people, not the analyst who took it", async () => {
+      const id = await diverge(91);
+      const reviewId = `rr-1220-${seq}`;
+      await db.reviewRequest.update({ where: { id: reviewId }, data: { requestedById: READER } });
+      const fingerprint = JSON.parse((await row(id)).sourcePending!).fingerprint as string;
+
+      const taken = await resolve(id, {
+        choice: "source",
+        sourceFingerprint: fingerprint,
+        version: 1,
+      });
+      expect(taken.status).toBe(200);
+
+      const told = (userId: string) =>
+        db.notification.findMany({
+          where: { userId, type: "review_item_changed", href: `/reviews/${reviewId}` },
+        });
+      await vi.waitFor(async () => expect(await told(READER)).toHaveLength(1));
+      expect(await told(ANALYST)).toHaveLength(0);
+    });
+
     it("an analyst save landing between re-sync's read and its write is never overwritten", async () => {
       issues = [ghIssue(30)];
       await sync();
