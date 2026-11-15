@@ -14,11 +14,13 @@
  */
 import {
   CHANGE_REQUEST_TITLE_MAX,
+  RESTRICTED_SOURCE_TITLE,
   normaliseChangeRequestTitle,
   type AnalysisSourceRequirement,
   type ChangeRequestSources,
 } from "@metis/shared";
 import { prisma } from "../prisma.js";
+import { documentSourceRow, loadSourceGuard, type SourceReader } from "./source-redaction.js";
 
 /** How much of the free-text requirements a generated title quotes. */
 export const GENERATED_TITLE_EXCERPT = 80;
@@ -123,8 +125,42 @@ export interface ChangeRequestDetails {
 }
 
 /**
+ * #2546 — per run, the documents it was started from that `reader` cannot see
+ * (their access list, as it is now, does not name them; or they are not the
+ * run's project's). One guard load for every run.
+ */
+async function hiddenSourceDocuments(
+  reader: SourceReader,
+  records: ReadonlyArray<{ row: { id: string }; record: { documentIds: string[] } }>,
+): Promise<Map<string, Set<string>>> {
+  const cited = records.flatMap(({ row, record }) =>
+    record.documentIds.map((documentId) => ({
+      analysisId: row.id,
+      documentId,
+      source: documentSourceRow(row.id, documentId),
+    })),
+  );
+  const hidden = new Map<string, Set<string>>();
+  if (cited.length === 0) return hidden;
+  const guard = await loadSourceGuard(
+    reader,
+    cited.map((c) => c.source),
+  );
+  for (const c of cited) {
+    if (guard.canSee(c.source)) continue;
+    hidden.set(c.analysisId, (hidden.get(c.analysisId) ?? new Set()).add(c.documentId));
+  }
+  return hidden;
+}
+
+/**
  * The title and sources of each run of ONE project, in one document read.
  * Every row must belong to `projectId` (the callers' queries are scoped to it).
+ *
+ * #2546 — given a `reader`, a source document they cannot see is not named to
+ * them (its name is the restricted placeholder), and a title Metis generated
+ * is generated again from the names they can see: it was made from the first
+ * document's name. A title a person typed is theirs, and is kept.
  */
 export async function changeRequestDetails(
   projectId: string,
@@ -135,16 +171,24 @@ export async function changeRequestDetails(
     metadata: string | null;
     startedAt: Date;
   }>,
+  reader?: SourceReader,
 ): Promise<Map<string, ChangeRequestDetails>> {
   const records = rows.map((r) => ({ row: r, record: runSourceRecord(r.metadata) }));
   const names = await documentNames(
     projectId,
     records.flatMap((r) => r.record.documentIds),
   );
+  const hidden = reader
+    ? await hiddenSourceDocuments(reader, records)
+    : new Map<string, Set<string>>();
   const out = new Map<string, ChangeRequestDetails>();
   for (const { row, record } of records) {
+    const hiddenHere: ReadonlySet<string> = hidden.get(row.id) ?? new Set<string>();
     const sources: ChangeRequestSources = {
-      documents: record.documentIds.map((id) => ({ id, name: names.get(id) ?? null })),
+      documents: record.documentIds.map((id) => ({
+        id,
+        name: hiddenHere.has(id) ? RESTRICTED_SOURCE_TITLE : (names.get(id) ?? null),
+      })),
       allDocuments: record.documentIds.length === 0,
       importedItems: record.importedItems.map((i) => ({
         requirementId: i.requirementId,
@@ -155,19 +199,23 @@ export async function changeRequestDetails(
       })),
     };
     const stored = row.title?.trim();
+    // A generated title may name a document hidden here: made again without it.
+    const regenerate = !stored || (row.titleGenerated !== false && hiddenHere.size > 0);
     out.set(row.id, {
-      title: stored
-        ? stored
-        : generatedChangeRequestTitle({
-            documentNames: sources.documents
-              .map((d) => d.name)
-              .filter((n): n is string => n !== null),
-            importedTitles: record.importedItems.map((i) => i.title),
-            extraInstructions: record.extraInstructions,
-            startedAt: row.startedAt,
-          }),
+      title:
+        !regenerate && stored
+          ? stored
+          : generatedChangeRequestTitle({
+              documentNames: sources.documents
+                .filter((d) => !hiddenHere.has(d.id))
+                .map((d) => d.name)
+                .filter((n): n is string => n !== null),
+              importedTitles: record.importedItems.map((i) => i.title),
+              extraInstructions: record.extraInstructions,
+              startedAt: row.startedAt,
+            }),
       // A NULL title (not yet backfilled) is generated here, so it is Metis's.
-      titleGenerated: stored ? row.titleGenerated === true : true,
+      titleGenerated: regenerate ? true : row.titleGenerated === true,
       sources,
     });
   }

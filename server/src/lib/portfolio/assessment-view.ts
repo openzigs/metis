@@ -36,6 +36,7 @@ import { buildProductAccessWhere, productRepoReadAccess } from "../products/prod
 import { canAccessProjectDiscussions } from "../discussions/access.js";
 import { getPortfolioAssessmentRecord, type StoredSourceRows } from "./assessment-store.js";
 import { restrictedIds, userSourceReader } from "../analysis/source-redaction.js";
+import { canSeeDocument } from "../documents/document-visibility.js";
 import { impactOverview, impactSentence } from "./report-overview.js";
 import {
   portfolioSummary,
@@ -150,6 +151,16 @@ async function hiddenSource(
   const all = (ids: ReadonlySet<string>) => ({ all: true, any: true, hides: () => true, ids });
   const isSet = (a.sourceRequirementIds?.length ?? 0) > 0;
   if (access.admin) return none;
+  // #2546 — a check started from a document is that document's words: a
+  // reader its access list does not name sees none of them. One gone from the
+  // database (its project deleted) fails closed.
+  if (a.sourceDocumentId) {
+    const doc = await prisma.document.findUnique({
+      where: { id: a.sourceDocumentId },
+      select: { aclSubjects: true },
+    });
+    if (!doc || !(await canSeeDocument(access.user.userId, doc))) return all(new Set());
+  }
   if (sourceRows === "unreadable") return all(new Set(a.sourceRequirementIds ?? []));
   const where = a.sourceRequirementId
     ? { id: a.sourceRequirementId }

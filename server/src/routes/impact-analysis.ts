@@ -111,7 +111,11 @@ import {
   loadChangeRequestSource,
   readableChangeRequest,
 } from "../lib/analysis/change-request-source.js";
-import { loadAccessibleImpactDetail } from "../lib/impact-analysis/impact-detail-access.js";
+import {
+  loadAccessibleImpactDetail,
+  redactImpactSummaries,
+} from "../lib/impact-analysis/impact-detail-access.js";
+import { canSeeDocument } from "../lib/documents/document-visibility.js";
 import { diffImpactRuns } from "../lib/impact-analysis/impact-drift.js";
 import type { ImpactDriftReport } from "@metis/shared";
 import { serializeImpactAnalysisMarkdown } from "../lib/analysis/analysis-export.js";
@@ -723,6 +727,8 @@ async function assertRequirementsReadable(
  * (`actorHasProjectAccess`: admin bypass, live workspace members, legacy
  * workspace-less projects open, soft-deleted projects closed).
  *
+ * #2546 — and the document's access list must let the caller see it.
+ *
  * An inaccessible document answers the same 404 as a nonexistent one, and the
  * denial is audited as `impact_analysis.document.denied`.
  *
@@ -739,7 +745,7 @@ async function assertDocumentReadable(
   const notFound = () => new AppError(404, "NOT_FOUND", "Document not found");
   const doc = await prisma.document.findUnique({
     where: { id: documentId },
-    select: { projectId: true, deletedAt: true },
+    select: { projectId: true, deletedAt: true, aclSubjects: true },
   });
   if (!doc) {
     if (mode === "rerun") return;
@@ -751,7 +757,7 @@ async function assertDocumentReadable(
     resourceId: documentId,
     action: "impact_analysis.document",
   });
-  if (!allowed) throw notFound();
+  if (!allowed || !(await canSeeDocument(actor.id, doc))) throw notFound();
 }
 
 /** #2345 — `GET /?analysisId=`: the runs started from one change request. */
@@ -1178,7 +1184,8 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
           ...(analysisId ? { sourceAnalysisId: analysisId } : {}),
         },
       );
-      res.json(ok(rows));
+      // #2546 — a run's summary is its source document's words.
+      res.json(ok(await redactImpactSummaries(rows, actor.id)));
     } catch (err) {
       next(asAppError(err));
     }

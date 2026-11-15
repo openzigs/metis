@@ -33,6 +33,7 @@ import { emitReviewChanged } from "./review-events.js";
 import { noteRequirementsChanged } from "../docs-gen/approved-requirements-staleness.js";
 import { attachSharedCriteria } from "./review-shared-criteria.js";
 import { attachChangeRequests } from "./review-change-requests.js";
+import { userSourceReader } from "../analysis/source-redaction.js";
 import { awaitingDecisionWhere } from "./awaiting-decision.js";
 import {
   REVIEW_STATUSES,
@@ -1137,7 +1138,7 @@ export async function listReviews(
 
   // #2341 — each review names the change request(s) its requirements come from.
   return {
-    reviews: await attachChangeRequests(reviews),
+    reviews: await attachChangeRequests(reviews, userSourceReader(actorId)),
     total,
     page: filters.page,
     pageSize: filters.pageSize,

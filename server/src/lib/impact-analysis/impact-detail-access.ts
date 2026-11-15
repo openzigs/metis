@@ -21,6 +21,7 @@ import {
   type SchedulerActor,
 } from "../scheduler/project-access.js";
 import { getImpactAnalysisDetail } from "./impact-analysis-read.js";
+import { hiddenDocumentIds } from "../documents/document-visibility.js";
 
 /**
  * Issue #963 — load an impact analysis for `actor`, enforcing the SAME tenant
@@ -57,6 +58,20 @@ export async function loadAccessibleImpactDetail(
 }
 
 /**
+ * #2546 — list rows as `reader` may see them: the summary of a run started
+ * from a document they cannot see goes (it is drawn from that document).
+ */
+export async function redactImpactSummaries<
+  T extends { documentId: string | null; summary: string | null },
+>(rows: readonly T[], reader: string | SourceReader): Promise<T[]> {
+  const hidden = await hiddenDocumentIds(
+    reader,
+    rows.flatMap((r) => (r.documentId ? [r.documentId] : [])),
+  );
+  return rows.map((r) => (r.documentId && hidden.has(r.documentId) ? { ...r, summary: null } : r));
+}
+
+/**
  * #2447 — the stored result as `reader` may see it: an item about a
  * requirement resting on a source they cannot see shows the placeholder for
  * its title and summary (its scores and code stay), and the run's summary,
@@ -66,6 +81,22 @@ async function redactImpactDetail(
   detail: ImpactAnalysisDetail,
   reader: SourceReader,
 ): Promise<ImpactAnalysisDetail> {
+  // #2546 — a run started from a document is that document's words: its
+  // source text, its summary and every item's title and summary. A reader the
+  // document's access list does not name sees none of them; the scores, code
+  // and counts stay.
+  if (detail.documentId && (await hiddenDocumentIds(reader, [detail.documentId])).size > 0) {
+    return {
+      ...detail,
+      sourceText: null,
+      summary: null,
+      items: detail.items.map((i) => ({
+        ...i,
+        requirementTitle: RESTRICTED_SOURCE_TITLE,
+        summary: RESTRICTED_SOURCE_BODY,
+      })),
+    };
+  }
   const requirementIds = [
     ...new Set(detail.items.flatMap((i) => (i.requirementId ? [i.requirementId] : []))),
   ];

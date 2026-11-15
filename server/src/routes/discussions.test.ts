@@ -454,6 +454,8 @@ describe("discussions routes", () => {
                 id: true,
                 title: true,
                 analysisId: true,
+                // #2546 — its sources decide whether the caller sees its title.
+                sourceIds: true,
                 deletedAt: true,
                 analysis: { select: { deletedAt: true } },
               },

@@ -150,14 +150,15 @@ export function isDocumentIngesting(d: { status: string; indexState?: string | n
  * ready one except the repository and database connectors' rows (the server's
  * `defaultAnalysisDocumentIds`, which shares the `CONNECTOR_CODE_SOURCES` list).
  * Those are code, read by the code agent and the specialists' search, never as
- * documents. It is an upper bound: the server also leaves out a restricted
- * document (#2431), which the list does not say.
+ * documents. #2546 — nor one restricted from the caller (`restricted`): a run
+ * reads documents with its starter's access (#2506), so it is not used.
  */
 export function defaultRunDocumentCount(
-  docs: ReadonlyArray<{ status: string; source: string }>,
+  docs: ReadonlyArray<{ status: string; source: string; restricted?: boolean }>,
 ): number {
   return docs.filter(
-    (d) => d.status === "ready" && !CONNECTOR_CODE_SOURCES.some((s) => s === d.source),
+    (d) =>
+      d.status === "ready" && !d.restricted && !CONNECTOR_CODE_SOURCES.some((s) => s === d.source),
   ).length;
 }
 

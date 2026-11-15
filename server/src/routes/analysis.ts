@@ -664,7 +664,7 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
     async (req: Request, res: Response) => {
       const projectId = String(req.params.projectId);
       await ensureProjectVisible(projectId);
-      const items = await listAnalysesForProject(projectId);
+      const items = await listAnalysesForProject(projectId, { reader: readerOf(req) });
       res.json(ok({ items }));
     },
   );

@@ -872,4 +872,14 @@ describe("defaultRunDocumentCount", () => {
     ).toBe(5);
     expect(defaultRunDocumentCount([doc("repo"), doc("db")])).toBe(0);
   });
+
+  it("#2546 — leaves out a document restricted from the caller: their run does not read it", () => {
+    expect(
+      defaultRunDocumentCount([
+        { source: "upload", status: "ready" },
+        { source: "upload", status: "ready", restricted: true },
+        { source: "upload", status: "ready", restricted: false },
+      ]),
+    ).toBe(2);
+  });
 });

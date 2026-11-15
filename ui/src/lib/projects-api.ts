@@ -109,6 +109,13 @@ export interface DocumentRow {
   chunkCount: number;
   /** Epic #724 — when true this document is a spec for implementation comparison. */
   isSpec?: boolean;
+  /**
+   * #2546 — true when the document's access list does not name the caller:
+   * its name and title are the "Restricted" placeholder, and nothing that
+   * reads its text (an analysis, a portfolio check, an impact analysis) is
+   * offered for it. Absent when they can see it.
+   */
+  restricted?: boolean;
   uploadedAt: string;
   processedAt?: string | null;
 }

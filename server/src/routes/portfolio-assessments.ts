@@ -90,6 +90,7 @@ import { assertProductAccessible } from "../lib/products/product-access.js";
 import { prisma } from "../lib/prisma.js";
 import { canAccessProjectDiscussions } from "../lib/discussions/access.js";
 import { getDocumentStorage } from "../lib/documents/storage.js";
+import { canSeeDocument } from "../lib/documents/document-visibility.js";
 import { isDocumentReaderEnabled } from "../lib/document-reader/flag.js";
 import { readDocumentOnce } from "../lib/document-reader/reading-cache.js";
 import { shapeAwareChangeExtractor } from "../lib/impact-analysis/change-request.js";
@@ -184,9 +185,10 @@ function documentReaderOn(provider: AIProvider, signal?: AbortSignal): Portfolio
 /**
  * #2272 — the document a check is started from, or 404: it must be live (not
  * soft-deleted) and in a project the caller can read, like a requirement
- * (`loadReadableSourceRequirement`). Unknown, deleted and unreadable answer
- * alike (no existence oracle). A readable one that is a repository's file, or
- * not yet `ready`, is a 400.
+ * (`loadReadableSourceRequirement`). #2546 — and its access list must let the
+ * caller see it: the check reads its text and shows its requirements. Unknown,
+ * deleted and unreadable answer alike (no existence oracle). A readable one
+ * that is a repository's file, or not yet `ready`, is a 400.
  */
 async function loadReadableSourceDocument(
   user: AuthPayload,
@@ -201,11 +203,13 @@ async function loadReadableSourceDocument(
       filename: true,
       source: true,
       status: true,
+      aclSubjects: true,
     },
   });
   if (
     !doc ||
-    !(await canAccessProjectDiscussions({ id: user.userId, role: user.role }, doc.projectId))
+    !(await canAccessProjectDiscussions({ id: user.userId, role: user.role }, doc.projectId)) ||
+    !(await canSeeDocument(user.userId, doc))
   ) {
     throw new AppError(404, "NOT_FOUND", "Document not found");
   }

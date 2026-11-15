@@ -41,6 +41,10 @@ import { resolveAclActor, saveDocumentAcl } from "../lib/rag/acl.js";
 import { aclSaveErrorAsHttp, inactiveCallerAsUnauthenticated } from "./acl-errors.js";
 import { createChildLogger } from "../lib/logger.js";
 import {
+  documentVisibilityFor,
+  restrictedDocumentRow,
+} from "../lib/documents/document-visibility.js";
+import {
   approvalFailureMessage,
   indexingFailureMessage,
   publicDocumentRow,
@@ -367,7 +371,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       const page = rows.slice(0, limit);
       res.json(
         ok({
-          items: page.map((item) => publicDocumentRow(item)),
+          items: await readableDocumentRows(actorFromReq(req).id, page),
           limit,
           nextCursor: rows.length > limit ? encodeDocumentCursor(page[page.length - 1]) : null,
         }),
@@ -383,7 +387,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
     const items = rows.slice(0, limit);
     res.json(
       ok({
-        items: items.map((item) => publicDocumentRow(item)),
+        items: await readableDocumentRows(actorFromReq(req).id, items),
         total,
         limit,
         offset,
@@ -400,7 +404,8 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       where: { id: documentId, projectId, deletedAt: null },
     });
     if (!document) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
-    res.json(ok(publicDocumentRow(document)));
+    const [row] = await readableDocumentRows(actorFromReq(req).id, [document]);
+    res.json(ok(row));
   });
 
   // ── Delete ──────────────────────────────────────────────────────────────
@@ -679,6 +684,21 @@ function decodeDocumentCursor(raw: unknown): { uploadedAt: Date; id: string } {
   const cursor = documentCursorSchema.safeParse(parsed);
   if (!cursor.success) throw new AppError(400, "INVALID_CURSOR", "Invalid document list cursor");
   return { uploadedAt: new Date(cursor.data.t), id: cursor.data.id };
+}
+
+/**
+ * #2546 — the rows as `userId` may see them: one whose access list does not
+ * name them keeps its place (the list's length and paging are unchanged) but
+ * is marked `restricted`, with its name and title the placeholder, so the page
+ * offers nothing to do with it that reads its text.
+ */
+async function readableDocumentRows<
+  T extends { aclSubjects: string; filename: string; errorMessage: string | null },
+>(userId: string, rows: readonly T[]): Promise<T[]> {
+  const sees = await documentVisibilityFor(userId, rows);
+  return rows.map((row) =>
+    sees(row) ? publicDocumentRow(row) : restrictedDocumentRow(publicDocumentRow(row)),
+  );
 }
 
 function clampInt(raw: unknown, fallback: number, min: number, max: number): number {
