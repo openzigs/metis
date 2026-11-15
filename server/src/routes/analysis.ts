@@ -1005,11 +1005,12 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         req.user && flagsDue && hasPermission(req.user.role, "review.read")
           ? await flagApprovalReopened(snapshot.projectId, flagged)
           : flagged;
-      // #2554 — `runRestricted` says the run-wide actions are refused; they
-      // never are to an admin (a deleted source hides the run from everyone).
-      const { runRestricted, ...rest } = snapshot;
-      const refused = runRestricted === true && !(await isDurableAdmin(req));
-      res.json(ok({ ...rest, ...(refused ? { runRestricted } : {}), requirements }));
+      // #2554 — `runRestricted` says the run-wide actions are refused: the run is
+      // hidden from this reader as a whole (#2548's `restrictedView.narrative`,
+      // its one source). They never are to an admin (a deleted source hides the
+      // run from everyone).
+      const refused = snapshot.restrictedView?.narrative === true && !(await isDurableAdmin(req));
+      res.json(ok({ ...snapshot, ...(refused ? { runRestricted: true } : {}), requirements }));
     },
   );
 

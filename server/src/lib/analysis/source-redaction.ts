@@ -741,10 +741,11 @@ export function redactAnalysisSnapshot<T extends AnalysisSnapshot>(
   };
   const redacted: T = {
     ...snapshot,
+    // #2554 — a run hidden as a whole is said once, as `restrictedView.narrative`
+    // below; the route derives `runRestricted` from it, so the two cannot drift.
     ...(seesRun
       ? { metadata, capability }
-      : // #2554 — and says so, so the page offers no run-wide action the server refuses.
-        { ...redactRunRecords({ ...snapshot, capability }, metadata), runRestricted: true }),
+      : redactRunRecords({ ...snapshot, capability }, metadata)),
     agents: snapshot.agents.map((a) => ({
       ...a,
       ...(seesRun ? {} : { summary: null, notes: [] }),

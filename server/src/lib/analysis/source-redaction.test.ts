@@ -622,6 +622,17 @@ describe("redactAnalysisSnapshot (#2447)", () => {
     });
   });
 
+  it("#2548 — says a run is hidden as a whole once, as `restrictedView.narrative`, and no second flag", () => {
+    // The route derives #2554's `runRestricted` from it, so the two cannot drift.
+    const starter = { ...snapshot, id: "other-run" } as AnalysisSnapshot;
+    const hidden = redactAnalysisSnapshot(starter, sources, guardFor(ALICE));
+    expect(hidden.restrictedView?.narrative).toBe(true);
+    expect(hidden).not.toHaveProperty("runRestricted");
+    expect(redactAnalysisSnapshot(snapshot, sources, guardFor(BOB))).not.toHaveProperty(
+      "runRestricted",
+    );
+  });
+
   it("empties an agent's narrative when the reader cannot see the run as a whole", () => {
     const starter = { ...snapshot, id: "other-run" } as AnalysisSnapshot;
     const out = redactAnalysisSnapshot(starter, sources, guardFor(ALICE));

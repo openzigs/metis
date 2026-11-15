@@ -375,11 +375,15 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       const ingest = await handleIngest(document.id, actor.id);
       const refreshed = await prisma.document.findUnique({ where: { id: document.id } });
       const httpStatus = ingest.queued ? 202 : 201;
-      res
-        .status(httpStatus)
-        .json(
-          ok({ document: publicDocumentRow(refreshed), ingest, source: { url: fetched.finalUrl } }),
-        );
+      const duplicateOf = await readableDuplicate(actor.id, document);
+      res.status(httpStatus).json(
+        ok({
+          document: publicDocumentRow(refreshed),
+          ingest,
+          source: { url: fetched.finalUrl },
+          ...(duplicateOf ? { duplicateOf } : {}),
+        }),
+      );
     },
   );
 
@@ -437,7 +441,14 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       const ingest = await handleIngest(document.id, actor.id);
       const refreshed = await prisma.document.findUnique({ where: { id: document.id } });
       const httpStatus = ingest.queued ? 202 : 201;
-      res.status(httpStatus).json(ok({ document: publicDocumentRow(refreshed), ingest }));
+      const duplicateOf = await readableDuplicate(actor.id, document);
+      res.status(httpStatus).json(
+        ok({
+          document: publicDocumentRow(refreshed),
+          ingest,
+          ...(duplicateOf ? { duplicateOf } : {}),
+        }),
+      );
     },
   );
 
@@ -518,6 +529,9 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       where: { id: documentId, projectId, deletedAt: null },
     });
     if (!document) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
+    // #2548 — deleting is managing it: a member it is restricted away from may
+    // not, as #2547 refuses them its approval (an admin keeps the bypass).
+    await refuseUnlessReader(actor.id, document, projectId, "document.delete");
     await knowledge.deleteDocument(documentId);
     audit({
       actor: { id: actor.id },

@@ -11,7 +11,7 @@ import request from "supertest";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import { getPermissionsForRole, type AuthPayload } from "@metis/shared";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import {
   createMigratedSqlite,
@@ -36,6 +36,16 @@ vi.mock("../src/lib/prisma.js", async () => {
   };
 });
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
+// The URL route's fetch, with no network: the page's body is the URL's fragment.
+vi.mock("../src/lib/documents/url-fetcher.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/documents/url-fetcher.js")>()),
+  fetchUrlForIngest: async (url: string) => ({
+    buffer: Buffer.from(decodeURIComponent(new URL(url).hash.slice(1))),
+    contentType: "text/markdown",
+    finalUrl: url,
+    filename: "from-url.md",
+  }),
+}));
 
 const { documentsRouter } = await import("../src/routes/documents.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
@@ -92,6 +102,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         .post(`/api/projects/${P}/documents`)
         .set("Authorization", `Bearer ${issueTokens(payload(who)).accessToken}`)
         .attach("file", Buffer.from(content), { filename, contentType: "text/markdown" });
+
+    const token = (who: Who) => `Bearer ${issueTokens(payload(who)).accessToken}`;
+    const paste = (who: Who, filename: string, content: string) =>
+      request(app())
+        .post(`/api/projects/${P}/documents/text`)
+        .set("Authorization", token(who))
+        .send({ filename, content, mimeType: "text/markdown" });
+    const fromUrl = (who: Who, filename: string, content: string) =>
+      request(app())
+        .post(`/api/projects/${P}/documents/url`)
+        .set("Authorization", token(who))
+        .send({ url: `https://example.test/page#${encodeURIComponent(content)}`, filename });
 
     beforeAll(async () => {
       sqlite = createMigratedSqlite("2548-duplicate-upload");
@@ -176,6 +198,47 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(
         (await upload("alice", "notes.md", "first notes")).body.data.duplicateOf,
       ).toBeUndefined();
+    });
+
+    // The pasted-text and URL routes create a checksummed document too: same rule.
+    describe.each([
+      ["POST /text", paste],
+      ["POST /url", fromUrl],
+    ] as const)("%s", (_route, create) => {
+      // Only the two seeded documents are live: no copy an earlier test made counts.
+      beforeEach(async () => {
+        await db.document.updateMany({
+          where: { id: { notIn: [OPEN, SECRET] } },
+          data: { deletedAt: new Date() },
+        });
+      });
+
+      it("names the earlier copy of the same content under the same name", async () => {
+        const res = await create("bob", "brief.md", "open brief");
+        expect(res.status).toBe(201);
+        expect(res.body.data.duplicateOf).toEqual({
+          id: OPEN,
+          uploadedAt: "2026-11-01T09:00:00.000Z",
+        });
+      });
+
+      it("says nothing when the content differs", async () => {
+        const res = await create("bob", "brief.md", "another brief entirely");
+        expect(res.status).toBe(201);
+        expect(res.body.data.duplicateOf).toBeUndefined();
+      });
+
+      it("never confirms a restricted document's content to one it is restricted from", async () => {
+        const bob = await create("bob", "payroll.md", "salary table");
+        expect(bob.status).toBe(201);
+        expect(bob.body.data.duplicateOf).toBeUndefined();
+        expect(JSON.stringify(bob.body)).not.toContain(SECRET);
+        const alice = await create("alice", "payroll.md", "salary table");
+        expect(alice.body.data.duplicateOf).toEqual({
+          id: SECRET,
+          uploadedAt: "2026-11-01T09:00:00.000Z",
+        });
+      });
     });
   },
 );

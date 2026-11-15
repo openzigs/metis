@@ -12,6 +12,7 @@ import { useMutation } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
 import { urlSuggestionMessage, urlProtocolSuggestionMessage } from "@/lib/error-suggestion";
 import { documentsApi, type DocumentRow } from "@/lib/projects-api";
+import { duplicateUploadWarning } from "@/components/projects/document-uploader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -30,7 +31,11 @@ export function UrlIngestForm({ projectId, onIngested }: Props) {
     mutationFn: () => documentsApi.createFromUrl(projectId, { url }),
     onSuccess: (data) => {
       setError(null);
-      setStatus(`Imported ${data.document.filename} (${data.document.status})`);
+      // #2548 — the same content under the same name is kept, and said.
+      const duplicate = duplicateUploadWarning(data.duplicateOf);
+      setStatus(
+        `Imported ${data.document.filename} (${data.document.status})${duplicate ? `. ${duplicate}` : ""}`,
+      );
       setUrl("");
       onIngested?.(data.document);
     },

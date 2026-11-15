@@ -461,7 +461,7 @@ export interface EnhancedUsageSummary {
   rows: EnhancedUsageRow[];
 }
 
-/** What `POST /projects/:id/documents` answers. */
+/** What `POST /projects/:id/documents` (and its `/url` and `/text` forms) answers. */
 export interface DocumentUploadResult {
   document: DocumentRow;
   ingest: { status: string; chunkCount: number };
@@ -522,20 +522,19 @@ export const documentsApi = {
   },
   /** Issue #132 — fetch a public URL on the server, then ingest it. */
   createFromUrl: (projectId: string, body: { url: string; filename?: string }) =>
-    apiFetch<{
-      document: DocumentRow;
-      ingest: { status: string; chunkCount: number };
-      source: { url: string };
-    }>(`/projects/${projectId}/documents/url`, { method: "POST", body }),
+    apiFetch<DocumentUploadResult & { source: { url: string } }>(
+      `/projects/${projectId}/documents/url`,
+      { method: "POST", body },
+    ),
   /** Issue #132 — paste raw text directly into the project. */
   createFromText: (
     projectId: string,
     body: { filename: string; content: string; mimeType?: string },
   ) =>
-    apiFetch<{
-      document: DocumentRow;
-      ingest: { status: string; chunkCount: number };
-    }>(`/projects/${projectId}/documents/text`, { method: "POST", body }),
+    apiFetch<DocumentUploadResult>(`/projects/${projectId}/documents/text`, {
+      method: "POST",
+      body,
+    }),
   /** Epic #724 — toggle spec tag on a document (for spec-checking scan mode). */
   toggleSpec: (projectId: string, documentId: string, isSpec: boolean) =>
     apiFetch<DocumentRow>(`/projects/${projectId}/documents/${documentId}/spec`, {

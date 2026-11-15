@@ -1767,7 +1767,8 @@ export interface AnalysisSnapshot {
    * #2554 — the reader cannot see every document this run read (#2447's
    * "run as a whole"): what rests on it is shown to them as "Restricted", and
    * run-wide actions (Regenerate, Cancel, resume) are refused them. Absent
-   * otherwise.
+   * otherwise. Set by the snapshot route from `restrictedView.narrative`, its
+   * one source, and never for an admin, whom those actions are not refused.
    */
   runRestricted?: true;
   metadata: Record<string, unknown> | null;
