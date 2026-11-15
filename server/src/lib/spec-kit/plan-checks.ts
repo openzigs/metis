@@ -49,7 +49,7 @@ const NOT_VISIBLE_RE =
  * called that a false claim.
  */
 const ABSENT_FROM_CONTEXT_RE =
-  /\bnot in the (?:retrieved |provided |given )?context\b|\bnot (?:present|included|available) in the (?:retrieved |provided |given )?(?:context|source)\b|\b(?:cannot|can't|could not) find\b[^.\n]{0,80}\bin the (?:retrieved |provided |given )?(?:context|source)\b/i;
+  /\bnot in the (?:retrieved |provided |given )?context\b|\bnot (?:present|included|available) in the (?:retrieved |provided |given )?context\b|\b(?:cannot|can't|could not) find\b[^.\n]{0,80}\bin the (?:retrieved |provided |given )?(?:context|source)\b/i;
 
 /**
  * #2186 — the subject of such a claim when it is the file's SOURCE rather than

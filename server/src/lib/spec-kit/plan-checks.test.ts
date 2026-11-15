@@ -113,6 +113,8 @@ describe("findNotVisibleClaims", () => {
       "The source of `internal/http/request/context.go` is not in the retrieved context.",
       "The body of `internal/http/request/context.go` is not present in the retrieved context.",
       "`internal/http/request/context.go`'s source is not in the given context.",
+      // "Not present in the source" says the source was not shown, not the file.
+      "`internal/http/request/context.go` is not present in the provided source.",
       // A typographic apostrophe, as a model often writes it.
       "`internal/http/request/context.go`’s source is not in the given context.",
       "I could not find the implementation of `internal/http/request/context.go` in the retrieved context.",

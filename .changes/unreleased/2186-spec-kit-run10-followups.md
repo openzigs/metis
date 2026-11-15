@@ -9,5 +9,5 @@ section: Fixed
 - The plan's Check line now reads "x.go is not present in the retrieved context" as saying the file
   is missing (flagged when the file was in the plan's context), and "the source of x.go is not in
   the retrieved context" as saying its source was not shown (flagged only when it was).
-- Start analysis from a Spec Kit handoff no longer leaves requirements out to make room for their
-  headings: when the spec is long, the headings are shortened first, then reduced to the label.
+- Start analysis from a Spec Kit handoff sends more of a long spec's requirements: their headings
+  are shortened first, then reduced to the label, whichever sends the most.
