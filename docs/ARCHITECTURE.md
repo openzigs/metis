@@ -5192,7 +5192,8 @@ the first round of clarifying questions an analysis would ask about that reading
 (`question-loop.ts`): the source-mode extraction over its statements, then
 `generateClarifyingQuestions` and `selectQuestionsToAsk` (#2235). The report's Questions table
 gives, per arm, the questions asked, the labelled ambiguities found, the questions set aside
-by reason and those over the round's cap. A failed extraction or question call fails the round alone, not the reading, which is still judged on its requirements.
+by reason and those over the round's cap. #2534 — R then runs round 2 as the dialog does once
+every question asked is answered, and counts it in its diagnostics (`secondRound*`). A failed extraction or question call fails the round alone, not the reading, which is still judged on its requirements.
 
 #### Document reader (#2230, epic #2227) — the model reads a whole document
 
@@ -5382,7 +5383,11 @@ different things) and `impact`. `question-selection.ts` decides deterministicall
 unanswerable question is set aside as an open item. `divergent: false` is set aside as
 `same-outcome`. The rest are ranked: ticked items first (#1129), then impact, then the
 requirement's priority. The first `MAX_QUESTIONS_PER_ROUND` (8) are asked, and the rest are
-counted on the round (`notAsked`) for the next one. Set-aside questions are kept on
+counted on the round (`notAsked`) for the next one. #2534 — questions are written for at most
+`QUESTION_CANDIDATES_PER_ROUND` (24) open ambiguities, chosen before the call by
+`ambiguitiesToQuestion`: ticked items, then priority, then document order, one per
+requirement in turn. A reader-read document has hundreds of open ambiguities, and one question
+for each overran the reply's output cap. The rest stay open, and each round chooses again. Set-aside questions are kept on
 `ClarificationState.setAside` and listed by the panel. Only real ambiguities of their
 requirement count as addressed (`setAsideAmbiguities`, inside `addressedAmbiguities`).
 Only missing knowledge (and an unclassified or governing question) goes through the grounding

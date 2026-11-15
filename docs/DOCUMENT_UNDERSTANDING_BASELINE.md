@@ -422,6 +422,58 @@ $2.0585. A first run of 01 with the batches one at a time cost $0.7774, and show
 70 to 90 seconds, which is why four now run at once. A run of 01 before the one-line change cost
 $0.2316. The total is within the $20 pre-approval.
 
+### The first question round, within its output cap (#2534)
+
+**With #2530's extraction complete, the question round was the next call to overrun its cap.**
+It wrote one question per open ambiguity in one reply. The extraction checks every
+requirement against ISO 29148 and the GtWR rules, so a corpus document has 227 to 830 open
+ambiguities. Both attempts stopped at the 16,000-token cap, and the round failed
+(`MODEL_REPLY_UNREADABLE`), to ask at most 8.
+
+**The round now chooses what to ask about before it writes any question.**
+`ambiguitiesToQuestion` (`question-selection.ts`) takes at most
+`QUESTION_CANDIDATES_PER_ROUND` (24, three times the round's cap) open ambiguities. It ranks
+the requirements as `selectQuestionsToAsk` ranks questions, without the impact, which only
+the question call can judge: ticked items first, then priority, then document order. It then
+takes one open ambiguity per requirement in turn. The question call classifies those 24, and
+`selectQuestionsToAsk` asks at most 8 as before. The other ambiguities stay open, and each
+later round chooses again from what is still open. The legacy mode (an analysis the reader did
+not read, #2275) is unchanged: it asks every question raised.
+
+Reading `reader-sonnet-5-5-2534` (arm R, claude-sonnet-5-5, one run per document, combined
+with `--combine`). It was made at `1f9a591fb`, a **local merge** of this change with #2530's
+branch (PR #2535, merged since, unchanged in the files the round runs), whose extraction the round needs. Arm R now also runs
+round 2 as the dialog does after the analyst answers every question asked. The answered and
+set-aside ambiguities are addressed, and the model is the Sonnet tier the dialog escalates to.
+Round 2 is counted in the diagnostics (`secondRound*`), not scored. Document 04 runs longer
+than one tool call allows, so it was measured outside the CLI in two steps. A script ran
+`readDocument` (246 s, 382 statements) and saved the reading. A second script ran
+`askFirstRound` on it. Its counts are in the table, not in the reading.
+
+| Document | Requirements, open ambiguities | Chosen, questions written | Set aside: unanswerable / same | Asked / over the cap | Round 2: open, asked, repeats | Labelled found, worth asking |
+|---|---|---|---|---|---|---|
+| 01 clinic booking | 57, 227 | 24, 24 | 0 / 0 | **8** / 16 | 219, **8**, 0 | 1 of 12, 3 of 8 |
+| 02 freight claims | 71, 267 | 24, 24 | 0 / 1 | **8** / 15 | 258, **8**, 0 | 0 of 18, 6 of 8 |
+| 03 community grants | 115, 432 | 24, 24 | 0 / 1 | **8** / 15 | 423, **8**, 0 | 2 of 17, 7 of 8 |
+| 04 library lending (script) | 244, 830 | 24, 24 | 0 / 1 | **8** / 15 | 821, **8**, 0 | not judged |
+
+**Every round completes.** Each round-1 question call took 52 to 70 s on the Haiku tier,
+where both failing attempts had taken about 4.5 minutes. Round 2 ran on the Sonnet tier
+(61 s on 01). No round asked about an ambiguity an earlier round had addressed.
+
+**What the round asks is a separate question, and not answered here.** The 24 questions
+found 3 of the 47 labelled ambiguities (ambiguity recall 0.07). The judge called 16 of 24
+worth asking (question precision 0.67). Choosing in document order, among requirements of
+equal priority, puts the first round on the document's opening sections, as #2271's DeepSeek
+reading found. One round of 8 cannot reach 12 to 18 labelled ambiguities in any case. Whether
+another choice finds more of them (a classification over every open ambiguity before the
+questions are written, or one question per gap in the document rather than per ambiguity) is
+unmeasured.
+
+Spend: $5.06, within the $20 pre-approval. The reading cost $2.8579 (judge $0.1488), 04's
+extraction and two rounds $1.5442 metered, and 04's read $0.6587 (its reported usage, priced
+by the eval's ledger).
+
 ## The Phase 0 answer (#2229)
 
 When an analyst gives METIS a Word FRD today, Requirements Analysis finds **about a quarter

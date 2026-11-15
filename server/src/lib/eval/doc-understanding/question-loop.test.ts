@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { AIProvider, ChatMessage, ChatOptions, ChatResponse } from "../../ai/types.js";
-import { HAIKU_MODEL_ID } from "../../ai/model-router.js";
-import { MAX_QUESTIONS_PER_ROUND } from "../../analysis/question-selection.js";
+import { HAIKU_MODEL_ID, SONNET_MODEL_ID } from "../../ai/model-router.js";
+import {
+  MAX_QUESTIONS_PER_ROUND,
+  QUESTION_CANDIDATES_PER_ROUND,
+} from "../../analysis/question-selection.js";
 import type { ReadStatement } from "../../document-reader/reader.js";
 import { askFirstRound, sourceStatementsOf } from "./question-loop.js";
 
@@ -85,7 +88,16 @@ function loopProvider(
           })),
         });
       } else if (system.includes("Extract structured requirements")) {
-        content = JSON.stringify(extraction);
+        // Only the requirements whose statements this call lists, so a
+        // batched extraction (#2530) is answered once per statement.
+        const listed = (r: { sourceIds?: string[] }) =>
+          !r.sourceIds || r.sourceIds.some((id) => user.includes(`[${id}]`));
+        const all = extraction as { requirements?: Array<{ sourceIds?: string[] }> };
+        content = JSON.stringify(
+          Array.isArray(all.requirements)
+            ? { ...all, requirements: all.requirements.filter(listed) }
+            : extraction,
+        );
       } else {
         throw new Error(`no route for: ${system.slice(0, 80)}`);
       }
@@ -175,12 +187,19 @@ describe("#2271 — askFirstRound", () => {
       sourceStatements: 2,
       structuredRequirements: 2,
       ambiguities: 2,
+      questionCandidates: 2,
       questionsGenerated: 2,
       setAsideUnanswerable: 0,
       setAsideSameOutcome: 0,
       overCap: 0,
       fallback: 0,
       questionsAsked: 2,
+      // Both asked and answered: nothing is left for a second round, so no call.
+      secondRoundOpen: 0,
+      secondRoundGenerated: 0,
+      secondRoundAsked: 0,
+      secondRoundRepeats: 0,
+      secondRoundFailed: 0,
     });
   });
 
@@ -276,6 +295,115 @@ describe("#2271 — askFirstRound", () => {
         ambiguities: 0,
         questionsAsked: 0,
       }),
+    });
+  });
+
+  describe("#2534 — a document with hundreds of open ambiguities", () => {
+    const FIELDS = ["a", "b", "c", "d"];
+    // 61 statements, as the clinic-booking FRD gives the extraction.
+    const BIG = {
+      statements: Array.from({ length: 61 }, (_, i) =>
+        statement(i + 1, "requirement", `The portal shall do thing ${i + 1}.`),
+      ),
+    };
+    // Each requirement's fields are its own (`a1`, ..., `d61`): the same field
+    // with the same words on two requirements reads as one gap to a batched
+    // extraction's cross-batch dedupe (#2530).
+    const bigExtraction = {
+      requirements: BIG.statements.map((_, i) =>
+        req(
+          `Thing ${i + 1}`,
+          [`REQ-${String(i + 1).padStart(3, "0")}`],
+          FIELDS.map((f) => `${f}${i + 1}`),
+        ),
+      ),
+    };
+    const questionCalls = (calls: Call[]) =>
+      calls.filter((c) => c.system.includes("clarification session"));
+
+    it("writes questions for at most QUESTION_CANDIDATES_PER_ROUND, asks the cap, then runs round 2", async () => {
+      const { provider, calls } = loopProvider(bigExtraction, (_field, i) =>
+        i % 4 === 0 ? { uncertainty: "unanswerable" } : {},
+      );
+      const round = await askFirstRound(provider, BIG, DOC);
+      const [first, second] = questionCalls(calls);
+      expect(questionCalls(calls)).toHaveLength(2);
+      const firstListed = listedAmbiguities(first!.user).map(([id, key]) => `${id}:${key}`);
+      expect(firstListed).toHaveLength(QUESTION_CANDIDATES_PER_ROUND);
+      expect(round.asked).toHaveLength(MAX_QUESTIONS_PER_ROUND);
+      // Round 2 lists nothing round 1 asked or set aside.
+      const asked = round.asked.map((q) => `${q.requirementId}:${q.ambiguityField}`);
+      const secondListed = listedAmbiguities(second!.user).map(([id, key]) => `${id}:${key}`);
+      expect(secondListed.length).toBeLessThanOrEqual(QUESTION_CANDIDATES_PER_ROUND);
+      for (const key of asked) expect(secondListed).not.toContain(key);
+      const setAside = round.diagnostics.setAsideUnanswerable;
+      expect(round.diagnostics).toEqual({
+        sourceStatements: 61,
+        structuredRequirements: 61,
+        ambiguities: 61 * FIELDS.length,
+        questionCandidates: QUESTION_CANDIDATES_PER_ROUND,
+        questionsGenerated: QUESTION_CANDIDATES_PER_ROUND,
+        setAsideUnanswerable: QUESTION_CANDIDATES_PER_ROUND / 4,
+        setAsideSameOutcome: 0,
+        overCap: QUESTION_CANDIDATES_PER_ROUND - setAside - MAX_QUESTIONS_PER_ROUND,
+        fallback: 0,
+        questionsAsked: MAX_QUESTIONS_PER_ROUND,
+        secondRoundOpen: 61 * FIELDS.length - MAX_QUESTIONS_PER_ROUND - setAside,
+        secondRoundGenerated: QUESTION_CANDIDATES_PER_ROUND,
+        secondRoundAsked: MAX_QUESTIONS_PER_ROUND,
+        secondRoundRepeats: 0,
+        secondRoundFailed: 0,
+      });
+    });
+
+    it("asks round 2 at the Sonnet tier, as the dialog escalates with most ambiguities unresolved", async () => {
+      const { provider, calls } = loopProvider(bigExtraction, undefined, { servesHaiku: true });
+      await askFirstRound(provider, BIG, DOC);
+      const [first, second] = questionCalls(calls);
+      expect(first!.opts?.model).toBe(HAIKU_MODEL_ID);
+      expect(second!.opts?.model).toBe(SONNET_MODEL_ID);
+    });
+
+    it("asks round 2 at the Haiku tier when most ambiguities were answered in round 1", async () => {
+      // 1 requirement, 4 ambiguities: all asked and answered but one set aside.
+      const { provider, calls } = loopProvider(
+        { requirements: [req("Lockout", ["REQ-001"], FIELDS)] },
+        (field) => (field === "a" ? { uncertainty: "unanswerable" } : {}),
+        { servesHaiku: true },
+      );
+      const round = await askFirstRound(provider, READING, DOC);
+      // Nothing open after round 1: no second call.
+      expect(round.diagnostics.secondRoundOpen).toBe(0);
+      expect(questionCalls(calls)).toHaveLength(1);
+      // With one of 4 ambiguities left open, 3 of 4 answered: no escalation.
+      const left = loopProvider(
+        { requirements: [req("Lockout", ["REQ-001"], FIELDS)] },
+        (field) => (field === "a" ? { requirementId: "" } : {}),
+        { servesHaiku: true },
+      );
+      const leftRound = await askFirstRound(left.provider, READING, DOC);
+      expect(leftRound.diagnostics.secondRoundOpen).toBe(1);
+      expect(questionCalls(left.calls)[1]!.opts?.model).toBe(HAIKU_MODEL_ID);
+    });
+
+    it("counts a failed round 2 and keeps round 1", async () => {
+      const { provider, calls } = loopProvider(bigExtraction);
+      const chat = provider.chat.bind(provider);
+      let questionCall = 0;
+      provider.chat = async (messages, o) => {
+        if (String(messages[0]!.content).includes("clarification session") && ++questionCall > 1) {
+          return { content: "not json", model: "m", provider: "anthropic" } as ChatResponse;
+        }
+        return chat(messages, o);
+      };
+      const round = await askFirstRound(provider, BIG, DOC);
+      expect(round.asked).toHaveLength(MAX_QUESTIONS_PER_ROUND);
+      expect(round.diagnostics).toMatchObject({
+        questionsAsked: MAX_QUESTIONS_PER_ROUND,
+        secondRoundFailed: 1,
+        secondRoundAsked: 0,
+      });
+      expect(calls.length).toBeGreaterThan(0);
     });
   });
 

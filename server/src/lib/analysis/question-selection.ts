@@ -29,6 +29,65 @@ import type {
 /** The most ambiguity questions one round asks. Governing questions are not counted. */
 export const MAX_QUESTIONS_PER_ROUND = 8;
 
+/**
+ * #2534 — the most open ambiguities one round's question call writes a
+ * question for. The call wrote one question per open ambiguity in one reply,
+ * and a document the reader read (`ANALYSIS_DOCUMENT_READER`) has hundreds:
+ * 243 to 914 on the FRD corpus, so the reply stopped at the provider's output
+ * cap twice and the round failed, to ask at most
+ * {@link MAX_QUESTIONS_PER_ROUND}. Three times the cap leaves the selection
+ * room to set aside the unanswerable and the same-whichever-way and to rank by
+ * impact, which only the model's classification can tell.
+ */
+export const QUESTION_CANDIDATES_PER_ROUND = 3 * MAX_QUESTIONS_PER_ROUND;
+
+/**
+ * #2534 — the open ambiguities a round writes questions for, as their keys
+ * (`requirementId:fieldKey`), chosen before any model call. The requirements
+ * are ranked as {@link selectQuestionsToAsk} ranks questions, short of the
+ * impact only the question call can judge: the ticked items first (#1129), then
+ * by priority, then in document order. Their open ambiguities are then taken
+ * one per requirement in turn (each one's first, then each one's second, ...),
+ * so a round spreads over the most important requirements instead of asking
+ * one requirement's every ambiguity. Ambiguities not chosen stay open: a later
+ * round chooses again from what is still open.
+ */
+export function ambiguitiesToQuestion(
+  requirements: readonly Pick<StructuredRequirement, "id" | "priority" | "ambiguities">[],
+  addressed: ReadonlySet<string>,
+  opts: { cap?: number; askFirst?: ReadonlySet<string> } = {},
+): Set<string> {
+  const cap = opts.cap ?? QUESTION_CANDIDATES_PER_ROUND;
+  const first = (id: string) => (opts.askFirst?.has(id) ? 0 : 1);
+  // A priority outside the three (a model's own word) ranks as should-have.
+  const priority = (p: string | undefined) =>
+    PRIORITY_RANK[p as RequirementEnhancementPriority] ?? PRIORITY_RANK["should-have"];
+  const ranked = requirements
+    .map((r, at) => ({
+      r,
+      at,
+      open: ambiguityFieldKeys(r.ambiguities)
+        .map((k) => `${r.id}:${k}`)
+        .filter((key) => !addressed.has(key)),
+    }))
+    .sort(
+      (a, b) =>
+        first(a.r.id) - first(b.r.id) ||
+        priority(a.r.priority) - priority(b.r.priority) ||
+        a.at - b.at,
+    );
+  const chosen = new Set<string>();
+  for (let depth = 0; chosen.size < cap; depth++) {
+    const layer = ranked.flatMap((x) => (depth < x.open.length ? [x.open[depth]!] : []));
+    if (layer.length === 0) break;
+    for (const key of layer) {
+      if (chosen.size >= cap) break;
+      chosen.add(key);
+    }
+  }
+  return chosen;
+}
+
 /** A generated question, before selection: `divergent` is the model's call, not persisted. */
 export type GeneratedQuestion = ClarifyingQuestion & { divergent?: boolean };
 

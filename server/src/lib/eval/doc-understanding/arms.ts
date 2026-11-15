@@ -44,7 +44,10 @@ import {
   UNRESTRICTED_RETRIEVAL,
   type GroundedSearchSource,
 } from "../../analysis/retrieval.js";
-import { MAX_QUESTIONS_PER_ROUND } from "../../analysis/question-selection.js";
+import {
+  MAX_QUESTIONS_PER_ROUND,
+  QUESTION_CANDIDATES_PER_ROUND,
+} from "../../analysis/question-selection.js";
 import { hasVerdict, requestStructuredVerdict } from "../../analysis/structured-verdict.js";
 import { REQUIREMENT_STATEMENT_KINDS } from "../../document-reader/prompts.js";
 import type { DocumentReading } from "../../document-reader/reader.js";
@@ -519,7 +522,7 @@ export function createArmR(model: string, opts: ArmROptions = {}): DocArm {
       requirements: "statements labelled requirement, constraint or business-rule",
       extraction:
         "RequirementsExtractor in source mode over those statements, at the provider's model as in an analysis (GtWR R7/R8/R9 and TBD rules on their paragraphs); a failure fails the question round, not the reading",
-      questions: `the dialog's first round: generateClarifyingQuestions in source mode, then selectQuestionsToAsk (unanswerable and same-outcome set aside, ranked, at most ${MAX_QUESTIONS_PER_ROUND} asked); the open ambiguities as written when none is worth asking`,
+      questions: `the dialog's first round: generateClarifyingQuestions in source mode, writing questions for at most ${QUESTION_CANDIDATES_PER_ROUND} open ambiguities (ambiguitiesToQuestion, #2534), then selectQuestionsToAsk (unanswerable and same-outcome set aside, ranked, at most ${MAX_QUESTIONS_PER_ROUND} asked); the open ambiguities as written when none is worth asking. The second round, once every question asked is answered, is counted in the diagnostics (secondRound*), not scored`,
       questionModel:
         "the provider's Haiku tier where it serves one, else its model (tierModelFor, as the dialog's round 1)",
       model,
