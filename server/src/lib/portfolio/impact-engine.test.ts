@@ -6,6 +6,9 @@
 import { describe, expect, it } from "vitest";
 import type { PortfolioAssessmentInput } from "@metis/shared";
 import {
+  addLink,
+  MAX_LINK_RESOURCES,
+  MAX_LINKS_PER_KIND,
   directChangeProductIds,
   edgeFlows,
   otherLinkKinds,
@@ -311,5 +314,73 @@ describe("withImpact", () => {
     );
     // The scope itself is unchanged: the new rows never enter the portfolio verdict.
     expect(withImpact(input, impact).productIds).toEqual(["p1", "p2", "p3"]);
+  });
+});
+
+describe("addLink (#2191 — the link caps)", () => {
+  const target = (): ProductImpact => ({
+    productId: "p2",
+    name: "Reporting",
+    restricted: false,
+    impactKind: "none",
+    via: null,
+    severity: null,
+    edgeIds: [],
+    hops: [],
+    hiddenEdgeCount: 0,
+    links: [],
+    edgesDetected: false,
+    connectedToChange: true,
+  });
+  const table = (i: number) => ({ kind: "table", name: `t${i}` });
+  const link = (resources: Array<{ kind: string; name: string }>, consumerRepoId = "r2") => ({
+    integrationKind: "database" as const,
+    fromProductId: "p1",
+    edgeProductIds: ["p2"],
+    providerRepoId: "r1",
+    consumerRepoId,
+    resources,
+  });
+  const many = (n: number, from = 0) => Array.from({ length: n }, (_, i) => table(from + i));
+
+  it("a link already recorded gains each new resource once, and stops at the cap", () => {
+    const t = target();
+    addLink(t, link([table(0)]));
+    addLink(t, link([table(0)])); // the same table again: not repeated
+    for (let i = 1; i < MAX_LINK_RESOURCES + 3; i++) addLink(t, link([table(i)]));
+
+    expect(t.links).toHaveLength(1);
+    expect(t.links[0].resources).toEqual(many(MAX_LINK_RESOURCES));
+  });
+
+  it("a merge carrying several resources keeps only up to the cap", () => {
+    const t = target();
+    addLink(t, link([table(0)]));
+    addLink(t, link(many(MAX_LINK_RESOURCES + 5, 1)));
+    expect(t.links[0].resources).toEqual(many(MAX_LINK_RESOURCES));
+  });
+
+  it("a new link is stored with at most the cap of resources, in a copy", () => {
+    const t = target();
+    const resources = many(MAX_LINK_RESOURCES + 2);
+    addLink(t, link(resources));
+    expect(t.links[0].resources).toEqual(many(MAX_LINK_RESOURCES));
+    // The caller's array is never the stored one, so a later merge cannot grow it.
+    expect(resources).toHaveLength(MAX_LINK_RESOURCES + 2);
+  });
+
+  it("a within-cap new link is stored as a copy: a later merge leaves the caller's array alone", () => {
+    const t = target();
+    const resources = [table(0)];
+    addLink(t, link(resources));
+    addLink(t, link([table(1)]));
+    expect(t.links[0].resources).toEqual([table(0), table(1)]);
+    expect(resources).toEqual([table(0)]);
+  });
+
+  it("keeps at most the cap of links of one kind", () => {
+    const t = target();
+    for (let i = 0; i < MAX_LINKS_PER_KIND + 2; i++) addLink(t, link([], `r-consumer-${i}`));
+    expect(t.links).toHaveLength(MAX_LINKS_PER_KIND);
   });
 });

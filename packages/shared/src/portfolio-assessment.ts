@@ -726,6 +726,55 @@ export function portfolioOtherLinkKinds(technicalDetail: unknown, via: string | 
   return [...kinds].sort((a, b) => rank(a) - rank(b) || a.localeCompare(b));
 }
 
+/** A file location as a reader is shown it: `path`, or `path:line` when the line is known. */
+export function portfolioSiteLocation(s: { filePath: string; line: number | null }): string {
+  return s.line === null ? s.filePath : `${s.filePath}:${s.line}`;
+}
+
+/** The parts of a stored impact hop {@link portfolioProviderSites} reads. */
+export interface PortfolioProviderHop {
+  fromProductId: string;
+  provider?: { label: string } | null;
+  providerSites?: ReadonlyArray<{ filePath: string; line: number | null }> | null;
+}
+
+/** One file in a product's code that provides what changes downstream. */
+export interface PortfolioProviderSite {
+  /** The provider repository's label. */
+  repo: string;
+  /** {@link portfolioSiteLocation} of the file. */
+  location: string;
+}
+
+/**
+ * #2183 — where a product's code provides what changes downstream: the
+ * provider's side of every hop out of it, on any product's path the reader is
+ * shown (a `restricted` product shows no path). Each file of each repo once:
+ * two products downstream of one table share it. A host the gap engine found
+ * nothing in has no other file evidence.
+ *
+ * #2191 — one rule for the page's deep dive and the Markdown export, which
+ * each parse the stored impact their own way and pass its hops in `hopsOf`.
+ */
+export function portfolioProviderSites<P extends { coverage: string }>(
+  products: readonly P[],
+  hopsOf: (p: P) => readonly PortfolioProviderHop[] | null | undefined,
+  productId: string,
+): PortfolioProviderSite[] {
+  const out = new Map<string, PortfolioProviderSite>();
+  for (const q of products) {
+    if (q.coverage === "restricted") continue;
+    for (const h of hopsOf(q) ?? []) {
+      if (h.fromProductId !== productId || !h.provider) continue;
+      for (const s of h.providerSites ?? []) {
+        const location = portfolioSiteLocation(s);
+        out.set(`${h.provider.label}\u0000${location}`, { repo: h.provider.label, location });
+      }
+    }
+  }
+  return [...out.values()];
+}
+
 /** Why a `restricted` impact is not known, by the rule its run relabelled it under. */
 export function portfolioRestrictedNote(rule: PortfolioRestrictedRule | null): string {
   switch (rule) {
