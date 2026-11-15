@@ -1658,8 +1658,8 @@ product in scope and persists the result as a `PortfolioAssessment`:
    repository source chunk (`connector:repo:<id>:src/…`, with a `path`) of that repo, from
    that repo's project. The one search returns `PORTFOLIO_GAP_HITS_PER_PRODUCT` (24)
    excerpts, so a repo whose sibling dominates the ranking can get none and read
-   `no-evidence-retrieved`. With `PORTFOLIO_GAP_PER_REPO_SEARCH` on (#1763, off by default
-   until #1766 measures it), the engine instead searches each of the product's projects on
+   `no-evidence-retrieved`. With `PORTFOLIO_GAP_PER_REPO_SEARCH` on (#1763, off by default:
+   #1766 measured no gain, below), the engine instead searches each of the product's projects on
    its own (four at once), and each repo keeps at most its share (`perRepoHitQuota`): the
    24 split evenly across the product's repos, at most `PORTFOLIO_GAP_HITS_PER_REPO` (12)
    and never less than one. A project's search asks for twice its repos' shares, because
@@ -1776,6 +1776,37 @@ cost (`RunContext.repoVerdicts`). A repo whose call failed is still `could-not-v
 (NFR-2: it may cover the requirement). But the product's summary names it ("The check
 failed (model error) on …; re-run to retry") and keeps the gap its other repos confirmed.
 The portfolio summary, and the page's headline note, say the answer leaves it out.
+
+**Measured verdict accuracy (#1766).** `pnpm eval:portfolio-gap`
+(`server/scripts/eval-portfolio-gap.ts`, scorer `server/src/lib/eval/portfolio-gap/`) runs
+the real engine on the 15 fixture-repo requirements of #1753
+(`localization-02-fixture-portfolio`, each with its expected verdict). All three
+repositories sit in one product, and each requirement is checked as the app checks one
+(title and text, criteria decomposed). Baseline
+(`eval-data/corpus/localization-02-fixture-portfolio/gap-baseline.md`, `claude-sonnet-5-5`,
+3 runs, 2026-11-15, $2.64):
+
+| Arm | Verdict accuracy [95% CI] | expected `implemented` | expected `partial` | expected `gap` | Uncited `implemented` | $ / req | s / req |
+|---|---|---|---|---|---|---|---|
+| P0 (shipped) | 0.49 [0.27, 0.71] | 0.83 | 0.60 | 0.17 | 0 | $0.029 | 13 |
+| P0′ (`PORTFOLIO_GAP_PER_REPO_SEARCH`, #1763) | 0.40 [0.22, 0.58] | 0.67 | 0.53 | 0.11 | 0 | $0.029 | 13 |
+
+- **P0′ shows no measurable difference** (Δ −0.09 [−0.22, 0.04], McNemar 2/2, p = 1.0). At
+  15 items only a gap of roughly 26 to 36 points would be significant. Here each repository
+  is in its own project, so the per-repo search changes only how `k` is split. The flag
+  stays off.
+- **The engine rarely confirms a gap.** Of P0's 18 outcomes expected to be `gap`, 8 read
+  `could-not-verify`, 6 `partial` and 1 `implemented`. In every one of the 22
+  `could-not-verify` outcomes of both arms, the answer repository reached a verdict, but a sibling repository with nothing
+  to do with the requirement answered `could-not-verify` for a criterion. A product is
+  `not-covered` only when every repository confirms the gap, so the sibling's answer made
+  the product `not-checked`. These verdicts came from the model, not from retrieval
+  (`reason` is null).
+- Every arm reported zero uncited `implemented` verdicts. All 171 citations name a file of
+  their repository at the pinned commit. Every citation is file-level (line 1) until
+  #1765.
+- #1764's agentic pass (P1) is scored by the same runner when it lands. No `deepseek-flash`
+  arm ran: this machine has no DeepSeek key.
 
 **Portfolio assessment API (#1625)** (`server/src/routes/portfolio-assessments.ts`):
 
