@@ -166,10 +166,27 @@ describe("recordDecision → dispatchReviewDecision", () => {
       decision: "approved",
       outcome: null,
       baselineId: null,
-      // #2192 — the review's reviewer count, for the terminal approval's wording.
-      reviewerCount: 2,
+      // #2192 — the approvals the review needs (`all` over two reviewers).
+      approvalsRequired: 2,
     });
     expect(dispatchedInTx).toEqual([false]);
+  });
+
+  it("#2192 — a quorum of one over two reviewers needs one approval, not two", async () => {
+    mockPrisma.reviewRequest.findUnique.mockResolvedValue(
+      makeReview({ policy: "quorum", quorum: 1 }),
+    );
+    mockPrisma.reviewerAssignment.findMany.mockResolvedValue([
+      { decision: "approved" },
+      { decision: "pending" },
+    ]);
+    mockPrisma.baseline.create.mockResolvedValue({ id: "base-9" });
+
+    await recordDecision("rev-a", "rev-1", "approved");
+
+    expect(dispatchReviewDecision).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "approved", approvalsRequired: 1 }),
+    );
   });
 
   it("dispatches the terminal approval with the created baselineId", async () => {

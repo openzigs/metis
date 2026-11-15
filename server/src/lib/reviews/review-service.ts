@@ -954,7 +954,10 @@ export async function recordDecision(
     decision,
     outcome: result.aggregate === "pending" ? null : (result.status as "approved" | "rejected"),
     baselineId: result.baselineId,
-    reviewerCount: reviewerIdsOf(review).length,
+    // #2192 — keyed on approvals needed, not reviewers assigned: a quorum of
+    // one is settled by a single approval however many reviewers there are.
+    approvalsRequired:
+      review.policy === "all" ? reviewerIdsOf(review).length : (review.quorum ?? 1),
   });
   // #1574 — an open review page shows the decision (and any outcome) live.
   void emitReviewChanged(review.projectId, reviewId, reviewerIdsOf(review));

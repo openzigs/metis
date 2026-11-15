@@ -58,23 +58,20 @@ function harness(existing: Record<string, unknown> | null = EXISTING, writeCount
   const emitUpdated = vi.fn();
   const emitDeleted = vi.fn();
   const dispatchMentions = vi.fn();
-  const refreshMentionQuotes = vi.fn(async () => undefined);
-  const retractMentionQuotes = vi.fn(async () => undefined);
+  const syncMentionQuotes = vi.fn();
   return {
     findFirst,
     update,
     emitUpdated,
     emitDeleted,
     dispatchMentions,
-    refreshMentionQuotes,
-    retractMentionQuotes,
+    syncMentionQuotes,
     deps: {
       db,
       emitUpdated,
       emitDeleted,
       dispatchMentions,
-      refreshMentionQuotes,
-      retractMentionQuotes,
+      syncMentionQuotes,
     },
   };
 }
@@ -179,12 +176,25 @@ describe("editHumanDiscussionMessage", () => {
   it("re-quotes the mention notifications already sent with the edited text (#2192)", async () => {
     const h = harness();
     await editHumanDiscussionMessage({ ...EDIT, body: "hello again @bob" }, h.deps);
-    expect(h.refreshMentionQuotes).toHaveBeenCalledTimes(1);
-    expect(h.refreshMentionQuotes).toHaveBeenCalledWith({
+    expect(h.syncMentionQuotes).toHaveBeenCalledTimes(1);
+    // The sync reads the message itself, so it is not handed the text.
+    expect(h.syncMentionQuotes).toHaveBeenCalledWith({
+      threadId: "t1",
       projectId: "p1",
       messageId: "m1",
-      body: "hello again @bob",
     });
+  });
+
+  it("does not wait on the quote sync before answering (#2192)", async () => {
+    const h = harness();
+    // A sync that never settles must not hold the edit or the delete open.
+    h.syncMentionQuotes.mockReturnValue(new Promise(() => undefined));
+    await expect(
+      editHumanDiscussionMessage({ ...EDIT, body: "hello again @bob" }, h.deps),
+    ).resolves.toBeTruthy();
+    await expect(deleteHumanDiscussionMessage(EDIT, h.deps)).resolves.toBeUndefined();
+    expect(h.emitUpdated).toHaveBeenCalledTimes(1);
+    expect(h.emitDeleted).toHaveBeenCalledTimes(1);
   });
 
   it("dispatches no mentions when the edit adds none", async () => {
@@ -209,8 +219,12 @@ describe("deleteHumanDiscussionMessage", () => {
   it("retracts the deleted message's quote from its mention notifications (#2192)", async () => {
     const h = harness();
     await deleteHumanDiscussionMessage(EDIT, h.deps);
-    expect(h.retractMentionQuotes).toHaveBeenCalledTimes(1);
-    expect(h.retractMentionQuotes).toHaveBeenCalledWith({ projectId: "p1", messageId: "m1" });
+    expect(h.syncMentionQuotes).toHaveBeenCalledTimes(1);
+    expect(h.syncMentionQuotes).toHaveBeenCalledWith({
+      threadId: "t1",
+      projectId: "p1",
+      messageId: "m1",
+    });
   });
 
   it("refuses another member's message with NOT_AUTHOR", async () => {
@@ -236,7 +250,7 @@ describe("deleteHumanDiscussionMessage", () => {
       code: "MESSAGE_NOT_FOUND",
     });
     expect(h.emitDeleted).not.toHaveBeenCalled();
-    expect(h.retractMentionQuotes).not.toHaveBeenCalled();
+    expect(h.syncMentionQuotes).not.toHaveBeenCalled();
     expect(audit).not.toHaveBeenCalled();
   });
 });
@@ -250,7 +264,7 @@ describe("#734 — an edit racing a delete", () => {
     expect(h.update.mock.calls[0][0].where).toEqual(OWN_LIVE_WHERE);
     expect(h.emitUpdated).not.toHaveBeenCalled();
     expect(h.dispatchMentions).not.toHaveBeenCalled();
-    expect(h.refreshMentionQuotes).not.toHaveBeenCalled();
+    expect(h.syncMentionQuotes).not.toHaveBeenCalled();
     expect(audit).not.toHaveBeenCalled();
   });
 

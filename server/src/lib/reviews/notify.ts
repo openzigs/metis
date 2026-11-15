@@ -234,11 +234,12 @@ export interface ReviewDecisionInput {
   /** Baseline auto-created by a terminal approval (null for docs-only scopes). */
   baselineId?: string | null;
   /**
-   * #2192 — how many reviewers the review has. With more than one, a terminal
-   * approval names the reviewer as giving the LAST approval, not as the one
-   * who approved. Omitted = one.
+   * #2192 — how many approvals the review needed (`all`: every reviewer;
+   * `quorum`: the quorum). With more than one, a terminal approval names the
+   * reviewer as giving the LAST approval, not as the one who approved.
+   * Omitted = one.
    */
-  reviewerCount?: number;
+  approvalsRequired?: number;
 }
 
 /**
@@ -280,10 +281,10 @@ export async function notifyReviewDecision(input: ReviewDecisionInput): Promise<
 
     const approved = input.outcome === "approved";
     const baselineId = input.baselineId ?? null;
-    // #2192 — on a multi-reviewer review the approval is everyone's; this
-    // reviewer gave the last one.
+    // #2192 — when the review needed several approvals, the approval is
+    // everyone's; this reviewer gave the last one.
     const outcome =
-      approved && (input.reviewerCount ?? 1) > 1
+      approved && (input.approvalsRequired ?? 1) > 1
         ? `"${input.title}" was approved: ${input.reviewerName} gave the last approval`
         : decided;
     await persistAndEmit({

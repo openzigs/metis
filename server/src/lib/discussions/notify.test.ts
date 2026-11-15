@@ -18,8 +18,10 @@ const userFindUnique = vi.fn();
 const threadFindFirst = vi.fn();
 const notificationFindMany = vi.fn();
 const notificationUpdateMany = vi.fn();
+const messageFindFirst = vi.fn();
 vi.mock("../prisma.js", () => ({
   prisma: {
+    discussionMessage: { findFirst: (...a: unknown[]) => messageFindFirst(...a) },
     user: { findUnique: (...a: unknown[]) => userFindUnique(...a) },
     discussionThread: { findFirst: (...a: unknown[]) => threadFindFirst(...a) },
     notification: {
@@ -70,6 +72,7 @@ const {
   __setMentionNotifyStore,
   refreshDiscussionMentionExcerpts,
   retractDiscussionMentionExcerpts,
+  syncDiscussionMentionQuotes,
   DELETED_MESSAGE_TEXT,
   EDITED_MESSAGE_TEXT,
 } = await import("./notify.js");
@@ -102,6 +105,9 @@ describe("discussion mention notifications", () => {
     userFindUnique.mockResolvedValue({ displayName: "Alice Author", username: "alice" });
     // Default: the thread's title is not readable (the #980 wording applies).
     threadFindFirst.mockResolvedValue(null);
+    // #2192 — default: the message cannot be re-read, so the fan-out quotes the
+    // body it was handed and syncs nothing (a failed read never costs a mention).
+    messageFindFirst.mockRejectedValue(new Error("not under test"));
   });
 
   it("creates a Notification and emits to the mentioned member's user room", async () => {
@@ -452,6 +458,120 @@ describe("discussion mention notifications", () => {
       await notifyDiscussionMentions(baseInput({ mentions: [] }));
       expect(resolveUsernames).not.toHaveBeenCalled();
       expect(notificationCreate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("#2192 — a fan-out that an edit or delete overtook", () => {
+    const live = (body: string) => ({ body, deletedAt: null });
+    const quoting = [
+      {
+        id: "n1",
+        userId: "bob",
+        payload: JSON.stringify({ kind: "discussion_mention", messageId: "m1" }),
+      },
+    ];
+    beforeEach(() => {
+      resolveUsernames.mockResolvedValue([{ id: "bob", username: "bob" }]);
+      notificationFindMany.mockResolvedValue(quoting);
+    });
+
+    it("quotes the message as it reads now, not as it was posted", async () => {
+      messageFindFirst.mockResolvedValue(live("@bob edited already"));
+
+      await notifyDiscussionMentions(baseInput({ body: "@bob as posted" }));
+
+      expect(messageFindFirst).toHaveBeenCalledWith({
+        where: { id: "m1", threadId: "t1" },
+        select: { body: true, deletedAt: true },
+      });
+      expect(notificationCreate.mock.calls[0][0].data.message).toBe("“@bob edited already”");
+      // Read twice, the same both times: nothing to re-sync.
+      expect(notificationUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("notifies nobody about a message deleted before the fan-out ran", async () => {
+      messageFindFirst.mockResolvedValue({ body: "@bob", deletedAt: new Date() });
+      await notifyDiscussionMentions(baseInput());
+      expect(notificationCreate).not.toHaveBeenCalled();
+      expect(emit).not.toHaveBeenCalled();
+    });
+
+    it("an edit that lands while its row is written re-quotes that row", async () => {
+      messageFindFirst
+        .mockResolvedValueOnce(live("@bob as posted"))
+        .mockResolvedValue(live("@bob after the edit"));
+
+      await notifyDiscussionMentions(baseInput({ body: "@bob as posted" }));
+
+      expect(notificationCreate.mock.calls[0][0].data.message).toBe("“@bob as posted”");
+      expect(notificationUpdateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["n1"] } },
+        data: { message: "“@bob after the edit”" },
+      });
+    });
+
+    it("a delete that lands while its row is written retracts that row's quote", async () => {
+      messageFindFirst
+        .mockResolvedValueOnce(live("@bob as posted"))
+        .mockResolvedValue({ body: "@bob as posted", deletedAt: new Date() });
+
+      await notifyDiscussionMentions(baseInput({ body: "@bob as posted" }));
+
+      expect(notificationUpdateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["n1"] } },
+        data: { message: DELETED_MESSAGE_TEXT },
+      });
+    });
+  });
+
+  describe("#2192 — syncDiscussionMentionQuotes", () => {
+    const target = { threadId: "t1", projectId: "p1", messageId: "m1" };
+    beforeEach(() => {
+      notificationFindMany.mockResolvedValue([
+        {
+          id: "n1",
+          userId: "bob",
+          payload: JSON.stringify({ kind: "discussion_mention", messageId: "m1" }),
+        },
+      ]);
+    });
+
+    it("writes what the message says when read, and stops once a re-read agrees", async () => {
+      messageFindFirst.mockResolvedValue({ body: "@bob latest", deletedAt: null });
+      await syncDiscussionMentionQuotes(target);
+      expect(messageFindFirst).toHaveBeenCalledTimes(2);
+      expect(notificationUpdateMany).toHaveBeenCalledTimes(1);
+      expect(notificationUpdateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["n1"] } },
+        data: { message: "“@bob latest”" },
+      });
+    });
+
+    it("rewrites when the message changed between its write and its re-read", async () => {
+      messageFindFirst
+        .mockResolvedValueOnce({ body: "@bob first", deletedAt: null })
+        .mockResolvedValue({ body: "@bob second", deletedAt: null });
+      await syncDiscussionMentionQuotes(target);
+      expect(notificationUpdateMany.mock.calls.map((c) => c[0].data.message)).toEqual([
+        "“@bob first”",
+        "“@bob second”",
+      ]);
+    });
+
+    it("retracts a deleted message, and stops after a bounded number of writes", async () => {
+      let n = 0;
+      messageFindFirst.mockImplementation(async () =>
+        ++n % 2 ? { body: "@bob", deletedAt: new Date() } : { body: `@bob v${n}`, deletedAt: null },
+      );
+      await syncDiscussionMentionQuotes(target);
+      expect(notificationUpdateMany).toHaveBeenCalledTimes(3);
+      expect(notificationUpdateMany.mock.calls[0][0].data.message).toBe(DELETED_MESSAGE_TEXT);
+    });
+
+    it("never throws when the message cannot be read", async () => {
+      messageFindFirst.mockRejectedValue(new Error("db down"));
+      await expect(syncDiscussionMentionQuotes(target)).resolves.toBeUndefined();
+      expect(notificationUpdateMany).not.toHaveBeenCalled();
     });
   });
 

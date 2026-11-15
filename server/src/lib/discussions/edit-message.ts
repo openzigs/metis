@@ -23,11 +23,7 @@ import type { PrismaClient } from "@prisma/client";
 import { prisma as defaultPrisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
 import { parseMentions } from "../collaboration/mentions.js";
-import {
-  dispatchDiscussionMentions,
-  refreshDiscussionMentionExcerpts,
-  retractDiscussionMentionExcerpts,
-} from "./notify.js";
+import { dispatchDiscussionMentionQuoteSync, dispatchDiscussionMentions } from "./notify.js";
 import { emitMessageDeleted, emitMessageUpdated } from "./socket-emitter.js";
 import {
   AUTHOR_NAME_INCLUDE,
@@ -62,8 +58,8 @@ export interface MessageChangeDeps {
   emitUpdated: typeof emitMessageUpdated;
   emitDeleted: typeof emitMessageDeleted;
   dispatchMentions: typeof dispatchDiscussionMentions;
-  refreshMentionQuotes: typeof refreshDiscussionMentionExcerpts;
-  retractMentionQuotes: typeof retractDiscussionMentionExcerpts;
+  /** #2192 — re-quotes or retracts the sent mentions; off the request path. */
+  syncMentionQuotes: typeof dispatchDiscussionMentionQuoteSync;
 }
 
 function defaultDeps(): MessageChangeDeps {
@@ -72,8 +68,7 @@ function defaultDeps(): MessageChangeDeps {
     emitUpdated: emitMessageUpdated,
     emitDeleted: emitMessageDeleted,
     dispatchMentions: dispatchDiscussionMentions,
-    refreshMentionQuotes: refreshDiscussionMentionExcerpts,
-    retractMentionQuotes: retractDiscussionMentionExcerpts,
+    syncMentionQuotes: dispatchDiscussionMentionQuoteSync,
   };
 }
 
@@ -143,11 +138,13 @@ export async function editHumanDiscussionMessage(
     metadata: { threadId: input.threadId, projectId: input.projectId },
   });
 
-  // #2192 — the notifications already sent quote the new text.
-  await deps.refreshMentionQuotes({
+  // #2192 — the notifications already sent quote the new text. The sync reads
+  // the message itself, so it runs off the request path and still converges on
+  // the latest text when edits overlap.
+  deps.syncMentionQuotes({
+    threadId: input.threadId,
     projectId: input.projectId,
     messageId: existing.id,
-    body: input.body,
   });
   if (added.length > 0) {
     // #2192 — only the added handles are notified, quoting the whole message.
@@ -187,8 +184,13 @@ export async function deleteHumanDiscussionMessage(
     metadata: { threadId: input.threadId, projectId: input.projectId },
   });
 
-  // #2192 — the mention notifications stop quoting the deleted message.
-  await deps.retractMentionQuotes({ projectId: input.projectId, messageId: existing.id });
+  // #2192 — the mention notifications stop quoting the deleted message (off
+  // the request path, as for an edit).
+  deps.syncMentionQuotes({
+    threadId: input.threadId,
+    projectId: input.projectId,
+    messageId: existing.id,
+  });
 
   deps.emitDeleted(input.threadId, existing.id);
 }

@@ -232,7 +232,7 @@ describe("fanOutMentions", () => {
     expect(mockIoTo).not.toHaveBeenCalledWith("user:user-2");
   });
 
-  it("#2192 — a new comment's fan-out and a quick edit's, in either order, notify a user once", async () => {
+  it("#2192 — a quick edit's fan-out landing before the new comment's still notifies a user once", async () => {
     mockPrisma.user.findMany.mockResolvedValue([{ id: "user-2", username: "bob" }]);
     // The unique index on (commentId, mentionedUserId), as the database keeps it.
     const rows = new Set<string>();

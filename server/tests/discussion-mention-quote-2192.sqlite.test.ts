@@ -144,14 +144,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await vi.waitFor(async () => expect(await mentionCount("u-carol")).toBe(1));
       expect(await drawer("u-carol")).toEqual(["“@bob @dave @carol the default is hourly”"]);
       // Bob's notification now quotes the edited text, and he is not re-notified.
-      expect(await drawer("u-bob")).toEqual(["“@bob @dave @carol the default is hourly”"]);
+      // The re-quote runs after the edit answers, so wait for it.
+      await vi.waitFor(async () =>
+        expect(await drawer("u-bob")).toEqual(["“@bob @dave @carol the default is hourly”"]),
+      );
       expect(await mentionCount("u-bob")).toBe(1);
       // Dave can no longer open the project: his row never gets the new text.
-      const daves = await db.notification.findMany({
-        where: { userId: "u-dave", type: "discussion_mention" },
-        select: { message: true },
+      await vi.waitFor(async () => {
+        const daves = await db.notification.findMany({
+          where: { userId: "u-dave", type: "discussion_mention" },
+          select: { message: true },
+        });
+        expect(daves).toEqual([{ message: EDITED_MESSAGE_TEXT }]);
       });
-      expect(daves).toEqual([{ message: EDITED_MESSAGE_TEXT }]);
 
       // A second message's notification is never touched by this one's changes.
       const other = await request(app())
@@ -166,7 +171,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         .delete(`/api/discussions/threads/${T}/messages/${messageId}`)
         .set("Authorization", bearer("u-alice"));
       expect(deleted.status).toBe(200);
-      expect(await drawer("u-carol")).toEqual([DELETED_MESSAGE_TEXT]);
+      await vi.waitFor(async () => expect(await drawer("u-carol")).toEqual([DELETED_MESSAGE_TEXT]));
       expect((await drawer("u-bob")).sort()).toEqual(
         [DELETED_MESSAGE_TEXT, "“@bob separate question”"].sort(),
       );

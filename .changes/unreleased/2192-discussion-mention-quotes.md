@@ -10,5 +10,5 @@ section: Fixed
   comments already did.
 - A requirement comment edited moments after it was posted no longer notifies a newly mentioned
   user twice.
-- On a review with several reviewers, the final "Review approved" notification now reads
+- On a review that needed several approvals, the final "Review approved" notification now reads
   `"X" was approved: Bob gave the last approval` instead of crediting the last approver alone.

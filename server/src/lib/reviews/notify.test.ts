@@ -347,9 +347,9 @@ describe("notifyReviewDecision", () => {
     expect(emit).toHaveBeenCalledTimes(1);
   });
 
-  it("#2192 — a multi-reviewer approval credits the reviewer with the last approval, not the whole", async () => {
+  it("#2192 — an approval that needed several credits the reviewer with the last approval, not the whole", async () => {
     await notifyReviewDecision(
-      decisionInput({ outcome: "approved", baselineId: "base-9", reviewerCount: 2 }),
+      decisionInput({ outcome: "approved", baselineId: "base-9", approvalsRequired: 2 }),
     );
     expect(createdRows()[0].title).toBe("Review approved");
     expect(createdRows()[0].message).toBe(
@@ -357,10 +357,10 @@ describe("notifyReviewDecision", () => {
     );
   });
 
-  it("#2192 — a one-reviewer approval, and any rejection, still name the reviewer's own decision", async () => {
-    await notifyReviewDecision(decisionInput({ outcome: "approved", reviewerCount: 1 }));
+  it("#2192 — an approval one approval settled, and any rejection, still name the reviewer's own decision", async () => {
+    await notifyReviewDecision(decisionInput({ outcome: "approved", approvalsRequired: 1 }));
     await notifyReviewDecision(
-      decisionInput({ decision: "rejected", outcome: "rejected", reviewerCount: 3 }),
+      decisionInput({ decision: "rejected", outcome: "rejected", approvalsRequired: 3 }),
     );
     expect(createdRows().map((r) => r.message)).toEqual([
       'Alice Reviewer approved "Sprint 4 sign-off"',
