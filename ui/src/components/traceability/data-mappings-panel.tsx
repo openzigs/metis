@@ -127,9 +127,17 @@ export function DataMappingsPanel({
     },
   });
 
+  // #2180 review — counts the hint resets, so a suggest request in flight when
+  // the hint appears is told apart from one asked for after it.
+  const [hintResets, setHintResets] = useState(0);
+
   const suggestMutation = useMutation({
     mutationFn: () => dataMappingsApi.suggest(projectId, requirementId),
-    onSuccess: (result) => {
+    onMutate: () => hintResets,
+    onSuccess: (result, _vars, askedAt) => {
+      // Asked for before the hint appeared: its answer would come back, with
+      // no user action, once the hint cleared. Dropped.
+      if (askedAt !== hintResets) return;
       setCandidates(result.candidates);
       setSuggestNote(result.note);
       if (result.candidates.length === 0 && !result.note) {
@@ -152,6 +160,7 @@ export function DataMappingsPanel({
     resetForm();
     setCandidates(null);
     setSuggestNote(null);
+    setHintResets((n) => n + 1);
   });
 
   function submitForm(e: React.FormEvent): void {

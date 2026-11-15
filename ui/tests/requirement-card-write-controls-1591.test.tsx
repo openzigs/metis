@@ -16,7 +16,7 @@
  * mock.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import {
@@ -325,11 +325,23 @@ describe("#2180 — a control hidden by a hint does not reopen when the hint cle
     fireEvent.click(await screen.findByRole("button", { name: "Add link" }));
     expect(screen.getByRole("dialog")).toBeInTheDocument();
 
+    // A draft: another link type and a search term.
+    fireEvent.change(screen.getByLabelText("Link type"), { target: { value: "depends_on" } });
+    fireEvent.change(screen.getByLabelText("Search requirements"), {
+      target: { value: "invoice" },
+    });
+
     rerender(links(linkHint("developer")));
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     rerender(links(linkHint("coordinator")));
     expect(screen.getByRole("button", { name: "Add link" })).toBeEnabled();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+
+    // Opened again by hand, the dialog starts from its defaults, as the mapping
+    // form and the assignee search do.
+    fireEvent.click(screen.getByRole("button", { name: "Add link" }));
+    expect(screen.getByLabelText("Link type")).toHaveValue("relates_to");
+    expect(screen.getByLabelText("Search requirements")).toHaveValue("");
   });
 
   it("data mappings: the add form, its draft and the suggestions stay gone", async () => {
@@ -369,6 +381,46 @@ describe("#2180 — a control hidden by a hint does not reopen when the hint cle
     fireEvent.click(screen.getByRole("button", { name: "Add mapping" }));
     expect(screen.getByLabelText("Table")).toHaveValue("");
     expect(api.mappings.create).not.toHaveBeenCalled();
+  });
+
+  it("data mappings: suggestions asked for before the hint and answered after it stay gone", async () => {
+    let answer!: (value: unknown) => void;
+    api.mappings.suggest.mockReturnValue(
+      new Promise((resolve) => {
+        answer = resolve;
+      }),
+    );
+    const mappings = (hint: string | undefined) => (
+      <DataMappingsPanel projectId="p1" requirementId="req-1" writeHint={hint} />
+    );
+    const { rerender } = renderWith(mappings(mappingHint("coordinator")));
+    fireEvent.click(await screen.findByRole("button", { name: "Suggest mappings" }));
+    await waitFor(() => expect(api.mappings.suggest).toHaveBeenCalled());
+
+    // The hint is set while the (slow, model-backed) request is in flight…
+    rerender(mappings(mappingHint("developer")));
+    await act(async () => {
+      answer({
+        candidates: [
+          {
+            dbConnectorId: "db-1",
+            schemaName: "public",
+            tableName: "invoices",
+            columnName: "total",
+            confidence: 0.8,
+            lowConfidence: false,
+            rationale: "Totals",
+          },
+        ],
+        note: null,
+      });
+    });
+    // …so its answer is dropped, and does not appear when the hint clears.
+    rerender(mappings(mappingHint("coordinator")));
+    expect(screen.queryByTestId("data-mapping-suggestions")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Accept suggestion public.invoices.total" }),
+    ).not.toBeInTheDocument();
   });
 
   it("assignee picker: the popover stays closed and its search is cleared", async () => {

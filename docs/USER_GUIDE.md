@@ -2139,7 +2139,7 @@ Saved mappings are shown as badges in the format `schema.table` or `schema.table
 
 #### Who can change mappings
 
-**Add mapping**, **Suggest mappings**, **Accept** on a suggestion and **Remove** all need the `connector.write` permission (coordinator or admin by default). Anyone else sees the mappings, and those buttons greyed out with "Requires connector.write" when you point at them (#1591). If your permission is taken away while the add form or the suggestions are open, they close, and they stay closed when the permission comes back: click **Add mapping** again to start over (#2180).
+**Add mapping**, **Suggest mappings**, **Accept** on a suggestion and **Remove** all need the `connector.write` permission (coordinator or admin by default). Anyone else sees the mappings, with **Add mapping**, **Suggest mappings** and **Remove** greyed out and "Requires connector.write" shown when you point at them (#1591); no suggestions are shown to them, so there is no **Accept**. If your permission is taken away while the add form or the suggestions are open, or while suggestions are still being fetched, they close, and they stay closed when the permission comes back: click **Add mapping** or **Suggest mappings** again to start over (#2180).
 
 ---
 
