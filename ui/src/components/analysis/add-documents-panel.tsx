@@ -155,7 +155,8 @@ export function AddDocumentsPanel({
               <input
                 type="checkbox"
                 checked={checked}
-                disabled={!ready}
+                // #2546 — a document restricted from the caller is not read by their run.
+                disabled={!ready || d.restricted === true}
                 onChange={(e) => {
                   onSelectedDocsChange(
                     e.target.checked
@@ -167,7 +168,14 @@ export function AddDocumentsPanel({
               {/* Issue #363 — path over repository label; the internal key
                   is only the tooltip. */}
               <DocumentName filename={d.filename} source={d.source} repoNames={repoNames} />
-              {!ready ? (
+              {d.restricted ? (
+                <span
+                  className="ml-auto text-xs text-muted-foreground"
+                  data-testid={`add-documents-restricted-${d.id}`}
+                >
+                  You don&apos;t have access to this document
+                </span>
+              ) : !ready ? (
                 <span
                   className={`ml-auto inline-block rounded border px-1.5 py-0.5 text-[10px] ${statusBadgeClass(d.status)}`}
                   data-testid={`add-documents-status-${d.id}`}

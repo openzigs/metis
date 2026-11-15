@@ -41,6 +41,10 @@ import { resolveAclActor, saveDocumentAcl } from "../lib/rag/acl.js";
 import { aclSaveErrorAsHttp, inactiveCallerAsUnauthenticated } from "./acl-errors.js";
 import { createChildLogger } from "../lib/logger.js";
 import {
+  documentVisibilityFor,
+  restrictedDocumentRow,
+} from "../lib/documents/document-visibility.js";
+import {
   approvalFailureMessage,
   indexingFailureMessage,
   publicDocumentRow,
@@ -367,7 +371,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       const page = rows.slice(0, limit);
       res.json(
         ok({
-          items: page.map((item) => publicDocumentRow(item)),
+          items: await readableDocumentRows(actorFromReq(req).id, page),
           limit,
           nextCursor: rows.length > limit ? encodeDocumentCursor(page[page.length - 1]) : null,
         }),
@@ -383,7 +387,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
     const items = rows.slice(0, limit);
     res.json(
       ok({
-        items: items.map((item) => publicDocumentRow(item)),
+        items: await readableDocumentRows(actorFromReq(req).id, items),
         total,
         limit,
         offset,
@@ -400,7 +404,8 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       where: { id: documentId, projectId, deletedAt: null },
     });
     if (!document) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
-    res.json(ok(publicDocumentRow(document)));
+    const [row] = await readableDocumentRows(actorFromReq(req).id, [document]);
+    res.json(ok(row));
   });
 
   // ── Delete ──────────────────────────────────────────────────────────────
@@ -438,7 +443,8 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       try {
         const result = await approveDocument(documentId, { id: actor.id });
         const refreshed = await prisma.document.findUnique({ where: { id: documentId } });
-        res.json(ok({ document: publicDocumentRow(refreshed), ...result }));
+        // #2546 — the row as the caller may see it, as the list shows it.
+        res.json(ok({ document: await readableDocumentRow(actor.id, refreshed), ...result }));
       } catch (err) {
         // #108 — the cleanup exception stays in the server log.
         log.warn("document approve failed", { documentId, error: String(err) });
@@ -467,7 +473,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       try {
         await rejectDocument(documentId, { id: actor.id }, reason);
         const refreshed = await prisma.document.findUnique({ where: { id: documentId } });
-        res.json(ok({ document: publicDocumentRow(refreshed) }));
+        res.json(ok({ document: await readableDocumentRow(actor.id, refreshed) }));
       } catch (err) {
         // #108 — the cleanup exception stays in the server log.
         log.warn("document reject failed", { documentId, error: String(err) });
@@ -546,7 +552,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         target: { type: "document", id: documentId },
         metadata: { projectId, autoApproveTrusted: parsed.data.autoApproveTrusted },
       });
-      res.json(ok(publicDocumentRow(updated)));
+      res.json(ok(await readableDocumentRow(actor.id, updated)));
     },
   );
 
@@ -577,7 +583,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         target: { type: "document", id: documentId },
         metadata: { projectId, isSpec },
       });
-      res.json(ok(publicDocumentRow(updated)));
+      res.json(ok(await readableDocumentRow(actor.id, updated)));
     },
   );
 
@@ -679,6 +685,32 @@ function decodeDocumentCursor(raw: unknown): { uploadedAt: Date; id: string } {
   const cursor = documentCursorSchema.safeParse(parsed);
   if (!cursor.success) throw new AppError(400, "INVALID_CURSOR", "Invalid document list cursor");
   return { uploadedAt: new Date(cursor.data.t), id: cursor.data.id };
+}
+
+/**
+ * #2546 — the rows as `userId` may see them: one whose access list does not
+ * name them keeps its place (the list's length and paging are unchanged) but
+ * is the allowlisted `restrictedDocumentRow`: marked `restricted`, named by the
+ * placeholder, and without its access list, path, uploader or error text, so
+ * the page offers nothing to do with it that reads its text.
+ */
+async function readableDocumentRows<
+  T extends { aclSubjects: string; filename: string; errorMessage: string | null },
+>(
+  userId: string,
+  rows: readonly T[],
+): Promise<Array<T | ReturnType<typeof restrictedDocumentRow<T>>>> {
+  const sees = await documentVisibilityFor(userId, rows);
+  return rows.map((row) =>
+    sees(row) ? publicDocumentRow(row) : restrictedDocumentRow(publicDocumentRow(row)),
+  );
+}
+
+/** One row (or none) as `userId` may see it: see {@link readableDocumentRows}. */
+async function readableDocumentRow<
+  T extends { aclSubjects: string; filename: string; errorMessage: string | null },
+>(userId: string, row: T | null) {
+  return row ? (await readableDocumentRows(userId, [row]))[0]! : null;
 }
 
 function clampInt(raw: unknown, fallback: number, min: number, max: number): number {

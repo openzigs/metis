@@ -2287,8 +2287,17 @@ You can also start a check from three other places. Every **approved** requireme
 project's **Requirements** tab has a **Check across portfolio** button, which checks that
 requirement, including its acceptance criteria. A product's page has a **Check across
 portfolio** button too, which starts with that product chosen. And every ready document on
-a project's **Documents** page has a **Check requirements across portfolio** button, which
-checks each requirement the document holds (see *Checking a document* below). [#2272]
+a project's **Documents** page that you can read has a **Check requirements across
+portfolio** button, which checks each requirement the document holds (see *Checking a
+document* below). [#2272]
+
+A document whose access list leaves you out is shown as **Restricted**, with the note
+"You don't have access to this document": you see that it is there and how large it is, but
+not its name or who may read it, and it offers no check, cannot be ticked for an analysis and
+is not a source for an impact analysis. Its row in the quarantine list is shown the same way.
+A change request Metis named after such a document is named by its date for you instead, on
+every page that shows it, including the statement of a portfolio check started from it.
+[#2546]
 
 To check several requirements at once, tick them on a project's **Requirements** tab and
 click **Check N selected across portfolio**. Each requirement you ticked is checked on its

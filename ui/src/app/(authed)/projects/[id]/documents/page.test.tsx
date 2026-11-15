@@ -251,3 +251,24 @@ describe("Documents page — #2272 checking a document's requirements across the
     expect(href.searchParams.get("title")).toBe("Payments FRD");
   });
 });
+
+describe("Documents page — #2546 a document restricted from the caller", () => {
+  it("says so, and offers no portfolio check for it", async () => {
+    listDocuments.mockResolvedValue(
+      page([
+        doc({ id: "d-open", status: "ready", filename: "brief.md" }),
+        doc({ id: "d-restricted", status: "ready", filename: "Restricted", restricted: true }),
+      ]),
+    );
+    renderPage();
+    await screen.findByTestId("document-list");
+    expect(screen.getByTestId("document-restricted-d-restricted")).toHaveTextContent(
+      /don't have access to this document/,
+    );
+    expect(screen.queryByTestId("document-restricted-d-open")).toBeNull();
+    const links = screen.getAllByRole("link", { name: "Check requirements across portfolio" });
+    expect(links).toHaveLength(1);
+    const href = new URL(links[0].getAttribute("href")!, "http://x");
+    expect(href.searchParams.get("documentId")).toBe("d-open");
+  });
+});

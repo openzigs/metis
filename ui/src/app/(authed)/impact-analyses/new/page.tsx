@@ -140,6 +140,8 @@ export default function NewImpactAnalysisPage() {
       const projectId = selected[idx];
       const project = projects.find((p) => p.id === projectId);
       for (const doc of q.data?.items ?? []) {
+        // #2546 — one the caller cannot read cannot be a run's source (the server refuses it).
+        if (doc.restricted) continue;
         rows.push({ id: doc.id, filename: doc.filename, projectName: project?.name ?? projectId });
       }
     });

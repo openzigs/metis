@@ -129,6 +129,16 @@ export default function ProjectDocumentsPage() {
                     {(d.sizeBytes / 1024).toFixed(1)} KB
                     {d.errorMessage ? ` · ${d.errorMessage}` : ""}
                   </p>
+                  {/* #2546 — its access list does not name the caller. */}
+                  {d.restricted ? (
+                    <p
+                      className="text-xs text-muted-foreground"
+                      data-testid={`document-restricted-${d.id}`}
+                    >
+                      You don&apos;t have access to this document, so its name is hidden and your
+                      analyses don&apos;t read it.
+                    </p>
+                  ) : null}
                   {isDocumentAwaitingReview(d) ? (
                     <Link
                       href={quarantineHref(id)}
@@ -140,8 +150,9 @@ export default function ProjectDocumentsPage() {
                   ) : null}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
-                  {/* #2272 — each requirement the document holds, checked across the portfolio. */}
-                  {d.source !== "repo" && d.status === "ready" ? (
+                  {/* #2272 — each requirement the document holds, checked across the portfolio.
+                      #2546 — not offered for one the caller cannot read. */}
+                  {d.source !== "repo" && d.status === "ready" && !d.restricted ? (
                     <PortfolioCheckLink
                       from={{ documentId: d.id, title: d.title ?? d.filename }}
                       label="Check requirements across portfolio"

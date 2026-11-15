@@ -62,7 +62,13 @@ const findDocument = vi.hoisted(() =>
 );
 vi.mock("../lib/prisma.js", () => ({
   prisma: {
-    document: { findUnique: findDocument },
+    document: {
+      findUnique: findDocument,
+      // #2546 — the detail read checks the source document's access list: open here.
+      findMany: vi.fn(async (args: { where: { id: { in: string[] } } }) =>
+        args.where.id.in.map((id) => ({ id, aclSubjects: "[]" })),
+      ),
+    },
     // #1636 — the execution-time access check reads soft-deleted projects.
     project: { findMany: vi.fn(async () => []) },
     // #1754 — a re-run reads back the stored requirements the original was about.

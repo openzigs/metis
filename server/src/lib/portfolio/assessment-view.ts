@@ -21,6 +21,7 @@
 import { z } from "zod";
 import {
   FINDING_VERDICTS,
+  PORTFOLIO_STATEMENT_MAX_CHARS,
   REQUIREMENT_VERDICTS,
   RESTRICTED_SOURCE_TITLE,
   portfolioOtherLinkKinds,
@@ -36,6 +37,8 @@ import { buildProductAccessWhere, productRepoReadAccess } from "../products/prod
 import { canAccessProjectDiscussions } from "../discussions/access.js";
 import { getPortfolioAssessmentRecord, type StoredSourceRows } from "./assessment-store.js";
 import { restrictedIds, userSourceReader } from "../analysis/source-redaction.js";
+import { canSeeDocument } from "../documents/document-visibility.js";
+import { readerChangeRequestTitles } from "../analysis/change-request.js";
 import { impactOverview, impactSentence } from "./report-overview.js";
 import {
   portfolioSummary,
@@ -150,6 +153,16 @@ async function hiddenSource(
   const all = (ids: ReadonlySet<string>) => ({ all: true, any: true, hides: () => true, ids });
   const isSet = (a.sourceRequirementIds?.length ?? 0) > 0;
   if (access.admin) return none;
+  // #2546 — a check started from a document is that document's words: a
+  // reader its access list does not name sees none of them. One gone from the
+  // database (its project deleted) fails closed.
+  if (a.sourceDocumentId) {
+    const doc = await prisma.document.findUnique({
+      where: { id: a.sourceDocumentId },
+      select: { aclSubjects: true },
+    });
+    if (!doc || !(await canSeeDocument(access.user.userId, doc))) return all(new Set());
+  }
   if (sourceRows === "unreadable") return all(new Set(a.sourceRequirementIds ?? []));
   const where = a.sourceRequirementId
     ? { id: a.sourceRequirementId }
@@ -197,6 +210,32 @@ async function hiddenSource(
     criteria.length === 0 ||
     [...criteria, ...a.notChecked.filter(carriesText).map((n) => n.text)].some(hides);
   return { all: false, any, hides, ids };
+}
+
+/** The statement of a check started from the change request named `title`. */
+export function changeRequestStatement(title: string): string {
+  return `Requirements of change request "${title}"`.slice(0, PORTFOLIO_STATEMENT_MAX_CHARS);
+}
+
+/**
+ * #2546 — the statement of a check started from a change request quotes the
+ * run's name as its starter saw it, and a generated name is the first
+ * document's. A reader the run cites a hidden document to is shown the
+ * statement with the run's name as they see it now, even after a rename (the
+ * frozen statement may still quote the generated name). A deleted run is still read: the statement
+ * outlives it.
+ */
+async function readerStatement(access: ReaderAccess, a: PortfolioAssessment): Promise<string> {
+  if (access.admin || !a.sourceAnalysisId || !a.sourceProjectId) return a.statement;
+  const named = (
+    await readerChangeRequestTitles(
+      [a.sourceAnalysisId],
+      [a.sourceProjectId],
+      userSourceReader(access.user.userId),
+      { includeDeleted: true },
+    )
+  ).get(a.sourceAnalysisId);
+  return named?.hidesSource ? changeRequestStatement(named.title) : a.statement;
 }
 
 /** Whitespace collapsed, as a not-checked entry's opening is written (`oneLine`). */
@@ -693,7 +732,7 @@ export async function viewPortfolioAssessment(
     a.hostProductId !== null && readableProduct(a.hostProductId) ? a.hostProductId : null;
   return {
     ...a,
-    statement: hidden.all ? RESTRICTED_SOURCE_TITLE : a.statement,
+    statement: hidden.all ? RESTRICTED_SOURCE_TITLE : await readerStatement(access, a),
     // #2301 — a chosen set names only the requirements this reader can see; of
     // the rest only how many there are, so the page can tell the set is not
     // all theirs to re-open.

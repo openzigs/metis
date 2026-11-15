@@ -58,6 +58,8 @@ const { impactAnalysisRouter } = await import("../src/routes/impact-analysis.js"
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { changeRequestRef } = await import("../src/lib/analysis/change-request-source.js");
+const { userSourceReader } = await import("../src/lib/analysis/source-redaction.js");
+const AS_BOB = userSourceReader("bob");
 const engine = await vi.importActual<
   typeof import("../src/lib/impact-analysis/impact-analysis-engine.js")
 >("../src/lib/impact-analysis/impact-analysis-engine.js");
@@ -341,16 +343,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it("names a change request back only among the projects it is given", async () => {
-      expect(await changeRequestRef(CR_A, [PA, PC])).toEqual({
+      expect(await changeRequestRef(CR_A, [PA, PC], AS_BOB)).toEqual({
         id: CR_A,
         projectId: PA,
         title: "Password reset by email",
       });
       // Projects that do not include the change request's own: it is not named.
-      expect(await changeRequestRef(CR_A, [PB, PC])).toBeNull();
-      expect(await changeRequestRef(CR_A, [])).toBeNull();
-      expect(await changeRequestRef(CR_DELETED, [PA])).toBeNull();
-      expect(await changeRequestRef(null, [PA])).toBeNull();
+      expect(await changeRequestRef(CR_A, [PB, PC], AS_BOB)).toBeNull();
+      expect(await changeRequestRef(CR_A, [], AS_BOB)).toBeNull();
+      expect(await changeRequestRef(CR_DELETED, [PA], AS_BOB)).toBeNull();
+      expect(await changeRequestRef(null, [PA], AS_BOB)).toBeNull();
     });
 
     it("the real trigger stores the change request it was started from", async () => {
