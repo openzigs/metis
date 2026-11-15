@@ -47,7 +47,12 @@ import {
 } from "@/lib/spec-kit-jobs";
 import { useSocket } from "@/lib/socket-client";
 import { joinJobRoom } from "@/lib/job-rooms";
-import { claimTerminalToast, releaseTerminalToast } from "@/lib/terminal-toast";
+import {
+  claimTerminalToast,
+  fireTerminalToast,
+  isTerminalJobStatus,
+  releaseTerminalToast,
+} from "@/lib/terminal-toast";
 import { analysisApi } from "@/lib/analysis-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
@@ -445,17 +450,25 @@ export default function SpecKitPage() {
     // back whenever the watch ends without the job's outcome — the page left
     // mid-job, or the job no longer readable (#2186) — since the page then
     // announces nothing. An outcome the watch did read is announced by the
-    // page's callbacks, on the page or not, so the claim is kept.
+    // page's callbacks, so the claim is kept.
     const claimed = claimTerminalToast(jobId);
     const leave = joinJobRoom(live, jobId);
+    // #2186 — the terminal event the claim kept the app-wide layer from
+    // announcing. It has passed by the time the claim is given back, so it is
+    // handed to that layer then, or the outcome would never be announced.
+    let swallowed: JobLifecycleEvent | null = null;
     const onLifecycle = (event: JobLifecycleEvent): void => {
-      if (event.jobId === jobId) onEvent();
+      if (event.jobId !== jobId) return;
+      if (isTerminalJobStatus(event.status)) swallowed = event;
+      onEvent();
     };
     live.on("job:lifecycle" as never, onLifecycle as never);
     return (settled) => {
       leave();
       live.off("job:lifecycle" as never, onLifecycle as never);
-      if (claimed && !settled) releaseTerminalToast(jobId);
+      if (!claimed || settled) return;
+      releaseTerminalToast(jobId);
+      if (swallowed) fireTerminalToast(swallowed);
     };
   };
 

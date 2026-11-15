@@ -398,7 +398,7 @@ describe("watchSpecKitJob", () => {
     const left = new AbortController();
     api.getJob!.mockImplementation(async () => {
       left.abort(); // the page is left while this read is in flight
-      return { job: job({ status: "running" }) };
+      return { job: job({ status: "succeeded", result: { message: "done" } }) };
     });
     const onUpdate = vi.fn();
     const unsubscribe = vi.fn();
@@ -415,29 +415,8 @@ describe("watchSpecKitJob", () => {
     expect(onUpdate).not.toHaveBeenCalled();
     expect(api.getJob).toHaveBeenCalledTimes(1);
     expect(loadWatchedJobs("p1").map((w) => w.jobId)).toEqual(["job-1"]);
-    // Ended without the job's outcome: the caller has nothing to announce.
+    // #2186 — ended without the job's outcome: the caller announces nothing.
     expect(unsubscribe).toHaveBeenCalledWith(false);
-  });
-
-  it("#2186 — settles an end read while the page was being left: its event has passed", async () => {
-    rememberWatchedJob("p1", { jobId: "job-1", command: "speckit.plan", featureSlug: null });
-    const left = new AbortController();
-    api.getJob!.mockImplementation(async () => {
-      left.abort(); // the page is left while this read is in flight
-      return { job: job({ status: "succeeded", result: { message: "done" } }) };
-    });
-    const unsubscribe = vi.fn();
-
-    await expect(
-      watchSpecKitJob("p1", "job-1", {
-        ...noWait,
-        signal: left.signal,
-        subscribe: () => unsubscribe,
-      }),
-    ).resolves.toEqual({ message: "done" });
-
-    expect(loadWatchedJobs("p1")).toEqual([]);
-    expect(unsubscribe).toHaveBeenCalledWith(true);
   });
 
   it("#2186 — tells the subscriber whether the watch ended with the job's outcome", async () => {

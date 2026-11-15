@@ -344,10 +344,7 @@ export async function watchSpecKitJob(
           failures += 1;
           if (failures >= maxReadFailures) throw new SpecKitJobUnreachableError();
         }
-        // #2186 — an end already read is settled even if the page was left
-        // meanwhile: its terminal event has passed, so this is the only report
-        // of it left.
-        if (current === null || isSpecKitJobActive(current.status)) abandonIfLeft();
+        abandonIfLeft();
       }
       if (current !== null) {
         onUpdate?.(current);

@@ -8,7 +8,7 @@
  * here depends on how long anything takes.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import type { SpecKitJobDto } from "@metis/shared";
 import { makeWrapper, TEST_USER } from "./test-utils";
 import type { AuthUser } from "@/lib/auth-types";
@@ -276,17 +276,18 @@ describe("Spec Kit page — a command as a background job (#1059)", () => {
 
   describe("#1583 — one toast per command", () => {
     /** The app-wide layer (`useGlobalJobToasts`) hearing the job's terminal event. */
+    const terminalEvent = (status: "completed" | "failed") => ({
+      kind: "spec-kit" as const,
+      jobId: "job-1",
+      projectId: "p1",
+      status,
+      ...(status === "failed"
+        ? { error: "The Spec Kit operation failed. Please try again." }
+        : { message: "Generated tasks.md (v1)." }),
+      ts: Date.now(),
+    });
     const globalLayerHears = (status: "completed" | "failed"): boolean =>
-      fireTerminalToast({
-        kind: "spec-kit",
-        jobId: "job-1",
-        projectId: "p1",
-        status,
-        ...(status === "failed"
-          ? { error: "The Spec Kit operation failed. Please try again." }
-          : { message: "Generated tasks.md (v1)." }),
-        ts: Date.now(),
-      });
+      fireTerminalToast(terminalEvent(status));
 
     it("a refused command says why once, without the generic failure toast (d-S7-1)", async () => {
       open();
@@ -332,7 +333,7 @@ describe("Spec Kit page — a command as a background job (#1059)", () => {
       expect(toastSuccess).toHaveBeenCalledWith("Generated tasks.md (v1).");
     });
 
-    it("#2186 — announces an end it read just as the page was left, and keeps the claim", async () => {
+    it("#2186 — announces an end whose event the claim swallowed, when the page is left before reading it", async () => {
       const page = open();
       await run("/speckit.tasks");
       await waitFor(() => expect(progress()).toBeInTheDocument());
@@ -348,15 +349,20 @@ describe("Spec Kit page — a command as a background job (#1059)", () => {
         return { job: server.jobs.get(id)! };
       });
       await waitFor(() => expect(pending).toHaveBeenCalled());
-      // …while the job ends and its terminal event passes the claimed global layer…
+      // …while the job ends, and its terminal event reaches the page and the
+      // global layer, which the page's claim keeps quiet…
       patch("job-1", { status: "succeeded", result: { message: "Generated tasks.md (v1)." } });
+      const [, pageHears] = socket.on.mock.calls.find(([event]) => event === "job:lifecycle")!;
+      act(() => pageHears(terminalEvent("completed")));
       expect(globalLayerHears("completed")).toBe(false);
       // …and the page is left before the read answers.
       page.unmount();
       answer();
       await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Generated tasks.md (v1)."));
       expect(toastSuccess).toHaveBeenCalledTimes(1);
-      // Announced by the page: a re-delivered event stays quiet.
+      // Left mid-job as before: the job is kept for the next visit…
+      expect(loadWatchedJobs("p1").map((w) => w.jobId)).toEqual(["job-1"]);
+      // …and the event, announced once, stays quiet when it is delivered again.
       expect(globalLayerHears("completed")).toBe(false);
     });
 
