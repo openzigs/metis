@@ -17,6 +17,7 @@ import { PortfolioAssessmentForm } from "@/components/portfolio/portfolio-assess
 import { PortfolioImpactView } from "@/components/portfolio/portfolio-impact-view";
 import {
   HOST_LINK_STATEMENT_MAX,
+  HOST_PICKER_ID,
   hostPickerHref,
   impactGroups,
   impactNeedsHost,
@@ -236,6 +237,8 @@ describe("hostPickerHref", () => {
     const url = new URL(href, "http://x");
     expect(url.pathname).toBe("/portfolio");
     expect(url.hash).toBe("#portfolio-host");
+    // #2185 — the one id the form gives its host picker, not a copy of it.
+    expect(url.hash).toBe(`#${HOST_PICKER_ID}`);
     expect(url.searchParams.get("statement")).toBe(
       "Customers must have a verified mobile phone number.",
     );
@@ -284,7 +287,9 @@ describe("PortfolioImpactView — the host", () => {
         hostName="Billing"
       />,
     );
-    expect(screen.getByTestId("portfolio-impact-host")).toHaveTextContent("Built by: Billing");
+    expect(screen.getByTestId("portfolio-impact-host")).toHaveTextContent(
+      "To be built by: Billing",
+    );
     const badges = screen.getAllByTestId("portfolio-impact-host-badge");
     expect(badges).toHaveLength(1);
     expect(
@@ -332,7 +337,7 @@ describe("the check page", () => {
     expect(await screen.findByTestId("portfolio-detail-host")).toHaveTextContent(
       "Product that will build it: Orders",
     );
-    expect(screen.getByTestId("portfolio-impact-host")).toHaveTextContent("Built by: Orders");
+    expect(screen.getByTestId("portfolio-impact-host")).toHaveTextContent("To be built by: Orders");
     expect(screen.queryByTestId("portfolio-impact-needs-host")).toBeNull();
   });
 });

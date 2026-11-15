@@ -75,7 +75,7 @@ const VERDICT_LABEL: Record<string, string> = {
  */
 function hostLabel(a: Pick<PortfolioAssessmentListItem, "hostProductId" | "hostProductName">) {
   if (!a.hostProductId) return "No product chosen to build it";
-  return `Built by ${a.hostProductName ?? "the product chosen"}`;
+  return `To be built by ${a.hostProductName ?? "the product chosen"}`;
 }
 
 type SearchParamsReader = { get(name: string): string | null; getAll?(name: string): string[] };

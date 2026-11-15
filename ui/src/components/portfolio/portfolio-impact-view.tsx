@@ -299,7 +299,7 @@ export function PortfolioImpactView({
       </h2>
       {hostProductId ? (
         <p className="text-sm" data-testid="portfolio-impact-host">
-          Built by: <strong>{hostName ?? "the product you chose"}</strong>
+          To be built by: <strong>{hostName ?? "the product you chose"}</strong>
         </p>
       ) : null}
       {affected.length > 0 ? (

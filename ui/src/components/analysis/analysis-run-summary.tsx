@@ -7,11 +7,14 @@
  *
  * #1749 — selecting no document sends no `documentIds`, and the run reads every
  * ready document, so an empty selection reads "all N documents", never "0".
+ * #2185 — that count leaves out the connectors' code rows: see
+ * `defaultRunDocumentCount` (`lib/project-pipeline.ts`).
  */
+
 interface Props {
   /** Number of documents selected for the run. */
   docCount: number;
-  /** Number of ready documents the run reads when none is selected. */
+  /** Number of documents the run reads when none is selected (`defaultRunDocumentCount`). */
   availableDocCount: number;
   /**
    * True when the loaded document list is only its first page, so
@@ -30,7 +33,10 @@ function documentsLabel(
   listIsPartial: boolean,
 ): string {
   if (docCount > 0) return plural(docCount);
-  if (listIsPartial) return "all the project's documents";
+  // The loaded page may hold only connector rows (a repository adds one per
+  // file), so a partial list cannot say "no documents" or give a count.
+  if (listIsPartial)
+    return "all the project's ready documents, not its repository or database rows";
   if (availableDocCount === 0) return "no documents";
   if (availableDocCount === 1) return "the project's 1 document";
   return `all ${plural(availableDocCount)}`;

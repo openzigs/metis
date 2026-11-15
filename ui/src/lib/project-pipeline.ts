@@ -14,7 +14,7 @@
  * `analyze` is "New change request", `docs` is "Deliverable"); they stay because
  * deep links, test ids and the drift badge are keyed on them.
  */
-import { openQuestionCount, questionsWaitingLabel } from "@metis/shared";
+import { CONNECTOR_CODE_SOURCES, openQuestionCount, questionsWaitingLabel } from "@metis/shared";
 
 export type PipelineStageId = "sources" | "ingest" | "analyze" | "review" | "docs" | "publish";
 
@@ -143,6 +143,22 @@ export function isDocumentAwaitingReview(d: { indexState?: string | null }): boo
 /** A document that is still being ingested — not one only waiting for review. */
 export function isDocumentIngesting(d: { status: string; indexState?: string | null }): boolean {
   return RUNNING_DOC_STATUSES.has(d.status) && !isDocumentAwaitingReview(d);
+}
+
+/**
+ * #2185 — the documents an analysis with no document ticked reads: every
+ * ready one except the repository and database connectors' rows (the server's
+ * `defaultAnalysisDocumentIds`, which shares the `CONNECTOR_CODE_SOURCES` list).
+ * Those are code, read by the code agent and the specialists' search, never as
+ * documents. It is an upper bound: the server also leaves out a restricted
+ * document (#2431), which the list does not say.
+ */
+export function defaultRunDocumentCount(
+  docs: ReadonlyArray<{ status: string; source: string }>,
+): number {
+  return docs.filter(
+    (d) => d.status === "ready" && !CONNECTOR_CODE_SOURCES.some((s) => s === d.source),
+  ).length;
 }
 
 /** Where quarantined documents are approved or rejected. */

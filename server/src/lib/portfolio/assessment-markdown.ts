@@ -56,7 +56,9 @@ const COVERAGE_LABEL: Record<Row["coverage"], string> = {
 export function summaryAfterCoverage(summary: string, coverageLabel: string): string {
   const text = summary.trim();
   if (!text.toLowerCase().startsWith(coverageLabel.toLowerCase())) return text;
-  const rest = text.slice(coverageLabel.length).replace(/^[\s:.]+/, "");
+  // #2185 — whole words only: "Covers items …" does not open with "Covers it".
+  if (/^[\w'-]/.test(text.slice(coverageLabel.length))) return text;
+  const rest = text.slice(coverageLabel.length).replace(/^[\s:.,;]+/, "");
   if (rest === "") return "";
   const reason = /^\((.+)\)\.?$/.exec(rest);
   if (reason) return `Reason: ${reason[1]}.`;

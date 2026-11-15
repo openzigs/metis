@@ -681,4 +681,20 @@ describe("summaryAfterCoverage (#1749)", () => {
     );
     expect(summaryAfterCoverage("", "Covers it")).toBe("");
   });
+
+  // #2185 — the label is matched as whole words, never as a prefix of a longer one.
+  it("keeps a summary whose first word only starts like the label", () => {
+    expect(summaryAfterCoverage("Covers items in the Orders queue.", "Covers it")).toBe(
+      "Covers items in the Orders queue.",
+    );
+    expect(summaryAfterCoverage("Not checkedout yet.", "Not checked")).toBe("Not checkedout yet.");
+    // A hyphen or apostrophe joins the next word to the label's own.
+    expect(summaryAfterCoverage("Restricted-access repos.", "Restricted")).toBe(
+      "Restricted-access repos.",
+    );
+    // A label followed by punctuation or a bracket still counts.
+    expect(summaryAfterCoverage("Covers it, via the Orders API.", "Covers it")).toBe(
+      "Via the Orders API.",
+    );
+  });
 });

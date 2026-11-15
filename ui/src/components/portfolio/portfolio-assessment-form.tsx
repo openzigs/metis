@@ -43,9 +43,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ScopePicker, type ScopeKind } from "@/components/scope/scope-picker";
-
-/** #1725 — the host picker's id, the fragment a check that needs a host links to. */
-const HOST_PICKER_ID = "portfolio-host";
+import { HOST_PICKER_ID } from "@/lib/portfolio-impact";
 
 /** The statement's limit in `createPortfolioAssessmentSchema`. */
 export const STATEMENT_MAX = 8_000;

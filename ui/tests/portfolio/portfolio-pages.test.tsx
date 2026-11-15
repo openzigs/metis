@@ -304,10 +304,10 @@ describe("portfolio entry page", () => {
     expect(api.list).toHaveBeenCalledWith("p-billing");
     expect(within(items[0]).getByRole("link")).toHaveAttribute("href", "/portfolio/pa-1");
     // #1749 — each row says whether a product was chosen to build it.
-    expect(items[0]).toHaveTextContent("Nothing covers it · 1 product · Built by Billing ·");
+    expect(items[0]).toHaveTextContent("Nothing covers it · 1 product · To be built by Billing ·");
     expect(items[1]).toHaveTextContent(`${"x".repeat(140)}…`);
     expect(items[1]).toHaveTextContent("Running · 3 products · No product chosen to build it ·");
-    expect(items[2]).toHaveTextContent("Failed · 2 products · Built by the product chosen ·");
+    expect(items[2]).toHaveTextContent("Failed · 2 products · To be built by the product chosen ·");
     // #2351 — the product arrived with is ticked in the shared scope picker.
     await waitFor(() =>
       expect(screen.getByTestId("portfolio-scope-selector")).toHaveTextContent("Billing"),
