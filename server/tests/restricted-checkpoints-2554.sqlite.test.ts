@@ -582,6 +582,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect((await post("root", `/api/analyses/${GONE_RUN}/cancel`)).status).toBe(200);
         expect(orch.cancel).toHaveBeenCalledTimes(1);
       });
+
+      it("an admin can edit its checkpoint the list shows them unrestricted; its starter cannot", async () => {
+        const edit = (who: Who) =>
+          request(app())
+            .patch(`${approvals}/${GONE_RUN}/approvals/${AP_GONE_RUN}/requirement`)
+            .set("Authorization", bearer(who))
+            .send({ title: "Edited title" });
+        const alice = await edit("alice");
+        expect(alice.status).toBe(404);
+        expect(alice.body.error.code).toBe("APPROVAL_NOT_FOUND");
+        const root = await edit("root");
+        expect(root.status).not.toBe(404);
+        expect(root.body.error?.code).not.toBe("APPROVAL_NOT_FOUND");
+      });
     });
 
     describe("B — starting an analysis from a document Bob cannot read", () => {

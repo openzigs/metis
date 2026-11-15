@@ -349,7 +349,10 @@ async function ensureRequirementSourcesVisible(
  * (404): an edit would send its text back and overwrite what they cannot read.
  * An entry promoted into a requirement is decided by that requirement's
  * sources; one not yet promoted rests on the run as a whole. An unknown
- * approval passes: the handler gives its own 404.
+ * approval passes: the handler gives its own 404. #2554 — an admin (durable
+ * role) passes too, as for every checkpoint refusal: the approvals list shows
+ * them none restricted, so its Edit must not 404 on a run whose source
+ * document was deleted since.
  */
 async function ensureCheckpointEntryVisible(
   req: Request,
@@ -361,7 +364,10 @@ async function ensureCheckpointEntryVisible(
     select: { id: true, itemId: true },
   });
   if (!approval) return;
-  if ((await hiddenCheckpointIds(readerOf(req), analysisId, [approval])).size > 0) {
+  if (
+    (await hiddenCheckpointIds(readerOf(req), analysisId, [approval])).size > 0 &&
+    !(await isDurableAdmin(req))
+  ) {
     throw new AppError(404, "APPROVAL_NOT_FOUND", `Approval request ${approvalId} not found`);
   }
 }
