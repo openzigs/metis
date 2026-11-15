@@ -65,6 +65,8 @@ import { ConnectorError } from "../lib/connectors/types.js";
 import { isDriverDetailCode, sanitizeDriverError } from "../lib/connectors/driver-error.js";
 import { createChildLogger } from "../lib/logger.js";
 import { listQuarantine } from "../lib/rag/quarantine.js";
+import { resolveAclActor } from "../lib/rag/acl.js";
+import { inactiveCallerAsUnauthenticated } from "./acl-errors.js";
 import { forgetEntry, getEntries, recordEntry } from "../lib/memory/chronicle.js";
 import {
   getGitHubProjectV2Settings,
@@ -787,7 +789,11 @@ export function projectsRouter(): Router {
       const projectId = String(req.params.id);
       const project = await getProject(projectId);
       if (!project) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
-      const items = await listQuarantine(projectId);
+      // #2547 — each row says whether the caller can read the document.
+      const aclActor = await resolveAclActor(actorFromReq(req).id).catch((err: unknown) => {
+        throw inactiveCallerAsUnauthenticated(err);
+      });
+      const items = await listQuarantine(projectId, aclActor);
       res.json(
         ok({
           items,

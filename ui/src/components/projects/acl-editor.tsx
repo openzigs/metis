@@ -11,10 +11,17 @@
  * only subjects are groups is retrievable by admins alone. A group subject
  * already on a document is still listed, with that warning, so it can be
  * removed.
+ *
+ * #2547 — mounted on each document of the Documents page and the quarantine
+ * reviewer. A save that leaves the editor off the list is allowed, but they
+ * then cannot read the document or change its list again (`PATCH /acl`
+ * refuses a member it is restricted away from), so the editor says so first.
  */
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { aclApi, type AclSubject } from "@/lib/projects-api";
+import { queryKeys } from "@/lib/query-keys";
+import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -23,6 +30,22 @@ import { Label } from "@/components/ui/label";
 /** The subject kinds a reviewer can add (#2248 — not `group`; see above). */
 type AddableKind = Exclude<AclSubject["kind"], "group">;
 
+/**
+ * #2547 — `subjects` would shut `viewer` out: a non-empty list naming neither
+ * their user id nor their role, and no admin bypass (the server's rule).
+ */
+export function aclLocksOut(
+  subjects: AclSubject[],
+  viewer: { id: string; role: string } | null,
+): boolean {
+  if (!viewer || viewer.role === "admin" || subjects.length === 0) return false;
+  return !subjects.some(
+    (s) =>
+      (s.kind === "user" && s.value === viewer.id) ||
+      (s.kind === "role" && s.value === viewer.role),
+  );
+}
+
 export function AclEditor(props: {
   projectId: string;
   documentId: string;
@@ -30,6 +53,7 @@ export function AclEditor(props: {
   onSaved?: () => void;
 }) {
   const qc = useQueryClient();
+  const { user } = useAuth();
   const [subjects, setSubjects] = useState<AclSubject[]>(props.initialSubjects);
   const [draftKind, setDraftKind] = useState<AddableKind>("user");
   const [draftValue, setDraftValue] = useState("");
@@ -38,6 +62,8 @@ export function AclEditor(props: {
     mutationFn: () => aclApi.update(props.projectId, props.documentId, subjects),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["quarantine", props.projectId] });
+      // #2547 — the Documents list shows the badge from the saved list.
+      qc.invalidateQueries({ queryKey: queryKeys.documents.forProject(props.projectId) });
       props.onSaved?.();
     },
   });
@@ -54,7 +80,7 @@ export function AclEditor(props: {
 
   return (
     <Card className="space-y-3 p-3" data-testid="acl-editor">
-      <h3 className="text-sm font-semibold">Access control</h3>
+      <h3 className="text-sm font-semibold">Who can read this document</h3>
       {subjects.length === 0 ? (
         <p className="text-xs text-muted-foreground">
           No restrictions — every project member can retrieve this document.
@@ -118,6 +144,12 @@ export function AclEditor(props: {
       </div>
       {/* #2356 — a refused save (a new group, or another editor saving at the
           same time) says why, instead of leaving the old list in place unexplained. */}
+      {aclLocksOut(subjects, user) ? (
+        <p className="text-xs text-warning" role="status" data-testid="acl-lockout-warning">
+          You are not on this list: once it is saved you will not be able to read this document or
+          change who can. Add yourself or your role to keep access.
+        </p>
+      ) : null}
       {save.error ? (
         <p className="text-sm text-destructive" role="alert" data-testid="acl-save-error">
           {save.error instanceof Error ? save.error.message : "The access list could not be saved."}
@@ -125,7 +157,7 @@ export function AclEditor(props: {
       ) : null}
       <div className="flex justify-end">
         <Button onClick={() => save.mutate()} disabled={save.isPending} data-testid="acl-save">
-          {save.isPending ? "Saving…" : "Save ACL"}
+          {save.isPending ? "Saving…" : "Save access list"}
         </Button>
       </div>
     </Card>

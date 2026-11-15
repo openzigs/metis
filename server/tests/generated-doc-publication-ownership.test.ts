@@ -49,6 +49,9 @@ import { createEvidencePolicy } from "../src/lib/docs-gen/evidence-policy.js";
 import { generatedDocRevisionId } from "../src/lib/docs-gen/generated-doc-provenance.js";
 import { INDEXING_FAILED_MESSAGE } from "../src/lib/rag/indexing-failure-message.js";
 
+/** #2547 — the queue is read as someone; these documents are unrestricted. */
+const REVIEWER = { userId: "reviewer", role: "coordinator" };
+
 // A generated Postgres Prisma client cannot use the SQLite adapter. This proof
 // runs with the SQLite client, never the developer's configured application DB.
 describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication persistence", () => {
@@ -327,7 +330,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
           );
         }
         await assertLive("alpha");
-        expect(await listQuarantine("project")).toEqual([]);
+        expect(await listQuarantine("project", REVIEWER)).toEqual([]);
       },
     );
 
@@ -351,7 +354,9 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
           } as never,
         }),
       ).rejects.toThrow("v2 embedding failed");
-      expect((await listQuarantine("project")).map((row) => row.documentId)).toContain(syntheticId);
+      expect((await listQuarantine("project", REVIEWER)).map((row) => row.documentId)).toContain(
+        syntheticId,
+      );
       await expect(approveDocument(syntheticId, { id: "actor" })).rejects.toThrow(
         "revision unavailable",
       );
@@ -413,7 +418,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
           .post(`/projects/project/documents/${syntheticId}/approve`)
           .set("Authorization", token);
         expect(response.status).toBe(409);
-        expect(await listQuarantine("project")).toEqual([
+        expect(await listQuarantine("project", REVIEWER)).toEqual([
           expect.objectContaining({
             documentId: syntheticId,
             indexState: "reconciling",
@@ -432,7 +437,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
         expect(retried.status).toBe(200);
         expect((await db.knowledgeChunk.findMany()).map((row) => row.id)).toEqual(selected);
         await assertLive("alpha");
-        expect(await listQuarantine("project")).toEqual([]);
+        expect(await listQuarantine("project", REVIEWER)).toEqual([]);
       },
     );
 
@@ -1265,7 +1270,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
           },
         });
       }
-      const rows = await listQuarantine("project");
+      const rows = await listQuarantine("project", REVIEWER);
       expect(rows.map((row) => row.documentId).sort()).toEqual([
         `gendoc-doc:${payload(1).revisionId}`,
         "gendoc-legacy",
@@ -1297,7 +1302,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
       // A fresh list after a cold reload must still expose the manual retry.
       __resetBM25IndexSingleton();
       state.vector = new LocalVectorStore({ root: join(directory, "vectors") });
-      expect(await listQuarantine("project")).toEqual([
+      expect(await listQuarantine("project", REVIEWER)).toEqual([
         expect.objectContaining({
           documentId: "ordinary",
           indexState: "reconciling",
@@ -1308,7 +1313,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
         chunkCount: 0,
       });
       expect(await getBM25Index().search("project", "alpha", 20)).toEqual([]);
-      expect(await listQuarantine("project")).toEqual([]);
+      expect(await listQuarantine("project", REVIEWER)).toEqual([]);
     });
   });
 });

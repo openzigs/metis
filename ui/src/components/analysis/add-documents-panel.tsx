@@ -25,6 +25,7 @@ import { ApiError } from "@/lib/api-client";
 import { urlSuggestionMessage, urlProtocolSuggestionMessage } from "@/lib/error-suggestion";
 import { documentsApi, type DocumentRow } from "@/lib/projects-api";
 import { DocumentName } from "@/components/projects/document-name";
+import { RestrictedBadge } from "@/components/projects/restricted-badge";
 import { useRepoNames } from "@/hooks/use-repo-names";
 import { DocumentUploader } from "@/components/projects/document-uploader";
 import { TextIngestForm } from "@/components/projects/text-ingest-form";
@@ -145,7 +146,10 @@ export function AddDocumentsPanel({
         ) : null}
         {docs.map((d) => {
           const ready = d.status === "ready";
-          const checked = selectedDocs.includes(d.id);
+          // #2547 — a document restricted away from the caller is listed,
+          // marked, and cannot be picked for the change request.
+          const unreadable = d.access?.canRead === false;
+          const checked = selectedDocs.includes(d.id) && !unreadable;
           return (
             <label
               key={d.id}
@@ -155,7 +159,7 @@ export function AddDocumentsPanel({
               <input
                 type="checkbox"
                 checked={checked}
-                disabled={!ready}
+                disabled={!ready || unreadable}
                 onChange={(e) => {
                   onSelectedDocsChange(
                     e.target.checked
@@ -167,6 +171,7 @@ export function AddDocumentsPanel({
               {/* Issue #363 — path over repository label; the internal key
                   is only the tooltip. */}
               <DocumentName filename={d.filename} source={d.source} repoNames={repoNames} />
+              <RestrictedBadge access={d.access} testId={`add-documents-restricted-${d.id}`} />
               {!ready ? (
                 <span
                   className={`ml-auto inline-block rounded border px-1.5 py-0.5 text-[10px] ${statusBadgeClass(d.status)}`}

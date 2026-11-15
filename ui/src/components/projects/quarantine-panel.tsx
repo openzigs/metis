@@ -7,11 +7,20 @@
  * approve / reject each one, toggle per-document trust, and toggle the
  * project-wide auto-approve flag. Gated by `document.upload`/`project.update`
  * server-side; the panel does not render permission gating itself.
+ *
+ * #2547 — each row shows the document's "Restricted" badge, and a reviewer
+ * holding `document.upload` who can read the document may set its access
+ * list before approving it.
  */
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { hasPermission } from "@metis/shared";
+import { useAuth } from "@/lib/auth-context";
 import { quarantineApi, type QuarantineRow } from "@/lib/projects-api";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { AclEditor } from "@/components/projects/acl-editor";
+import { RestrictedBadge } from "@/components/projects/restricted-badge";
 
 const QK = (id: string) => ["quarantine", id] as const;
 
@@ -37,6 +46,9 @@ function ToggleCheckbox(props: {
 
 export function QuarantinePanel({ projectId }: { projectId: string }) {
   const qc = useQueryClient();
+  const { user } = useAuth();
+  const canEditAccess = user ? hasPermission(user.role, "document.upload") : false;
+  const [accessOpenFor, setAccessOpenFor] = useState<string | null>(null);
   const list = useQuery({
     queryKey: QK(projectId),
     queryFn: () => quarantineApi.list(projectId),
@@ -116,63 +128,95 @@ export function QuarantinePanel({ projectId }: { projectId: string }) {
         <p className="text-sm text-muted-foreground">Loading quarantine…</p>
       ) : list.data && list.data.items.length > 0 ? (
         <ul className="divide-y" data-testid="quarantine-list">
-          {list.data.items.map((row: QuarantineRow) => (
-            <li
-              key={row.documentId}
-              className="flex items-center justify-between gap-3 py-2 text-sm"
-              data-testid={`quarantine-row-${row.documentId}`}
-            >
-              <div>
-                <p className="font-medium">{row.filename}</p>
-                <p className="text-xs text-muted-foreground">
-                  {row.chunkCount} {row.chunkCount === 1 ? "section" : "sections"} · uploaded{" "}
-                  {new Date(row.uploadedAt).toLocaleString()}
-                </p>
-                {row.indexState === "reconciling" && (
-                  <div className="text-xs text-muted-foreground">
-                    <p>Approval saved. Index cleanup is incomplete; retry indexing to finish.</p>
-                    {row.errorMessage && <p className="text-destructive">{row.errorMessage}</p>}
-                  </div>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                {row.indexState === "quarantined" && (
-                  <label className="flex items-center gap-1 text-xs text-muted-foreground">
-                    <ToggleCheckbox
-                      checked={row.autoApproveTrusted}
-                      onChange={(value) => toggleDoc.mutate({ documentId: row.documentId, value })}
-                      ariaLabel={`Auto-approve ${row.filename}`}
+          {list.data.items.map((row: QuarantineRow) => {
+            const accessOpen = accessOpenFor === row.documentId;
+            return (
+              <li
+                key={row.documentId}
+                className="space-y-2 py-2 text-sm"
+                data-testid={`quarantine-row-${row.documentId}`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="font-medium">{row.filename}</p>
+                    <p className="text-xs text-muted-foreground">
+                      {row.chunkCount} {row.chunkCount === 1 ? "section" : "sections"} · uploaded{" "}
+                      {new Date(row.uploadedAt).toLocaleString()}
+                    </p>
+                    <RestrictedBadge
+                      access={row.access}
+                      testId={`quarantine-restricted-${row.documentId}`}
                     />
-                    trust
-                  </label>
-                )}
-                <Button
-                  size="sm"
-                  variant="default"
-                  onClick={() => approve.mutate(row.documentId)}
-                  disabled={approve.isPending || reject.isPending}
-                  data-testid={`approve-${row.documentId}`}
-                >
-                  {row.indexState === "reconciling"
-                    ? approve.isPending && approve.variables === row.documentId
-                      ? "Retrying indexing…"
-                      : "Retry indexing"
-                    : "Approve"}
-                </Button>
-                {row.indexState === "quarantined" && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => reject.mutate(row.documentId)}
-                    disabled={reject.isPending || approve.isPending}
-                    data-testid={`reject-${row.documentId}`}
-                  >
-                    Reject
-                  </Button>
-                )}
-              </div>
-            </li>
-          ))}
+                    {row.indexState === "reconciling" && (
+                      <div className="text-xs text-muted-foreground">
+                        <p>
+                          Approval saved. Index cleanup is incomplete; retry indexing to finish.
+                        </p>
+                        {row.errorMessage && <p className="text-destructive">{row.errorMessage}</p>}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {row.indexState === "quarantined" && (
+                      <label className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <ToggleCheckbox
+                          checked={row.autoApproveTrusted}
+                          onChange={(value) =>
+                            toggleDoc.mutate({ documentId: row.documentId, value })
+                          }
+                          ariaLabel={`Auto-approve ${row.filename}`}
+                        />
+                        trust
+                      </label>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="default"
+                      onClick={() => approve.mutate(row.documentId)}
+                      disabled={approve.isPending || reject.isPending}
+                      data-testid={`approve-${row.documentId}`}
+                    >
+                      {row.indexState === "reconciling"
+                        ? approve.isPending && approve.variables === row.documentId
+                          ? "Retrying indexing…"
+                          : "Retry indexing"
+                        : "Approve"}
+                    </Button>
+                    {row.indexState === "quarantined" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => reject.mutate(row.documentId)}
+                        disabled={reject.isPending || approve.isPending}
+                        data-testid={`reject-${row.documentId}`}
+                      >
+                        Reject
+                      </Button>
+                    )}
+                    {canEditAccess && row.access?.canRead !== false ? (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        aria-expanded={accessOpen}
+                        onClick={() => setAccessOpenFor(accessOpen ? null : row.documentId)}
+                        data-testid={`quarantine-access-toggle-${row.documentId}`}
+                      >
+                        {accessOpen ? "Close access" : "Access"}
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+                {accessOpen ? (
+                  <AclEditor
+                    projectId={projectId}
+                    documentId={row.documentId}
+                    initialSubjects={row.access?.subjects ?? []}
+                    onSaved={() => setAccessOpenFor(null)}
+                  />
+                ) : null}
+              </li>
+            );
+          })}
         </ul>
       ) : !list.isError ? (
         <p className="text-sm text-muted-foreground">Quarantine is empty.</p>

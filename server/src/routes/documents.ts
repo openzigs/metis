@@ -37,7 +37,7 @@ import { getKnowledgeService, type KnowledgeService } from "../lib/rag/knowledge
 import { getIngestQueue, type IngestQueue } from "../lib/rag/ingest-queue.js";
 import { getProject } from "../lib/projects/project-service.js";
 import { approveDocument, rejectDocument } from "../lib/rag/quarantine.js";
-import { resolveAclActor, saveDocumentAcl } from "../lib/rag/acl.js";
+import { documentAccess, resolveAclActor, saveDocumentAcl, type AclActor } from "../lib/rag/acl.js";
 import { aclSaveErrorAsHttp, inactiveCallerAsUnauthenticated } from "./acl-errors.js";
 import { createChildLogger } from "../lib/logger.js";
 import {
@@ -56,6 +56,25 @@ function ok<T>(data: T): ApiResponse<T> {
 function actorFromReq(req: Request) {
   if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
   return { id: req.user.userId, role: req.user.role };
+}
+
+/**
+ * #2547 — the caller as the ACL sees them (durable role, live account), for a
+ * route that says whether they can read each document. An inactive caller is
+ * the 401 `TOKEN_INVALID` #2261 chose.
+ */
+function callerAclActor(req: Request): Promise<AclActor> {
+  return resolveAclActor(actorFromReq(req).id).catch((err: unknown) => {
+    throw inactiveCallerAsUnauthenticated(err);
+  });
+}
+
+/** #2547 — a document row with its access list as the caller sees it. */
+function withAccess<T extends { aclSubjects: string; errorMessage?: string | null }>(
+  row: T,
+  actor: AclActor,
+) {
+  return { ...publicDocumentRow(row), access: documentAccess(row.aclSubjects, actor) };
 }
 
 async function ensureProjectActive(projectId: string) {
@@ -365,9 +384,10 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         take: limit + 1,
       });
       const page = rows.slice(0, limit);
+      const aclActor = await callerAclActor(req);
       res.json(
         ok({
-          items: page.map((item) => publicDocumentRow(item)),
+          items: page.map((item) => withAccess(item, aclActor)),
           limit,
           nextCursor: rows.length > limit ? encodeDocumentCursor(page[page.length - 1]) : null,
         }),
@@ -381,9 +401,10 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       prisma.document.count({ where }),
     ]);
     const items = rows.slice(0, limit);
+    const aclActor = await callerAclActor(req);
     res.json(
       ok({
-        items: items.map((item) => publicDocumentRow(item)),
+        items: items.map((item) => withAccess(item, aclActor)),
         total,
         limit,
         offset,
@@ -400,7 +421,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       where: { id: documentId, projectId, deletedAt: null },
     });
     if (!document) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
-    res.json(ok(publicDocumentRow(document)));
+    res.json(ok(withAccess(document, await callerAclActor(req))));
   });
 
   // ── Delete ──────────────────────────────────────────────────────────────
@@ -494,10 +515,13 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       // #2261 — a NEW group subject is refused (400 ACL_GROUP_UNSUPPORTED).
       // #2356 — checked against the ACL the write replaces, not one read
       // earlier: a group another editor just removed is not "already held".
+      // #2547 — so is the caller: one the document is restricted away from
+      // may not rewrite its list (403 ACL_EDIT_FORBIDDEN).
       const saved = await saveDocumentAcl({
         documentId,
         projectId,
         aclSubjects: parsed.data.aclSubjects,
+        actor: await callerAclActor(req),
       }).catch((err: unknown) => {
         throw aclSaveErrorAsHttp(err);
       });

@@ -32,6 +32,10 @@ const socketMock = {
   off: vi.fn((event: string) => socketHandlers.delete(event)),
 };
 let socketAvailable = false;
+/** #2547 — the signed-in member; a `developer` holds `document.upload`. */
+let viewer: { id: string; role: string } | null = { id: "u-bob", role: "developer" };
+vi.mock("@/lib/auth-context", () => ({ useAuth: () => ({ user: viewer }) }));
+const updateAcl = vi.fn();
 
 vi.mock("next/navigation", async () => {
   const actual = await vi.importActual<typeof import("next/navigation")>("next/navigation");
@@ -53,6 +57,7 @@ vi.mock("@/lib/projects-api", async (importOriginal) => {
       list: (...a: unknown[]) => listDocuments(...a),
       remove: (...a: unknown[]) => removeDocument(...a),
     },
+    aclApi: { update: (...a: unknown[]) => updateAcl(...a) },
   };
 });
 // The ingest forms do their own I/O. Stand them in with a button that fires the
@@ -118,6 +123,9 @@ beforeEach(() => {
   socketMock.emit.mockClear();
   socketAvailable = false;
   projectStatus = "active";
+  viewer = { id: "u-bob", role: "developer" };
+  updateAcl.mockReset();
+  updateAcl.mockResolvedValue({ chunkCount: 0, aclSubjects: [] });
 });
 
 afterEach(() => {
@@ -249,5 +257,82 @@ describe("Documents page — #2272 checking a document's requirements across the
     expect(href.pathname).toBe("/portfolio");
     expect(href.searchParams.get("documentId")).toBe("d-ready");
     expect(href.searchParams.get("title")).toBe("Payments FRD");
+  });
+});
+
+describe("Documents page — #2547 the document access list", () => {
+  const toCoordinators = [{ kind: "role" as const, value: "coordinator" }];
+  const restrictedFor = (canRead: boolean) =>
+    doc({
+      id: "d-pay",
+      status: "ready",
+      filename: "payroll.md",
+      access: { restricted: true, canRead, subjects: toCoordinators },
+    });
+  const open = doc({
+    id: "d-open",
+    status: "ready",
+    access: { restricted: false, canRead: true, subjects: [] },
+  });
+
+  it("badges a restricted document with who can read it, and leaves an open one unbadged", async () => {
+    listDocuments.mockResolvedValue(page([restrictedFor(true), open]));
+    renderPage();
+    const badge = await screen.findByTestId("document-restricted-d-pay");
+    expect(badge).toHaveTextContent("Restricted");
+    expect(badge).toHaveTextContent("Readable by role coordinator and admins");
+    expect(badge).not.toHaveTextContent("you cannot read it");
+    expect(screen.queryByTestId("document-restricted-d-open")).toBeNull();
+  });
+
+  it("opens the access editor on a document, seeded with its list, and saves through the API", async () => {
+    viewer = { id: "u-alice", role: "coordinator" };
+    listDocuments.mockResolvedValue(page([restrictedFor(true)]));
+    renderPage();
+    const toggle = await screen.findByTestId("document-access-toggle-d-pay");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+    const editor = await screen.findByTestId("acl-editor");
+    expect(editor).toHaveTextContent("role · coordinator");
+
+    const before = listDocuments.mock.calls.length;
+    fireEvent.click(screen.getByTestId("acl-save"));
+    await waitFor(() =>
+      expect(updateAcl).toHaveBeenCalledWith(PROJECT_ID, "d-pay", toCoordinators),
+    );
+    // The editor closes and the list is read again, so the badge shows the saved list.
+    await waitFor(() => expect(screen.queryByTestId("acl-editor")).toBeNull());
+    await waitFor(() => expect(listDocuments.mock.calls.length).toBeGreaterThan(before));
+  });
+
+  it("a member the document is restricted away from sees the badge, and no editor or portfolio check", async () => {
+    listDocuments.mockResolvedValue(page([restrictedFor(false), open]));
+    renderPage();
+    const badge = await screen.findByTestId("document-restricted-d-pay");
+    expect(badge).toHaveTextContent("you cannot read it");
+    expect(screen.queryByTestId("document-access-toggle-d-pay")).toBeNull();
+    // The open document keeps both.
+    expect(screen.getByTestId("document-access-toggle-d-open")).toBeInTheDocument();
+    const links = screen.getAllByRole("link", { name: "Check requirements across portfolio" });
+    expect(links).toHaveLength(1);
+    expect(new URL(links[0].getAttribute("href")!, "http://x").searchParams.get("documentId")).toBe(
+      "d-open",
+    );
+  });
+
+  it("offers no editor to a role without document.upload, or on an archived project", async () => {
+    viewer = { id: "u-rita", role: "reader" };
+    listDocuments.mockResolvedValue(page([open]));
+    const { unmount } = renderPage();
+    await screen.findByTestId("document-row-d-open");
+    expect(screen.queryByTestId("document-access-toggle-d-open")).toBeNull();
+    unmount();
+
+    viewer = { id: "u-alice", role: "coordinator" };
+    projectStatus = "archived";
+    renderPage();
+    await screen.findByText(/archived; uploads are disabled/i);
+    await screen.findByTestId("document-row-d-open");
+    expect(screen.queryByTestId("document-access-toggle-d-open")).toBeNull();
   });
 });

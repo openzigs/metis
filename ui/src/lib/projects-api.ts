@@ -90,6 +90,17 @@ export interface ProjectListPage {
 // #547 — the closed set is defined once, in `@metis/shared`.
 export type { DocumentSource };
 
+/**
+ * #2547 — a document's access list as the caller sees it: whether it is
+ * restricted, the subjects it is restricted to, and whether the caller is one
+ * of them (or an admin). Absent from a row a route does not annotate.
+ */
+export interface DocumentAccess {
+  restricted: boolean;
+  canRead: boolean;
+  subjects: AclSubject[];
+}
+
 export interface DocumentRow {
   id: string;
   projectId: string;
@@ -109,6 +120,8 @@ export interface DocumentRow {
   chunkCount: number;
   /** Epic #724 — when true this document is a spec for implementation comparison. */
   isSpec?: boolean;
+  /** #2547 — see {@link DocumentAccess}. */
+  access?: DocumentAccess;
   uploadedAt: string;
   processedAt?: string | null;
 }
@@ -518,6 +531,8 @@ export interface QuarantineRow {
   indexState: "quarantined" | "reconciling";
   autoApproveTrusted: boolean;
   errorMessage?: string | null;
+  /** #2547 — see {@link DocumentAccess}. */
+  access?: DocumentAccess;
 }
 
 export interface QuarantineListResponse {

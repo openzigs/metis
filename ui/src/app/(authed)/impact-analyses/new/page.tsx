@@ -140,7 +140,13 @@ export default function NewImpactAnalysisPage() {
       const projectId = selected[idx];
       const project = projects.find((p) => p.id === projectId);
       for (const doc of q.data?.items ?? []) {
-        rows.push({ id: doc.id, filename: doc.filename, projectName: project?.name ?? projectId });
+        rows.push({
+          id: doc.id,
+          filename: doc.filename,
+          projectName: project?.name ?? projectId,
+          restricted: doc.access?.restricted === true,
+          unreadable: doc.access?.canRead === false,
+        });
       }
     });
     return rows;

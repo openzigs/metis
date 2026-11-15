@@ -24,9 +24,11 @@
 import { randomUUID } from "node:crypto";
 import {
   AclGroupUnsupportedError,
+  documentAccess,
   newGroupSubjects,
   parseAclSubjects,
   serializeAclSubjects,
+  type AclActor,
 } from "./acl.js";
 import { prisma } from "../prisma.js";
 import { audit } from "../audit/audit-service.js";
@@ -793,7 +795,11 @@ export async function rejectDocument(
 }
 
 /** List quarantine and approvals whose selected index still needs cleanup. */
-export async function listQuarantine(projectId: string) {
+/**
+ * The project's review queue. #2547 — each row carries its access list as
+ * `actor` sees it, so the reviewer sees which documents are restricted.
+ */
+export async function listQuarantine(projectId: string, actor: AclActor) {
   const docs = await prisma.document.findMany({
     where: {
       projectId,
@@ -819,6 +825,7 @@ export async function listQuarantine(projectId: string) {
       indexState: true,
       autoApproveTrusted: true,
       errorMessage: true,
+      aclSubjects: true,
     },
   });
   return docs.map((d) => ({
@@ -830,6 +837,7 @@ export async function listQuarantine(projectId: string) {
     autoApproveTrusted: d.autoApproveTrusted,
     // #98 — a reconciling row holds the approval cleanup's raw exception text.
     errorMessage: publicIndexingErrorMessage(d.errorMessage, d.indexState),
+    access: documentAccess(d.aclSubjects, actor),
   }));
 }
 

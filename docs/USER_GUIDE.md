@@ -1298,6 +1298,12 @@ This process is automatic and happens in the background. The document's status c
 | Maximum documents per project | 100 |
 | Allowed file types | .pdf, .docx, .xlsx, .pptx, .md, .txt |
 
+### 10.4 Restricting Who Can Read a Document
+
+A document is readable by every member of the project until you give it an access list (#2547). On the project's **Documents** page, choose **Access** on the document's row (the same button is on each row of the **Quarantine** list in Project settings, so you can restrict a document before approving it). Add a **role** (such as `coordinator`) or a **user** by their id, then **Save access list**. Only the people the list names, and admins, can then read the document; everyone else's searches, chat and change requests leave it out. An empty list removes the restriction.
+
+A restricted document carries a **Restricted** badge saying who can read it, on the Documents page, in the Quarantine list, and in the document pickers of a new change request and a new impact analysis. A member who is not on the list sees *you cannot read it*: they cannot select it for a change request or an impact analysis, start a portfolio check from it, or change its access list (only someone who can read the document, or an admin, can). If a list you are about to save leaves you off, the editor warns you first, because once it is saved you lose access too. **Access** is offered to roles that can upload documents (`coordinator` and `developer` by default), and not on an archived project.
+
 ---
 
 ## 11. Running an Analysis
