@@ -303,21 +303,26 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     it.each(["off", "headings"] as const)(
-      "#2193 %s: a repository file is indexed behind its path, never a contextual prefix",
+      "#2193 %s: a repository file is embedded behind its path; BM25 and the stored row are not",
       async (mode) => {
         await seedDocument("doc-repo", "connector:repo:r1:src/docs/leave-policy.md");
-        const { knowledge, embedder } = service(mode);
+        const { knowledge, embedder, bm25 } = service(mode);
         await knowledge.ingestDocument("doc-repo");
         const line = "File: docs/leave-policy.md";
         expect(embedder.seen).toEqual(expected.map((c) => `${line}\n\n${c.text}`));
         const rows = await storedChunks("doc-repo");
-        for (const r of rows) expect(JSON.parse(r.metadata ?? "{}").contextPrefix).toBe(line);
+        expect(rows.length).toBe(expected.length);
+        for (const r of rows) expect(JSON.parse(r.metadata ?? "{}").contextPrefix).toBeUndefined();
 
-        // "file" is in no chunk's text or path: only the prefix puts it in the index,
-        // and a FRESH index rebuilt from the stored rows still has it.
-        const hits = await new BM25Index().search(PROJECT, "file", 20);
-        expect(new Set(hits.map((h) => h.chunkId))).toEqual(new Set(rows.map((r) => r.id)));
-        // A consumer is handed the display text, never the prefix.
+        // "file" is in no chunk's text or path, so only the line could put it in the
+        // BM25 index: neither the warm index ingest wrote nor a FRESH one rebuilt from
+        // the stored rows has it. The path is BM25's boosted `path` field already (#717).
+        expect(await bm25.search(PROJECT, "file", 20)).toEqual([]);
+        expect(await new BM25Index().search(PROJECT, "file", 20)).toEqual([]);
+        expect((await new BM25Index().search(PROJECT, "leave policy", 20)).length).toBe(
+          rows.length,
+        );
+        // A consumer is handed the display text, never the line.
         const found = await knowledge.search(PROJECT, "payroll reconciliation mismatch", {
           k: 20,
         });
@@ -326,19 +331,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       },
     );
 
-    it("#2193 a repository row written before the path prefix gets it from a reindex and a fresh BM25 index", async () => {
+    it("#2193 a reindex embeds every repository row behind its path, rows from before #2193 included", async () => {
+      // A pre-#2193 ingest stored the same row a current one does (no prefix), so a
+      // reindex is what gives an existing project's vectors the line.
       await seedDocument("doc-repo-old", "connector:repo:r1:src/docs/leave-policy.md");
       await service("off").knowledge.ingestDocument("doc-repo-old");
-      // The shape a pre-#2193 ingest left: no stored prefix.
-      await db.knowledgeChunk.updateMany({
-        where: { documentId: "doc-repo-old" },
-        data: { metadata: JSON.stringify({ headings: [] }) },
-      });
       const rows = await storedChunks("doc-repo-old");
       const line = "File: docs/leave-policy.md";
-
-      const hits = await new BM25Index().search(PROJECT, "file", 20);
-      expect(new Set(hits.map((h) => h.chunkId))).toEqual(new Set(rows.map((r) => r.id)));
 
       const { knowledge, embedder } = service("off", recordingEmbedder("bow-2193-v2"));
       const reindexed = await knowledge.reindexProject(PROJECT);
@@ -346,7 +345,40 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(new Set(embedder.seen)).toEqual(new Set(rows.map((r) => `${line}\n\n${r.text}`)));
     });
 
-    it("#2193 a repository file parked for review before the path prefix gets it when approved", async () => {
+    it("#2193 the reindex cutover catch-up embeds a repository row behind its path", async () => {
+      await seedDocument("doc-plain", "leave-policy.md");
+      await service("off").knowledge.ingestDocument("doc-plain");
+      await seedDocument("doc-repo-late", "connector:repo:r1:src/internal/model/feed.go", "x");
+      const lateText = "func (f *Feed) ScheduleNextCheck() {}";
+      const embedder = recordingEmbedder("bow-2193-v3");
+      const embed = embedder.embed;
+      let inserted = false;
+      embedder.embed = async (texts: string[]) => {
+        // A row indexed after the reindex listed the project: the main loop never
+        // sees it, so only the cutover's catch-up can embed it.
+        if (!inserted) {
+          inserted = true;
+          await db.knowledgeChunk.create({
+            data: {
+              id: "late-repo-chunk",
+              projectId: PROJECT,
+              documentId: "doc-repo-late",
+              position: 0,
+              text: lateText,
+              md5: "late",
+              embeddingModel: "bow-2234",
+            },
+          });
+        }
+        return embed(texts);
+      };
+      const { knowledge } = service("off", embedder);
+      await knowledge.reindexProject(PROJECT);
+      expect(embedder.seen).toContain(`File: internal/model/feed.go\n\n${lateText}`);
+      expect(embedder.seen).not.toContain(lateText);
+    });
+
+    it("#2193 approving a parked repository file keeps the path out of BM25", async () => {
       await seedDocument(
         "doc-repo-parked",
         "connector:repo:r1:src/docs/leave-policy.md",
@@ -356,19 +388,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const s = service("off");
       await s.knowledge.ingestDocument("doc-repo-parked");
       expect(await storedChunks("doc-repo-parked")).toEqual([]);
-      // The shape a pre-#2193 ingest parked: no stored prefix on the quarantined rows.
-      const parked = await db.quarantineChunk.findMany({
-        where: { documentId: "doc-repo-parked", ord: { gte: 0 } },
-      });
-      expect(parked.length).toBe(expected.length);
-      for (const q of parked) {
-        const meta = JSON.parse(q.metadata ?? "{}") as Record<string, unknown>;
-        delete meta.contextPrefix;
-        await db.quarantineChunk.update({
-          where: { id: q.id },
-          data: { metadata: JSON.stringify(meta) },
-        });
-      }
+      expect(s.embedder.seen).toEqual(
+        expected.map((c) => `File: docs/leave-policy.md\n\n${c.text}`),
+      );
 
       await approveDocument(
         "doc-repo-parked",
@@ -378,8 +400,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const rows = await storedChunks("doc-repo-parked");
       expect(rows.length).toBe(expected.length);
       // The warm index the approval wrote, not a fresh one rebuilt from the rows.
-      const warm = await s.bm25.search(PROJECT, "file", 20);
-      expect(new Set(warm.map((h) => h.chunkId))).toEqual(new Set(rows.map((r) => r.id)));
+      expect(await s.bm25.search(PROJECT, "file", 20)).toEqual([]);
+      expect((await s.bm25.search(PROJECT, "leave policy", 20)).length).toBe(rows.length);
     });
 
     /**

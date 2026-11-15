@@ -342,6 +342,17 @@ picks up where it stopped. Rollback is a forward operation — chunk text is the
 source of truth, so pointing `EMBED_MODEL` back at the old model and reindexing
 restores the previous index exactly.
 
+**Upgrading past #2193: reindex projects with repositories once.** Each chunk of a
+repository file is now embedded behind its `File: <repository path>` line. A vector
+stored before that has no line, and **nothing reports it**: the model, the chunker
+identity and `embeddings:migrate status` are all unchanged, so status exits 0 and the
+coverage card reads current. Run **Reindex** (Settings > Embeddings) or
+`pnpm embeddings:migrate reindex --project <id>` once per such project after
+upgrading; `reindex --all` will not do it, because it only takes projects whose
+chunks are on another model. Until then those chunks
+rank as they did before, and nothing else is affected. BM25 and the text a search
+returns do not change. New and changed files get the line at ingest.
+
 Full runbook, including the EKS specifics, the pgvector column-width path and what
 is kept vs lost on a rollback:
 [docs/EMBEDDINGS_BACKENDS.md § Runbook](./EMBEDDINGS_BACKENDS.md#runbook--migrating-a-deployment-to-a-new-embedding-model-787).

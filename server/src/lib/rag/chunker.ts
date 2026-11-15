@@ -358,7 +358,11 @@ export const DOCUMENT_CHUNKER_PRODUCER = "doc";
 /** #2268 — the context segment of a chunker identity, before its mode. */
 const CONTEXT_SEGMENT = ";ctx=";
 
-/** #2268 — the context tag of rows that are never prefixed, so match every mode. */
+/**
+ * #2268 — the context tag of rows that get no context prefix in any mode (repository
+ * files), so match every mode. #2193's `File: <path>` line, embedder-only, does not
+ * depend on the mode and so does not change this.
+ */
 export const CHUNK_CONTEXT_NONE = "none";
 
 /**
@@ -454,7 +458,7 @@ export function classifyChunkerIdentity(
   // the producer comparison, which would otherwise route "" into `foreign`.
   if (chunkerProducerOf(stored) === "") return "untagged";
   if (chunkerProducerOf(stored) !== chunkerProducerOf(active)) return "foreign";
-  // #2268 — a row never prefixed in any mode is current under every mode, provided
+  // #2268 — a row with no context prefix in any mode is current under every mode, provided
   // it was cut the way the active chunker cuts.
   const row = splitContextSegment(stored);
   const now = splitContextSegment(active);

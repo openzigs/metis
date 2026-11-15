@@ -823,9 +823,9 @@ Projects needing re-ingest: 1/2 (chunker drift — a reindex does NOT fix this)
   `Projects needing re-ingest`. With the flag `off` nothing is appended, so the
   identity is exactly what it was before. A repository file never gets a contextual
   prefix and is tagged `;ctx=none`, which counts as current under every mode. Its
-  chunks are indexed behind a `File: <repository path>` line instead (#2193), the same
-  in every mode, so that line is not part of the identity: rows written before #2193
-  get it from a **reindex**, not a re-ingest. One known
+  chunks are embedded behind a `File: <repository path>` line instead (#2193), the
+  same in every mode and never in BM25, so that line is not part of the identity:
+  see "Repository chunks and their path line" below. One known
   over-report: repository files ingested while the flag was off carry the plain
   identity and are listed once when the flag is first turned on. A `model`-mode
   document whose calls were stopped is tagged `;ctx=model-partial` (#2355): the
@@ -838,6 +838,63 @@ Projects needing re-ingest: 1/2 (chunker drift — a reindex does NOT fix this)
 - Nothing is excluded from retrieval on this signal, ever. See
   [ADR 0006](decisions/0006-chunker-drift-serve-degraded-but-observable.md) for why
   excluding would be strictly worse than the gaps.
+
+## Repository chunks and their path line (#2193)
+
+Only a repository file's first chunk carries its `# <path>` header, so a chunk from
+the middle of a file used to reach the embedder with nothing saying which file it
+came from. Every chunk of a repository file is now **embedded** behind
+`File: <repository path>`, in every `RAG_CONTEXTUAL_CHUNKS` mode. The first chunk
+keeps its own header and gets no second copy. The line is derived from the filename
+each time a chunk is embedded (ingest, reindex and the reindex's cutover catch-up)
+and is never stored. BM25 never sees it, and nor does the text a search returns.
+
+**Why BM25 does not get it.** BM25 already indexes the path as its boosted `path`
+field, with the extension stripped (#717). In BM25's text the line would add `file`
+and the extension (`go`, `ts`, `md`) to every chunk and count each path word twice.
+
+**Reindex once after upgrading.** A vector stored before #2193 has no line, and
+nothing reports that. The embedding model, the chunker identity and
+`embeddings:migrate status` are all unchanged, so status exits 0. Run **Reindex**
+(Settings > Embeddings) or `pnpm embeddings:migrate reindex --project <id>` for each
+project with a repository. `reindex --all` skips them: it only takes projects whose
+chunks are on another model. The fix deliberately does **not** bump an identity:
+
+- A chunker identity bump means "re-ingest", which a reindex never clears (it
+  re-embeds stored text and does not rewrite the tag). A repository re-sync also
+  skips files whose content is unchanged. So status would stay red after the very
+  Reindex that fixes the vectors: the "remedy that cannot clear it" failure #1182
+  describes.
+- An embedding identity bump on repository rows would take them out of dense search
+  until reindexed. A search drops every row whose `embeddingModel` differs from the
+  query's.
+
+**Measured** with `pnpm eval:repo-chunk-prefix`
+(`server/scripts/eval-repo-chunk-prefix.ts`; reproduction steps in its header). It
+uses production's walk, chunker, embedder (gte-modernbert-base), BM25 and fusion over
+Miniflux v2.3.3: 2,675 repository chunks, plus its `README.md` and `miniflux.1` as
+uploads. The guard set is the 30 Miniflux localization items. "Top 5" means an
+expected file is in the top 5:
+
+| Arm (embedder / BM25) | k 10: top 5, MRR, file recall | k 5: top 5, MRR, file recall | `feed.go#2` fused (dense) rank |
+|---|---|---|---|
+| before: bare / bare | 16/30, 0.339, 0.487 | 15/30, 0.347, 0.378 | 5 (6) |
+| line / line | 19/30, 0.457, 0.532 | 16/30, 0.444, 0.353 | 6 (4) |
+| line / path words, no label or extension | 19/30, 0.457, 0.532 | 16/30, 0.444, 0.346 | 6 (4) |
+| line / bare | 20/30, 0.455, 0.532 | 16/30, 0.444, 0.353 | 6 (4) |
+| **shipped**: line except on the first chunk / bare | **20/30, 0.439, 0.532** | **16/30, 0.403, 0.384** | **5 (3)** |
+
+The shipped arm is the only one that is no worse than `before` on any column. Adding
+the line to BM25 bought nothing over the embedder alone, and it hurt two keyword
+probes that say "file":
+- "Can I export my feeds to a file?": `internal/model/feed.go#6` entered the top 5
+  and pushed out `internal/api/opml_handlers.go`.
+- "How do I import my subscriptions from an OPML file?": a test chunk
+  (`parser_test.go#9`) rose from 5th to 2nd.
+
+The walkthrough's own uploads
+are not in the evidence, so absolute ranks differ from the in-app reproduction in
+#2193's pull request. There, `feed.go#2` moved from 6th to 5th.
 
 ## Contextual chunks — measured, ships `off` (#2234, #2473)
 

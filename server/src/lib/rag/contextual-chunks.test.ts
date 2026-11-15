@@ -21,6 +21,7 @@ import {
   contextSystemPrompt,
   contextUserPrompt,
   documentSummaryLine,
+  embeddingInputOf,
   estimateEmbedTokens,
   FENCE_NONCE_MAX_ATTEMPTS,
   fenceNonce,
@@ -203,21 +204,30 @@ describe("contextPrefixOf / indexedTextOf", () => {
   it("is the bare text for a row with no prefix, bad JSON or a non-string value", () => {
     for (const meta of [null, undefined, "", "{", "[]", "null", '{"contextPrefix":7}', "{}"]) {
       expect(indexedTextOf("body", meta)).toBe("body");
-      expect(indexedTextOf("body", meta, "frd.md")).toBe("body");
     }
   });
-  it("#2193: derives the file line for a repository row stored without a prefix", () => {
-    const repo = "connector:repo:r1:src/internal/model/feed.go";
-    expect(indexedTextOf("func f() {}", null, repo)).toBe(
+});
+
+describe("embeddingInputOf (#2193)", () => {
+  const repo = "connector:repo:r1:src/internal/model/feed.go";
+  it("puts a repository file's path line in front of the indexed text", () => {
+    expect(embeddingInputOf("func f() {}", repo)).toBe(
       "File: internal/model/feed.go\n\nfunc f() {}",
     );
-    expect(indexedTextOf("func f() {}", "{}", repo)).toBe(
-      "File: internal/model/feed.go\n\nfunc f() {}",
-    );
-    // A persisted prefix is what ingest indexed, and wins.
-    expect(indexedTextOf("body", '{"contextPrefix":"P"}', repo)).toBe("P\n\nbody");
-    // Fitted like any prefix: none behind a chunk it does not fit.
-    expect(indexedTextOf("漢".repeat(680), null, repo)).toBe("漢".repeat(680));
+  });
+  it("leaves any other document's indexed text as it is", () => {
+    expect(embeddingInputOf("body", "frd.md")).toBe("body");
+    expect(embeddingInputOf("P\n\nbody", "walkthrough-note.md")).toBe("P\n\nbody");
+  });
+  it("adds no second path to a file's first chunk, which already opens with it", () => {
+    const first = "# internal/model/feed.go\n\n```go\npackage model";
+    expect(embeddingInputOf(first, repo)).toBe(first);
+    // Another file's header is not this file's path.
+    const other = "# internal/model/feed_test.go\n\nx";
+    expect(embeddingInputOf(other, repo)).toBe(`File: internal/model/feed.go\n\n${other}`);
+  });
+  it("is fitted like any prefix: none behind a chunk it does not fit", () => {
+    expect(embeddingInputOf("漢".repeat(680), repo)).toBe("漢".repeat(680));
   });
 });
 
@@ -269,7 +279,7 @@ describe("contextPrefixesFor", () => {
     expect(generator).not.toHaveBeenCalled();
   });
   it.each(["off", "headings", "model"] as const)(
-    "#2193 %s: a repository file's chunks carry its path, with no generator call",
+    "%s: a repository file gets no prefix and no generator call (#2193: its path is embedder-only)",
     async (mode) => {
       const generator = vi.fn();
       expect(
@@ -280,8 +290,8 @@ describe("contextPrefixesFor", () => {
           filename: "connector:repo:r:src/internal/model/feed.go",
         }),
       ).toEqual([
-        { prefix: "File: internal/model/feed.go", context: null },
-        { prefix: "File: internal/model/feed.go", context: null },
+        { prefix: "", context: null },
+        { prefix: "", context: null },
       ]);
       expect(generator).not.toHaveBeenCalled();
     },

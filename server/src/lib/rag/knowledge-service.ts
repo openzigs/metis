@@ -68,6 +68,7 @@ import { BM25Index, getBM25Index, RRF_K, reciprocalRankFusion } from "./bm25-ind
 import {
   contextPrefixesFor,
   defaultModelChunkContextGenerator,
+  embeddingInputOf,
   indexedTextOf,
   isContextualDocument,
   MODEL_CONTEXT_TOO_LARGE,
@@ -629,7 +630,10 @@ export class KnowledgeService {
     }
 
     // Issue #2234 — the context each chunk is INDEXED with (embedding and BM25); its
-    // stored display text stays the chunker's. All "" when the mode is off. Never
+    // stored display text stays the chunker's. All "" when the mode is off or the
+    // document is a repository file. #2193 — a repository file's chunks are still
+    // EMBEDDED behind a `File: <path>` line (`embeddingInputOf`, below), which is not
+    // a context prefix: never persisted and never in BM25. Never
     // throws: a model failure leaves that chunk its deterministic prefix. #2268 — a
     // saved context is reused, calls are billed to this document, and they stop once
     // the document is deleted or a newer ingest supersedes this one. #2355 — a stop
@@ -660,7 +664,9 @@ export class KnowledgeService {
       // REPO_SOURCE_MAX_FILE_BYTES is hundreds of chunks, never one embed call.
       embeddings = await embedInBoundedBatches(
         this.embedder,
-        chunks.map((c, i) => prefixedText(c.text, contextPrefixes[i])),
+        chunks.map((c, i) =>
+          embeddingInputOf(prefixedText(c.text, contextPrefixes[i]), doc.filename),
+        ),
       );
     } catch (err) {
       return this.markFailed(
@@ -716,7 +722,8 @@ export class KnowledgeService {
       // `reindexProject` re-embeds stored chunk TEXT and never re-chunks, which is
       // exactly why chunker drift needs a re-ingest rather than a reindex.
       // #2268 — with the contextual mode the rows were indexed under, so a flag change
-      // reads as drift; a repository file is never prefixed and matches every mode.
+      // reads as drift; a repository file gets no context prefix in any mode (its #2193
+      // path line does not depend on the mode), so it matches every mode.
       // With the flag off, nothing is appended: the identity is what it was before.
       chunkerIdentity: chunkerIdentity(
         this.chunkOptions,
@@ -1528,7 +1535,9 @@ export class KnowledgeService {
       for (let i = 0; i < pending.length; i += batchSize) {
         const batch = pending.slice(i, i + batchSize);
         const embedResult = await this.embedder.embed(
-          batch.map((c) => indexedTextOf(c.text, c.metadata, c.document.filename)),
+          batch.map((c) =>
+            embeddingInputOf(indexedTextOf(c.text, c.metadata), c.document.filename),
+          ),
         );
         const { vectors } = embedResult;
         // #792 — tag rows with the composite identity, not the bare model id.
@@ -1629,7 +1638,7 @@ export class KnowledgeService {
           const batch = missing.slice(i, i + batchSize);
           const result = await this.embedder.embed(
             batch.map((chunk) =>
-              indexedTextOf(chunk.text, chunk.metadata, chunk.document.filename),
+              embeddingInputOf(indexedTextOf(chunk.text, chunk.metadata), chunk.document.filename),
             ),
           );
           const tag = result.identity ?? result.model;
