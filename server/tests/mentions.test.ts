@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockPrisma = {
   user: { findMany: vi.fn() },
-  mention: { upsert: vi.fn(), updateMany: vi.fn(), create: vi.fn() },
+  mention: { updateMany: vi.fn(), create: vi.fn() },
   // #614 — no stored rows: inApp × mention defaults ON (send).
   notificationPreference: { findMany: vi.fn(async () => []) },
   // #734/#735 — where the comment lives (link, text, audience).
@@ -45,6 +45,7 @@ function resetFanOutDoubles() {
   requirementComment();
   mockPrisma.userRole.findFirst.mockResolvedValue(null);
   mockPrisma.notification.create.mockResolvedValue({});
+  mockPrisma.mention.create.mockReset().mockResolvedValue({});
   canAccessProjectDiscussions.mockResolvedValue(true);
 }
 
@@ -154,12 +155,12 @@ describe("dispatchMentions", () => {
 
   it("dispatches fan-out for a body with mentions", async () => {
     mockPrisma.user.findMany.mockResolvedValue([{ id: "user-2", username: "bob" }]);
-    mockPrisma.mention.upsert.mockResolvedValue({});
+    mockPrisma.mention.create.mockResolvedValue({});
     mockPrisma.mention.updateMany.mockResolvedValue({ count: 1 });
 
     dispatchMentions("c-1", "@bob check", "author-1");
     await new Promise((r) => setTimeout(r, 5));
-    expect(mockPrisma.mention.upsert).toHaveBeenCalled();
+    expect(mockPrisma.mention.create).toHaveBeenCalled();
   });
 });
 
@@ -175,22 +176,19 @@ describe("fanOutMentions", () => {
     mockPrisma.user.findMany.mockResolvedValue([{ id: "author-1", username: "alice" }]);
 
     await fanOutMentions("comment-1", "@alice check this", "author-1");
-    expect(mockPrisma.mention.upsert).not.toHaveBeenCalled();
+    expect(mockPrisma.mention.create).not.toHaveBeenCalled();
   });
 
   it("creates mention records and emits socket events", async () => {
     mockPrisma.user.findMany.mockResolvedValue([{ id: "user-2", username: "bob" }]);
-    mockPrisma.mention.upsert.mockResolvedValue({});
+    mockPrisma.mention.create.mockResolvedValue({});
     mockPrisma.mention.updateMany.mockResolvedValue({ count: 1 });
 
     await fanOutMentions("comment-1", "@bob check this", "author-1");
 
-    expect(mockPrisma.mention.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { commentId_mentionedUserId: { commentId: "comment-1", mentionedUserId: "user-2" } },
-        create: expect.objectContaining({ commentId: "comment-1", mentionedUserId: "user-2" }),
-      }),
-    );
+    expect(mockPrisma.mention.create).toHaveBeenCalledWith({
+      data: { commentId: "comment-1", mentionedUserId: "user-2", notified: false },
+    });
     expect(mockPrisma.mention.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { commentId: "comment-1", mentionedUserId: "user-2" },
@@ -205,9 +203,9 @@ describe("fanOutMentions", () => {
     );
   });
 
-  // ---- #1581 — an edited comment notifies only the users it newly mentions --
+  // ---- #1581 / #2192 — a user is notified once per comment -----------------
 
-  it("onlyNew: notifies a user the edit added, and skips one already mentioned", async () => {
+  it("notifies a user the edit added, and skips one already mentioned (#1581)", async () => {
     mockPrisma.user.findMany.mockResolvedValue([
       { id: "user-2", username: "bob" },
       { id: "user-3", username: "eve" },
@@ -223,9 +221,8 @@ describe("fanOutMentions", () => {
     );
     mockPrisma.mention.updateMany.mockResolvedValue({ count: 1 });
 
-    await fanOutMentions("comment-1", "@bob and now @eve", "author-1", { onlyNew: true });
+    await fanOutMentions("comment-1", "@bob and now @eve", "author-1");
 
-    expect(mockPrisma.mention.upsert).not.toHaveBeenCalled();
     expect(mockPrisma.mention.create).toHaveBeenCalledWith({
       data: { commentId: "comment-1", mentionedUserId: "user-3", notified: false },
     });
@@ -235,32 +232,43 @@ describe("fanOutMentions", () => {
     expect(mockIoTo).not.toHaveBeenCalledWith("user:user-2");
   });
 
-  it("onlyNew: any other insert failure is not read as 'already mentioned' and notifies nobody", async () => {
+  it("#2192 — a quick edit's fan-out landing before the new comment's still notifies a user once", async () => {
+    mockPrisma.user.findMany.mockResolvedValue([{ id: "user-2", username: "bob" }]);
+    // The unique index on (commentId, mentionedUserId), as the database keeps it.
+    const rows = new Set<string>();
+    mockPrisma.mention.create.mockImplementation(
+      async ({ data }: { data: { commentId: string; mentionedUserId: string } }) => {
+        const key = `${data.commentId}:${data.mentionedUserId}`;
+        if (rows.has(key)) {
+          throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+        }
+        rows.add(key);
+        return {};
+      },
+    );
+    mockPrisma.mention.updateMany.mockResolvedValue({ count: 1 });
+
+    // The edit's fan-out lands first; the create's, fired earlier, after it.
+    await fanOutMentions("comment-1", "@bob, edited", "author-1");
+    await fanOutMentions("comment-1", "@bob", "author-1");
+
+    expect(mockPrisma.notification.create).toHaveBeenCalledTimes(1);
+    expect(mockEmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("any other insert failure is not read as 'already mentioned' and notifies nobody", async () => {
     mockPrisma.user.findMany.mockResolvedValue([{ id: "user-3", username: "eve" }]);
     mockPrisma.mention.create.mockRejectedValue(new Error("db down"));
 
-    await expect(
-      fanOutMentions("comment-1", "@eve", "author-1", { onlyNew: true }),
-    ).resolves.toBeUndefined();
+    await expect(fanOutMentions("comment-1", "@eve", "author-1")).resolves.toBeUndefined();
     expect(mockPrisma.notification.create).not.toHaveBeenCalled();
-  });
-
-  it("dispatchMentions passes onlyNew through to the fan-out", async () => {
-    mockPrisma.user.findMany.mockResolvedValue([{ id: "user-3", username: "eve" }]);
-    mockPrisma.mention.create.mockResolvedValue({});
-    mockPrisma.mention.updateMany.mockResolvedValue({ count: 1 });
-
-    dispatchMentions("comment-1", "@eve", "author-1", { onlyNew: true });
-
-    await vi.waitFor(() => expect(mockPrisma.mention.create).toHaveBeenCalled());
-    expect(mockPrisma.mention.upsert).not.toHaveBeenCalled();
   });
 
   it("does not throw even if socket is not registered", async () => {
     const { getSocketServer } = await import("../src/lib/socket/registry.js");
     vi.mocked(getSocketServer).mockReturnValueOnce(null);
     mockPrisma.user.findMany.mockResolvedValue([{ id: "user-2", username: "bob" }]);
-    mockPrisma.mention.upsert.mockResolvedValue({});
+    mockPrisma.mention.create.mockResolvedValue({});
     mockPrisma.mention.updateMany.mockResolvedValue({ count: 1 });
 
     await expect(fanOutMentions("c-1", "@bob hi", "author-1")).resolves.toBeUndefined();
@@ -276,7 +284,7 @@ describe("fanOutMentions", () => {
     canAccessProjectDiscussions.mockImplementation(
       async (actor: { id: string }) => actor.id === "user-2",
     );
-    mockPrisma.mention.upsert.mockResolvedValue({});
+    mockPrisma.mention.create.mockResolvedValue({});
     mockPrisma.mention.updateMany.mockResolvedValue({ count: 1 });
 
     await fanOutMentions("comment-1", "@bob @eve check", "author-1");
@@ -285,7 +293,7 @@ describe("fanOutMentions", () => {
       { id: "user-3", role: "reader" },
       "p-1",
     );
-    expect(mockPrisma.mention.upsert).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.mention.create).toHaveBeenCalledTimes(1);
     expect(mockIoTo).toHaveBeenCalledWith("user:user-2");
     expect(mockIoTo).not.toHaveBeenCalledWith("user:user-3");
   });
@@ -308,7 +316,7 @@ describe("fanOutMentions", () => {
 
     await fanOutMentions("comment-1", "@bob", "author-1");
 
-    expect(mockPrisma.mention.upsert).not.toHaveBeenCalled();
+    expect(mockPrisma.mention.create).not.toHaveBeenCalled();
     expect(mockEmit).not.toHaveBeenCalled();
   });
 
@@ -319,7 +327,7 @@ describe("fanOutMentions", () => {
     await fanOutMentions("comment-gone", "@bob", "author-1");
 
     expect(mockPrisma.user.findMany).not.toHaveBeenCalled();
-    expect(mockPrisma.mention.upsert).not.toHaveBeenCalled();
+    expect(mockPrisma.mention.create).not.toHaveBeenCalled();
   });
 });
 

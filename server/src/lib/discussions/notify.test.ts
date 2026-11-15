@@ -16,11 +16,19 @@ const userRoleFindFirst = vi.fn();
 const prefFindMany = vi.fn();
 const userFindUnique = vi.fn();
 const threadFindFirst = vi.fn();
+const notificationFindMany = vi.fn();
+const notificationUpdateMany = vi.fn();
+const messageFindFirst = vi.fn();
 vi.mock("../prisma.js", () => ({
   prisma: {
+    discussionMessage: { findFirst: (...a: unknown[]) => messageFindFirst(...a) },
     user: { findUnique: (...a: unknown[]) => userFindUnique(...a) },
     discussionThread: { findFirst: (...a: unknown[]) => threadFindFirst(...a) },
-    notification: { create: (...a: unknown[]) => notificationCreate(...a) },
+    notification: {
+      create: (...a: unknown[]) => notificationCreate(...a),
+      findMany: (...a: unknown[]) => notificationFindMany(...a),
+      updateMany: (...a: unknown[]) => notificationUpdateMany(...a),
+    },
     userRole: { findFirst: (...a: unknown[]) => userRoleFindFirst(...a) },
     notificationPreference: { findMany: (...a: unknown[]) => prefFindMany(...a) },
   },
@@ -62,6 +70,11 @@ const {
   loadMentionNotifyConfig,
   __resetMentionNotifyLimiter,
   __setMentionNotifyStore,
+  refreshDiscussionMentionExcerpts,
+  retractDiscussionMentionExcerpts,
+  syncDiscussionMentionQuotes,
+  DELETED_MESSAGE_TEXT,
+  EDITED_MESSAGE_TEXT,
 } = await import("./notify.js");
 const { SharedRateLimitStore, InMemoryRateLimitStore } = await import("./rate-limit-store.js");
 
@@ -92,6 +105,9 @@ describe("discussion mention notifications", () => {
     userFindUnique.mockResolvedValue({ displayName: "Alice Author", username: "alice" });
     // Default: the thread's title is not readable (the #980 wording applies).
     threadFindFirst.mockResolvedValue(null);
+    // #2192 — default: the message cannot be re-read, so the fan-out quotes the
+    // body it was handed and syncs nothing (a failed read never costs a mention).
+    messageFindFirst.mockRejectedValue(new Error("not under test"));
   });
 
   it("creates a Notification and emits to the mentioned member's user room", async () => {
@@ -420,6 +436,249 @@ describe("discussion mention notifications", () => {
     it("is fire-and-forget and never throws synchronously", () => {
       resolveUsernames.mockResolvedValue([{ id: "bob", username: "bob" }]);
       expect(() => dispatchDiscussionMentions(baseInput())).not.toThrow();
+    });
+  });
+
+  describe("#2192 — an edit's added mention", () => {
+    it("notifies only the handles named, and quotes the whole message", async () => {
+      resolveUsernames.mockResolvedValue([{ id: "carol", username: "carol" }]);
+
+      await notifyDiscussionMentions(
+        baseInput({ body: "hi @bob, and now @carol too", mentions: ["carol"] }),
+      );
+
+      expect(resolveUsernames).toHaveBeenCalledWith(["carol"]);
+      expect(notificationCreate).toHaveBeenCalledTimes(1);
+      expect(notificationCreate.mock.calls[0][0].data.message).toBe(
+        "“hi @bob, and now @carol too”",
+      );
+    });
+
+    it("an empty handle list notifies nobody", async () => {
+      await notifyDiscussionMentions(baseInput({ mentions: [] }));
+      expect(resolveUsernames).not.toHaveBeenCalled();
+      expect(notificationCreate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("#2192 — a fan-out that an edit or delete overtook", () => {
+    const live = (body: string) => ({ body, deletedAt: null });
+    const quoting = [
+      {
+        id: "n1",
+        userId: "bob",
+        payload: JSON.stringify({ kind: "discussion_mention", messageId: "m1" }),
+      },
+    ];
+    beforeEach(() => {
+      resolveUsernames.mockResolvedValue([{ id: "bob", username: "bob" }]);
+      notificationFindMany.mockResolvedValue(quoting);
+    });
+
+    it("quotes the message as it reads now, not as it was posted", async () => {
+      messageFindFirst.mockResolvedValue(live("@bob edited already"));
+
+      await notifyDiscussionMentions(baseInput({ body: "@bob as posted" }));
+
+      expect(messageFindFirst).toHaveBeenCalledWith({
+        where: { id: "m1", threadId: "t1" },
+        select: { body: true, deletedAt: true },
+      });
+      expect(notificationCreate.mock.calls[0][0].data.message).toBe("“@bob edited already”");
+      // Read twice, the same both times: nothing to re-sync.
+      expect(notificationUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("notifies nobody about a message deleted before the fan-out ran", async () => {
+      messageFindFirst.mockResolvedValue({ body: "@bob", deletedAt: new Date() });
+      await notifyDiscussionMentions(baseInput());
+      expect(notificationCreate).not.toHaveBeenCalled();
+      expect(emit).not.toHaveBeenCalled();
+    });
+
+    it("an edit that lands while its row is written re-quotes that row", async () => {
+      messageFindFirst
+        .mockResolvedValueOnce(live("@bob as posted"))
+        .mockResolvedValue(live("@bob after the edit"));
+
+      await notifyDiscussionMentions(baseInput({ body: "@bob as posted" }));
+
+      expect(notificationCreate.mock.calls[0][0].data.message).toBe("“@bob as posted”");
+      expect(notificationUpdateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["n1"] } },
+        data: { message: "“@bob after the edit”" },
+      });
+    });
+
+    it("a delete that lands while its row is written retracts that row's quote", async () => {
+      messageFindFirst
+        .mockResolvedValueOnce(live("@bob as posted"))
+        .mockResolvedValue({ body: "@bob as posted", deletedAt: new Date() });
+
+      await notifyDiscussionMentions(baseInput({ body: "@bob as posted" }));
+
+      expect(notificationUpdateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["n1"] } },
+        data: { message: DELETED_MESSAGE_TEXT },
+      });
+    });
+  });
+
+  describe("#2192 — syncDiscussionMentionQuotes", () => {
+    const target = { threadId: "t1", projectId: "p1", messageId: "m1" };
+    beforeEach(() => {
+      notificationFindMany.mockResolvedValue([
+        {
+          id: "n1",
+          userId: "bob",
+          payload: JSON.stringify({ kind: "discussion_mention", messageId: "m1" }),
+        },
+      ]);
+    });
+
+    it("writes what the message says when read, and stops once a re-read agrees", async () => {
+      messageFindFirst.mockResolvedValue({ body: "@bob latest", deletedAt: null });
+      await syncDiscussionMentionQuotes(target);
+      expect(messageFindFirst).toHaveBeenCalledTimes(2);
+      expect(notificationUpdateMany).toHaveBeenCalledTimes(1);
+      expect(notificationUpdateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["n1"] } },
+        data: { message: "“@bob latest”" },
+      });
+    });
+
+    it("rewrites when the message changed between its write and its re-read", async () => {
+      messageFindFirst
+        .mockResolvedValueOnce({ body: "@bob first", deletedAt: null })
+        .mockResolvedValue({ body: "@bob second", deletedAt: null });
+      await syncDiscussionMentionQuotes(target);
+      expect(notificationUpdateMany.mock.calls.map((c) => c[0].data.message)).toEqual([
+        "“@bob first”",
+        "“@bob second”",
+      ]);
+    });
+
+    it("retracts a deleted message, and stops after a bounded number of writes", async () => {
+      let n = 0;
+      messageFindFirst.mockImplementation(async () =>
+        ++n % 2 ? { body: "@bob", deletedAt: new Date() } : { body: `@bob v${n}`, deletedAt: null },
+      );
+      await syncDiscussionMentionQuotes(target);
+      expect(notificationUpdateMany).toHaveBeenCalledTimes(3);
+      expect(notificationUpdateMany.mock.calls[0][0].data.message).toBe(DELETED_MESSAGE_TEXT);
+    });
+
+    it("never throws when the message cannot be read", async () => {
+      messageFindFirst.mockRejectedValue(new Error("db down"));
+      await expect(syncDiscussionMentionQuotes(target)).resolves.toBeUndefined();
+      expect(notificationUpdateMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("#2192 — quotes of an edited or deleted message", () => {
+    const row = (id: string, userId: string, messageId = "m1") => ({
+      id,
+      userId,
+      payload: JSON.stringify({ kind: "discussion_mention", threadId: "t1", messageId }),
+    });
+
+    it("finds the message's notifications by type, project and payload", async () => {
+      notificationFindMany.mockResolvedValue([]);
+      await retractDiscussionMentionExcerpts({ projectId: "p1", messageId: "m1" });
+      expect(notificationFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            type: "discussion_mention",
+            projectId: "p1",
+            payload: { contains: '"messageId":"m1"' },
+          },
+        }),
+      );
+      // Nothing quoted the message: nothing is written.
+      expect(notificationUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("a delete replaces the quote, and only on rows whose payload names that message", async () => {
+      notificationFindMany.mockResolvedValue([
+        row("n1", "bob"),
+        // The substring match only narrows: whatever the database returns, a
+        // row whose parsed payload names another message is left alone.
+        row("n2", "carol", "m1x"),
+        { id: "n3", userId: "dave", payload: "not json" },
+        { id: "n4", userId: "erin", payload: null },
+      ]);
+
+      await retractDiscussionMentionExcerpts({ projectId: "p1", messageId: "m1" });
+
+      expect(notificationUpdateMany).toHaveBeenCalledTimes(1);
+      expect(notificationUpdateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["n1"] } },
+        data: { message: DELETED_MESSAGE_TEXT },
+      });
+    });
+
+    it("a delete never throws when the database fails", async () => {
+      notificationFindMany.mockRejectedValue(new Error("db down"));
+      await expect(
+        retractDiscussionMentionExcerpts({ projectId: "p1", messageId: "m1" }),
+      ).resolves.toBeUndefined();
+    });
+
+    it("an edit re-quotes a member's notification with the new text", async () => {
+      notificationFindMany.mockResolvedValue([row("n1", "bob"), row("n2", "bob")]);
+
+      await refreshDiscussionMentionExcerpts({
+        projectId: "p1",
+        messageId: "m1",
+        body: "@bob  the new\n text",
+      });
+
+      expect(canAccessProjectDiscussions).toHaveBeenCalledTimes(1); // once per user
+      expect(notificationUpdateMany).toHaveBeenCalledTimes(1);
+      expect(notificationUpdateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["n1", "n2"] } },
+        data: { message: "“@bob the new text”" },
+      });
+    });
+
+    it("an edit does not show the new text to a recipient who lost access", async () => {
+      notificationFindMany.mockResolvedValue([row("n1", "bob"), row("n2", "carol")]);
+      canAccessProjectDiscussions.mockImplementation(async (u: { id: string }) => u.id === "bob");
+
+      await refreshDiscussionMentionExcerpts({ projectId: "p1", messageId: "m1", body: "secret" });
+
+      expect(notificationUpdateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["n1"] } },
+        data: { message: "“secret”" },
+      });
+      expect(notificationUpdateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["n2"] } },
+        data: { message: EDITED_MESSAGE_TEXT },
+      });
+    });
+
+    it("an edit to a blank body leaves the neutral text, checking nobody's access", async () => {
+      notificationFindMany.mockResolvedValue([row("n1", "bob")]);
+
+      await refreshDiscussionMentionExcerpts({ projectId: "p1", messageId: "m1", body: "  " });
+
+      expect(canAccessProjectDiscussions).not.toHaveBeenCalled();
+      expect(notificationUpdateMany).toHaveBeenCalledTimes(1);
+      expect(notificationUpdateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["n1"] } },
+        data: { message: EDITED_MESSAGE_TEXT },
+      });
+    });
+
+    it("an edit with no quoting notification writes nothing, and never throws on failure", async () => {
+      notificationFindMany.mockResolvedValueOnce([]);
+      await refreshDiscussionMentionExcerpts({ projectId: "p1", messageId: "m1", body: "x" });
+      expect(notificationUpdateMany).not.toHaveBeenCalled();
+
+      notificationFindMany.mockRejectedValueOnce(new Error("db down"));
+      await expect(
+        refreshDiscussionMentionExcerpts({ projectId: "p1", messageId: "m1", body: "x" }),
+      ).resolves.toBeUndefined();
     });
   });
 });

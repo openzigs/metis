@@ -11,7 +11,7 @@ const mockIo = { to: vi.fn(() => ({ emit: mockEmit })) };
 
 const mockPrisma = {
   user: { findMany: vi.fn() },
-  mention: { upsert: vi.fn(), updateMany: vi.fn() },
+  mention: { create: vi.fn(), updateMany: vi.fn() },
   notification: { create: vi.fn() },
   notificationPreference: { findMany: vi.fn() },
   // #734/#735 — where the comment lives (link, text, audience).
@@ -34,7 +34,7 @@ const { fanOutMentions } = await import("../src/lib/collaboration/mentions.js");
 describe("fanOutMentions — Issue #416 persistence", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockPrisma.mention.upsert.mockResolvedValue({});
+    mockPrisma.mention.create.mockResolvedValue({});
     mockPrisma.mention.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.notification.create.mockResolvedValue({ id: "n-1" });
     // #614 — default: no stored preference rows (inApp × mention defaults ON).
@@ -116,7 +116,7 @@ describe("fanOutMentions — Issue #416 persistence", () => {
       expect(mockEmit).not.toHaveBeenCalled();
       expect(mockPrisma.notification.create).not.toHaveBeenCalled();
       // Mention provenance is still recorded, but NOT marked notified.
-      expect(mockPrisma.mention.upsert).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.mention.create).toHaveBeenCalledTimes(1);
       expect(mockPrisma.mention.updateMany).not.toHaveBeenCalled();
     });
 

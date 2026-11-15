@@ -51,6 +51,12 @@ export interface DiscussionMentionInput {
   body: string;
   /** Author id — excluded from self-mentions. */
   authorId: string;
+  /**
+   * #2192 — the handles to notify, when not every handle in `body`: an edit
+   * notifies only the mentions it added, and still quotes the whole message.
+   * Defaults to every handle `body` mentions.
+   */
+  mentions?: string[];
 }
 
 // ---- Membership predicate ---------------------------------------------------
@@ -222,10 +228,17 @@ async function threadTitle(threadId: string, projectId: string): Promise<string 
  * the mentioned project members. Never throws.
  */
 export async function notifyDiscussionMentions(input: DiscussionMentionInput): Promise<void> {
-  const { threadId, projectId, messageId, body, authorId } = input;
+  const { threadId, projectId, messageId, authorId } = input;
   try {
-    const usernames = parseMentions(body);
+    const usernames = input.mentions ?? parseMentions(input.body);
     if (usernames.length === 0) return;
+
+    // #2192 — this fan-out runs after its request returned, so an edit or a
+    // delete may have landed since. Quote what the message says NOW, and
+    // notify nobody about a message that is gone.
+    const before = await messageStateOrNull({ threadId, messageId });
+    if (before === "deleted") return;
+    const body = before?.body ?? input.body;
 
     const users = await resolveUsernames(usernames);
     const io = getSocketServer();
@@ -234,6 +247,7 @@ export async function notifyDiscussionMentions(input: DiscussionMentionInput): P
     const thread = await threadTitle(threadId, projectId);
     const where = thread ? `"${thread}"` : "a discussion";
 
+    let created = false;
     await Promise.allSettled(
       users
         .filter((u) => u.id !== authorId) // never self-notify
@@ -287,6 +301,7 @@ export async function notifyDiscussionMentions(input: DiscussionMentionInput): P
                 select: { id: true },
               });
               notificationId = row?.id ?? null;
+              created = true;
             } catch (persistErr) {
               log.warn("Failed to persist discussion mention notification", {
                 threadId,
@@ -309,9 +324,213 @@ export async function notifyDiscussionMentions(input: DiscussionMentionInput): P
           }
         }),
     );
+
+    // #2192 — an edit or delete that landed while the rows above were written
+    // found no row to rewrite. Re-read after writing: either this read sees
+    // that change and re-syncs, or the change landed after it, and its own
+    // sync (which reads after the change was written) sees these rows.
+    if (created) {
+      const after = await messageStateOrNull({ threadId, messageId });
+      if (after !== null && !sameMessageState(after, { body })) {
+        await syncDiscussionMentionQuotes({ threadId, projectId, messageId });
+      }
+    }
   } catch (err) {
     log.error("notifyDiscussionMentions top-level error", { threadId, err });
   }
+}
+
+// ---- Quote refresh / retraction (#2192) --------------------------------------
+
+/** Message of a mention notification whose discussion message was deleted (#2192). */
+export const DELETED_MESSAGE_TEXT = "The message was deleted.";
+/** Message of a mention notification whose message was edited and cannot be re-quoted (#2192). */
+export const EDITED_MESSAGE_TEXT = "The message was edited.";
+
+/** The `messageId` a stored `discussion_mention` payload names, or null. */
+function payloadMessageId(payload: string | null): string | null {
+  if (!payload) return null;
+  try {
+    const id = (JSON.parse(payload) as { messageId?: unknown }).messageId;
+    return typeof id === "string" ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The project's `discussion_mention` notifications that quote `messageId`.
+ * The row records its message only in the JSON payload (`Notification` has a
+ * `commentId` column for comments and nothing for a discussion message), so the
+ * database narrows by a substring of the serialized payload and the exact match
+ * is made on the parsed `messageId`: a `LIKE` wildcard or a case-insensitive
+ * match can never widen it to another message.
+ */
+async function notificationsQuoting(
+  projectId: string,
+  messageId: string,
+): Promise<Array<{ id: string; userId: string }>> {
+  const rows = await prisma.notification.findMany({
+    where: {
+      type: "discussion_mention",
+      projectId,
+      payload: { contains: `"messageId":${JSON.stringify(messageId)}` },
+    },
+    select: { id: true, userId: true, payload: true },
+  });
+  return rows
+    .filter((r) => payloadMessageId(r.payload) === messageId)
+    .map(({ id, userId }) => ({ id, userId }));
+}
+
+export interface MentionQuoteTarget {
+  projectId: string;
+  messageId: string;
+}
+
+/** A discussion message as its mention notifications should quote it (#2192). */
+type MessageState = { body: string } | "deleted";
+
+async function readMessageState(target: {
+  threadId: string;
+  messageId: string;
+}): Promise<MessageState> {
+  const row = await prisma.discussionMessage.findFirst({
+    where: { id: target.messageId, threadId: target.threadId },
+    select: { body: true, deletedAt: true },
+  });
+  return !row || row.deletedAt ? "deleted" : { body: row.body };
+}
+
+/** {@link readMessageState}, or null (logged) when the read fails. */
+async function messageStateOrNull(target: {
+  threadId: string;
+  messageId: string;
+}): Promise<MessageState | null> {
+  try {
+    return await readMessageState(target);
+  } catch (err) {
+    log.warn("Failed to re-read a mentioned discussion message", {
+      messageId: target.messageId,
+      err,
+    });
+    return null;
+  }
+}
+
+function sameMessageState(a: MessageState, b: MessageState): boolean {
+  return a === "deleted" || b === "deleted" ? a === b : a.body === b.body;
+}
+
+/** Bounds the re-read loop of {@link syncDiscussionMentionQuotes}. */
+const MAX_QUOTE_SYNC_PASSES = 3;
+
+/**
+ * #2192 — a deleted discussion message's mention notifications stop quoting
+ * it, as a deleted comment's do (#1318). The message becomes
+ * {@link DELETED_MESSAGE_TEXT}; the title (who, and which thread) and the link
+ * stay. Never throws: the message is already deleted, and a failure is logged.
+ */
+export async function retractDiscussionMentionExcerpts(target: MentionQuoteTarget): Promise<void> {
+  try {
+    const rows = await notificationsQuoting(target.projectId, target.messageId);
+    if (rows.length === 0) return;
+    await prisma.notification.updateMany({
+      where: { id: { in: rows.map((r) => r.id) } },
+      data: { message: DELETED_MESSAGE_TEXT },
+    });
+  } catch (err) {
+    log.error("Failed to retract a deleted message's mention excerpts", {
+      messageId: target.messageId,
+      err,
+    });
+  }
+}
+
+/**
+ * #2192 — an edited discussion message's mention notifications quote the new
+ * text, as an edited comment's do (#1318). Access is re-checked per recipient:
+ * one who can no longer open the project's discussions gets
+ * {@link EDITED_MESSAGE_TEXT} instead of the new text. Never throws.
+ */
+export async function refreshDiscussionMentionExcerpts(
+  target: MentionQuoteTarget & { body: string },
+): Promise<void> {
+  try {
+    const rows = await notificationsQuoting(target.projectId, target.messageId);
+    if (rows.length === 0) return;
+    const excerpt = commentExcerpt(target.body);
+    const userIds = [...new Set(rows.map((r) => r.userId))];
+    const verdicts = excerpt
+      ? await Promise.all(userIds.map((id) => isProjectMember(id, target.projectId)))
+      : userIds.map(() => false);
+    const allowed = new Set(userIds.filter((_, i) => verdicts[i]));
+    const requote = rows.filter((r) => allowed.has(r.userId)).map((r) => r.id);
+    const neutral = rows.filter((r) => !allowed.has(r.userId)).map((r) => r.id);
+    if (requote.length > 0) {
+      await prisma.notification.updateMany({
+        where: { id: { in: requote } },
+        data: { message: excerpt },
+      });
+    }
+    if (neutral.length > 0) {
+      await prisma.notification.updateMany({
+        where: { id: { in: neutral } },
+        data: { message: EDITED_MESSAGE_TEXT },
+      });
+    }
+  } catch (err) {
+    log.error("Failed to refresh an edited message's mention excerpts", {
+      messageId: target.messageId,
+      err,
+    });
+  }
+}
+
+export interface MentionQuoteSyncTarget extends MentionQuoteTarget {
+  threadId: string;
+}
+
+/**
+ * #2192 — bring a message's mention notifications in line with what the
+ * message says now: re-quoted ({@link refreshDiscussionMentionExcerpts}), or
+ * retracted when it is deleted ({@link retractDiscussionMentionExcerpts}).
+ *
+ * It reads the message itself rather than taking the text from its caller, and
+ * re-reads after writing until two reads agree (at most
+ * {@link MAX_QUOTE_SYNC_PASSES} writes). That is what lets an edit run it off
+ * the request path: two syncs for quick successive edits can finish in either
+ * order, and the last write is still the latest text. Never throws.
+ */
+export async function syncDiscussionMentionQuotes(target: MentionQuoteSyncTarget): Promise<void> {
+  try {
+    let written: MessageState | null = null;
+    for (let pass = 0; pass < MAX_QUOTE_SYNC_PASSES; pass++) {
+      const state = await readMessageState(target);
+      if (written !== null && sameMessageState(state, written)) return;
+      if (state === "deleted") await retractDiscussionMentionExcerpts(target);
+      else await refreshDiscussionMentionExcerpts({ ...target, body: state.body });
+      written = state;
+    }
+  } catch (err) {
+    log.error("Failed to sync a discussion message's mention quotes", {
+      messageId: target.messageId,
+      err,
+    });
+  }
+}
+
+/**
+ * #2192 — fire-and-forget {@link syncDiscussionMentionQuotes}, so an edit or a
+ * delete does not wait on the payload scan of the project's mention history.
+ */
+export function dispatchDiscussionMentionQuoteSync(target: MentionQuoteSyncTarget): void {
+  void syncDiscussionMentionQuotes(target).catch((err: unknown) => {
+    log.error("dispatchDiscussionMentionQuoteSync: sync rejected", {
+      messageId: target.messageId,
+      err,
+    });
+  });
 }
 
 /**
