@@ -1724,6 +1724,13 @@ export interface AnalysisSnapshot {
    * present only while it is offered ({@link codeInvestigationContinueOffered}).
    */
   codeContinuation?: AnalysisCodeContinuationQuote | null;
+  /**
+   * #2554 — the reader cannot see every document this run read (#2447's
+   * "run as a whole"): what rests on it is shown to them as "Restricted", and
+   * run-wide actions (Regenerate, Cancel, resume) are refused them. Absent
+   * otherwise.
+   */
+  runRestricted?: true;
   metadata: Record<string, unknown> | null;
   agents: Array<{
     agentKey: AnalysisResultAgentKey;

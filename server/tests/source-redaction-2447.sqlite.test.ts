@@ -1261,7 +1261,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(triggerSpy.mock.calls[0]![0].requirementIds).toEqual(["req-2447-open"]);
 
         const named = await post("bob", { requirementIds: ["req-2447-secret"], projectIds: [P] });
-        expect(named.status).toBe(403);
+        // #2554 — the requirement's not-found, as every other route answers it.
+        expect(named.status).toBe(404);
+        expect(named.body.error.code).toBe("REQUIREMENT_NOT_FOUND");
         expect(triggerSpy).toHaveBeenCalledTimes(1);
         expect(
           (await post("alice", { requirementIds: ["req-2447-secret"], projectIds: [P] })).status,
