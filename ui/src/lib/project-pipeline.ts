@@ -156,10 +156,41 @@ export function isDocumentIngesting(d: { status: string; indexState?: string | n
 export function defaultRunDocumentCount(
   docs: ReadonlyArray<{ status: string; source: string; restricted?: boolean }>,
 ): number {
-  return docs.filter(
-    (d) =>
-      d.status === "ready" && !d.restricted && !CONNECTOR_CODE_SOURCES.some((s) => s === d.source),
-  ).length;
+  return docs.filter(isDefaultRunDocument).length;
+}
+
+function isDefaultRunDocument(d: {
+  status: string;
+  source: string;
+  restricted?: boolean;
+}): boolean {
+  return (
+    d.status === "ready" && !d.restricted && !CONNECTOR_CODE_SOURCES.some((s) => s === d.source)
+  );
+}
+
+/**
+ * #2555 — of the documents a run reads (the ticked ones, or with none ticked
+ * every one {@link defaultRunDocumentCount} counts), how many are still
+ * awaiting review. A quarantined document is `ready`, and a run reads it from
+ * its unapproved sections (the quarantine fallback, #733), so it is counted
+ * among the run's documents and said to be awaiting review, not hidden.
+ */
+export function runAwaitingReviewCount(
+  docs: ReadonlyArray<{
+    id: string;
+    status: string;
+    source: string;
+    restricted?: boolean;
+    indexState?: string | null;
+  }>,
+  selectedIds: readonly string[],
+): number {
+  const read =
+    selectedIds.length > 0
+      ? docs.filter((d) => selectedIds.includes(d.id))
+      : docs.filter(isDefaultRunDocument);
+  return read.filter(isDocumentAwaitingReview).length;
 }
 
 /** Where quarantined documents are approved or rejected. */

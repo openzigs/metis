@@ -67,14 +67,24 @@ export class ProjectDocumentsPage {
     return this.page.getByTestId(`document-access-toggle-${documentId}`);
   }
 
-  /** #2547 — restrict a document to one role through its access-list editor. */
-  async restrictToRole(documentId: string, role: string): Promise<void> {
+  /**
+   * #2547 — restrict a document to one role through its access-list editor.
+   * #2555 — the role comes from the role list, and `person` (a display name)
+   * is found by searching the project's people and picked, never typed as an id.
+   */
+  async restrictToRole(documentId: string, role: string, person?: string): Promise<void> {
     await this.accessToggle(documentId).click();
     const editor = this.documentRow(documentId).getByTestId("acl-editor");
     await expect(editor).toBeVisible();
-    await editor.getByLabel("Kind").selectOption("role");
-    await editor.getByLabel("Value").fill(role);
-    await editor.getByRole("button", { name: "Add" }).click();
+    await editor.getByLabel("Kind", { exact: true }).selectOption("role");
+    await editor.getByLabel("Role", { exact: true }).selectOption(role);
+    await editor.getByRole("button", { name: "Add", exact: true }).click();
+    if (person) {
+      await editor.getByLabel("Kind", { exact: true }).selectOption("user");
+      await editor.getByLabel("Person", { exact: true }).fill(person);
+      await editor.getByRole("button", { name: new RegExp(`^${person}`) }).click();
+      await expect(editor.getByTestId("acl-subjects")).toContainText(person);
+    }
     await editor.getByRole("button", { name: "Save access list" }).click();
     await expect(editor).toBeHidden({ timeout: 15_000 });
   }

@@ -204,6 +204,7 @@ export default function ProjectDocumentsPage() {
                       projectId={id}
                       documentId={d.id}
                       initialSubjects={d.access?.subjects ?? []}
+                      initialUsers={d.access?.users}
                       onSaved={() => setAccessOpenFor(null)}
                     />
                   ) : null}

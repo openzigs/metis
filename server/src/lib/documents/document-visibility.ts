@@ -17,6 +17,7 @@
  */
 import { RESTRICTED_SOURCE_TITLE, type AclSubject } from "@metis/shared";
 import { prisma } from "../prisma.js";
+import { projectAudienceWhere } from "../auth/project-audience.js";
 import {
   InactiveAclActorError,
   isVisibleTo,
@@ -155,12 +156,80 @@ export function restrictedDocumentRow<T extends object>(
  * reader cannot see, `access.canRead` is false and the row is `restricted`.
  */
 export type DocumentAccess =
-  | { restricted: boolean; canRead: true; subjects: AclSubject[] }
+  | { restricted: boolean; canRead: true; subjects: AclSubject[]; users: AclUserName[] }
   | { restricted: true; canRead: false };
 
-/** {@link DocumentAccess} for `doc`, given whether its reader may see it. */
-export function documentAccessOf(doc: AclDocument, visible: boolean): DocumentAccess {
+/**
+ * #2555 — who a `user` subject is, as a reader of the document is told: the
+ * same non-sensitive fields the people picker (`GET /api/users`) sends.
+ */
+export interface AclUserName {
+  id: string;
+  username: string;
+  displayName: string;
+}
+
+/**
+ * {@link DocumentAccess} for `doc`, given whether its reader may see it.
+ * #2555 — `names` (from {@link aclUserNames}) names its `user` subjects to a
+ * reader; a subject it does not resolve is left out of `users`, and the UI
+ * says it is someone it does not know.
+ */
+export function documentAccessOf(
+  doc: AclDocument,
+  visible: boolean,
+  names: ReadonlyMap<string, AclUserName> = new Map(),
+): DocumentAccess {
   if (!visible) return { restricted: true, canRead: false };
   const subjects = parseAclSubjects(doc.aclSubjects);
-  return { restricted: subjects.length > 0, canRead: true, subjects };
+  const users = [...new Set(subjects.filter((s) => s.kind === "user").map((s) => s.value))].flatMap(
+    (id) => {
+      const user = names.get(id);
+      return user ? [user] : [];
+    },
+  );
+  return { restricted: subjects.length > 0, canRead: true, subjects, users };
+}
+
+/**
+ * #2555 — the people the `user` subjects of `docs` name, so a reader is told
+ * "Readable by Alice Smith", not an internal id. Pass only documents the
+ * reader may see: a non-reader is never told who reads one (#2546).
+ *
+ * Only active users who can open `projectId` are named (the audience the
+ * people picker offers, `projectAudienceWhere`), so a list cannot be used to
+ * look up someone outside the project by id. One query, and none when no
+ * document names a user.
+ */
+export async function aclUserNames(
+  projectId: string,
+  docs: readonly AclDocument[],
+): Promise<Map<string, AclUserName>> {
+  const ids = [
+    ...new Set(
+      docs.flatMap((d) =>
+        parseAclSubjects(d.aclSubjects)
+          .filter((s) => s.kind === "user")
+          .map((s) => s.value),
+      ),
+    ),
+  ];
+  if (ids.length === 0) return new Map();
+  const audience = await projectAudienceWhere(projectId);
+  if (!audience) return new Map();
+  const rows: AclUserName[] = [];
+  for (let i = 0; i < ids.length; i += ID_BATCH) {
+    rows.push(
+      ...(await prisma.user.findMany({
+        where: {
+          id: { in: ids.slice(i, i + ID_BATCH) },
+          status: "active",
+          deletedAt: null,
+          AND: [audience.where],
+        },
+        select: { id: true, username: true, displayName: true },
+      })),
+    );
+  }
+  return new Map(rows.map((u) => [u.id, u]));
 }

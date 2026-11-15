@@ -5,13 +5,20 @@
  * member the list leaves out it says only "Restricted": the server sends such
  * a member no subjects (#2546), so who reads it is never shown to them. An
  * unrestricted document, or a row the server did not annotate, shows nothing.
+ *
+ * #2555 — a person is named by their display name, never their internal id
+ * ("Readable by Alice Smith, the coordinator role and admins").
  */
-import type { AclSubject, DocumentAccess } from "@/lib/projects-api";
+import type { AclSubject, AclUserName, DocumentAccess } from "@/lib/projects-api";
+import { aclSubjectLabel } from "@/lib/document-access";
 import { Badge } from "@/components/ui/badge";
 
-/** "role coordinator, user u_123" — the subjects as the editor names them. */
-export function describeAclSubjects(subjects: AclSubject[]): string {
-  return subjects.map((s) => `${s.kind} ${s.value}`).join(", ");
+/** "Alice Smith, the coordinator role" — the subjects as the editor names them. */
+export function describeAclSubjects(
+  subjects: AclSubject[],
+  users?: readonly AclUserName[],
+): string {
+  return subjects.map((s) => aclSubjectLabel(s, users)).join(", ");
 }
 
 /**
@@ -43,7 +50,7 @@ export function RestrictedBadge({
       <Badge variant="outline">Restricted</Badge>
       <span className="text-muted-foreground">
         {readers.length > 0
-          ? `Readable by ${describeAclSubjects(readers)} and admins`
+          ? `Readable by ${describeAclSubjects(readers, access.users)} and admins`
           : "Readable by admins only"}
       </span>
     </span>
