@@ -222,6 +222,68 @@ export async function changeRequestDetails(
   return out;
 }
 
+/** A change request's name as one reader is shown it. */
+export interface ReaderChangeRequestTitle {
+  projectId: string;
+  title: string;
+  /**
+   * True when the title is Metis's and the run cites a document this reader
+   * cannot see: any text that quoted the stored title may name that document.
+   */
+  regenerated: boolean;
+}
+
+/**
+ * #2546 — the ONE place a change request's name is read for a person. Every
+ * surface that names a run (the Requirements list, the change-request link on
+ * impact and portfolio detail, a portfolio check's statement, the source of a
+ * new check) reads it here, never from `analysis.title`: a generated title was
+ * made from the first document's name, and that document may be restricted
+ * from the reader. Live runs of `projectIds` only; any other id is absent.
+ */
+export async function readerChangeRequestTitles(
+  analysisIds: Iterable<string>,
+  projectIds: readonly string[],
+  reader: SourceReader,
+  /** A deleted run too: for text quoted from it while it was live. */
+  opts: { includeDeleted?: boolean } = {},
+): Promise<Map<string, ReaderChangeRequestTitle>> {
+  const ids = [...new Set(analysisIds)];
+  const out = new Map<string, ReaderChangeRequestTitle>();
+  if (ids.length === 0 || projectIds.length === 0) return out;
+  const runs = await prisma.analysis.findMany({
+    where: {
+      id: { in: ids },
+      projectId: { in: [...projectIds] },
+      ...(opts.includeDeleted ? {} : { deletedAt: null }),
+    },
+    select: {
+      id: true,
+      projectId: true,
+      title: true,
+      titleGenerated: true,
+      metadata: true,
+      startedAt: true,
+    },
+  });
+  const byProject = new Map<string, typeof runs>();
+  for (const r of runs) byProject.set(r.projectId, [...(byProject.get(r.projectId) ?? []), r]);
+  for (const [projectId, rows] of byProject) {
+    const details = await changeRequestDetails(projectId, rows, reader);
+    for (const r of rows) {
+      const d = details.get(r.id)!;
+      out.set(r.id, {
+        projectId,
+        title: clampTitle(d.title),
+        // A placeholder source on a generated title: made without that document.
+        regenerated:
+          d.titleGenerated && d.sources.documents.some((s) => s.name === RESTRICTED_SOURCE_TITLE),
+      });
+    }
+  }
+  return out;
+}
+
 /**
  * Rename a change request of `projectId`. Scoped on the project AND the id, so
  * a run of another project is not found (the caller answers 404), and a

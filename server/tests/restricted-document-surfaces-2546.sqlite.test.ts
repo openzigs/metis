@@ -64,6 +64,9 @@ const { documentsRouter } = await import("../src/routes/documents.js");
 const { discussionsRouter } = await import("../src/routes/discussions.js");
 const { portfolioAssessmentsRouter } = await import("../src/routes/portfolio-assessments.js");
 const { impactAnalysisRouter } = await import("../src/routes/impact-analysis.js");
+const { projectRequirementsRouter } = await import("../src/routes/project-requirements.js");
+const { projectsRouter } = await import("../src/routes/projects.js");
+const { audit } = await import("../src/lib/audit/audit-service.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { resolveChatSubject } = await import("../src/lib/ai/chat-subject.js");
@@ -81,6 +84,13 @@ const REQ = "req-2546-payroll";
 const THREAD = "thread-2546";
 const CHECK = "check-2546";
 const IMPACT = "impact-2546";
+/** #2546 review — a requirement of the run Bob CAN see, from the open brief. */
+const REQ_OPEN = "req-2546-brief";
+/** A portfolio check and an impact analysis started from Alice's change request. */
+const CHECK_CR = "check-2546-cr";
+const IMPACT_CR = "impact-2546-cr";
+/** Bob's name for Alice's change request: its generated title, made without the document. */
+const BOB_TITLE = "Change request of 2026-11-01";
 const SECRET = "SALARY_2546 rises by 40%";
 /** Nothing of the restricted document: neither its words nor its name. */
 const LEAKS = /SALARY_2546|payroll-2546\.docx/i;
@@ -123,6 +133,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         }),
       );
       a.use("/api/impact-analyses", impactAnalysisRouter());
+      a.use("/api/projects/:projectId/requirements", projectRequirementsRouter());
+      a.use("/api/projects", projectsRouter());
       a.use(notFoundHandler);
       a.use(errorHandler);
       return a;
@@ -219,6 +231,58 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           sourceIds: sources([PAYROLL]),
         },
       });
+      await db.requirement.create({
+        data: {
+          id: REQ_OPEN,
+          analysisId: RUN,
+          projectId: P,
+          title: "Brief requirement",
+          body: "From the open brief",
+          labels: "[]",
+          sourceIds: sources([BRIEF]),
+        },
+      });
+      // A portfolio check started from the change request: its statement quotes
+      // the run's name as Alice saw it when she started it.
+      await db.portfolioAssessment.create({
+        data: {
+          id: CHECK_CR,
+          statement: `Requirements of change request "${PAYROLL_NAME}"`,
+          scope: "product",
+          productIds: JSON.stringify([PRODUCT]),
+          status: "completed",
+          portfolioVerdict: "partial",
+          summary: "s",
+          sourceAnalysisId: RUN,
+          sourceProjectId: P,
+          notChecked: "[]",
+          createdById: "alice",
+          products: {
+            create: [
+              {
+                productId: PRODUCT,
+                coverage: "partial",
+                technicalDetail: JSON.stringify({
+                  criteria: [
+                    { criterion: "Brief requirement: From the open brief", coveredBy: [] },
+                  ],
+                }),
+              },
+            ],
+          },
+        },
+      });
+      await db.impactAnalysis.create({
+        data: {
+          id: IMPACT_CR,
+          status: "completed",
+          sourceAnalysisId: RUN,
+          sourceText: "Brief requirement",
+          startedById: "alice",
+          completedAt: new Date(),
+          projects: { create: [{ projectId: P }] },
+        },
+      });
       await db.discussionThread.create({
         data: { id: THREAD, projectId: P, requirementId: REQ, createdById: "alice", title: "t" },
       });
@@ -286,14 +350,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(payroll).toMatchObject({
           filename: RESTRICTED_SOURCE_TITLE,
           title: null,
-          storagePath: "",
-          checksum: "",
           restricted: true,
           // Counts stay (#2437).
           sizeBytes: 2048,
           chunkCount: 3,
           status: "ready",
         });
+        // #2546 review — an allowlist: who may read it, its path and its
+        // uploader are not sent to a reader it leaves out.
+        for (const key of ["aclSubjects", "storagePath", "checksum", "uploadedById", "mimeType"]) {
+          expect(payroll, key).not.toHaveProperty(key);
+        }
         const brief = rows.find((r) => r.id === BRIEF)!;
         expect(brief.filename).toBe("brief-2546.md");
         expect(brief).not.toHaveProperty("restricted");
@@ -509,6 +576,131 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             SECRET,
           );
         }
+      });
+    });
+    describe("#2546 review — the change request's name on every surface", () => {
+      it("the Requirements list names Alice's change request without the document to Bob", async () => {
+        const bob = await get("bob", `/api/projects/${P}/requirements`);
+        expect(bob.status).toBe(200);
+        expect(JSON.stringify(bob.body)).not.toMatch(LEAKS);
+        const open = bob.body.data.items.find((i: { id: string }) => i.id === REQ_OPEN);
+        expect(open.changeRequest).toEqual({ id: RUN, title: BOB_TITLE });
+        for (const who of ["alice", "root"] as const) {
+          const res = await get(who, `/api/projects/${P}/requirements`);
+          const row = res.body.data.items.find((i: { id: string }) => i.id === REQ_OPEN);
+          expect(row.changeRequest.title, who).toBe(PAYROLL_NAME);
+        }
+      });
+
+      it("the impact analysis's link back names it without the document to Bob", async () => {
+        const bob = await get("bob", `/api/impact-analyses/${IMPACT_CR}`);
+        expect(bob.status).toBe(200);
+        expect(JSON.stringify(bob.body)).not.toMatch(LEAKS);
+        expect(bob.body.data.changeRequest).toEqual({ id: RUN, projectId: P, title: BOB_TITLE });
+        for (const who of ["alice", "root"] as const) {
+          const res = await get(who, `/api/impact-analyses/${IMPACT_CR}`);
+          expect(res.body.data.changeRequest.title, who).toBe(PAYROLL_NAME);
+        }
+      });
+
+      it("the portfolio check's link back and statement name it without the document to Bob", async () => {
+        const bob = await get("bob", `/api/portfolio-assessments/${CHECK_CR}`);
+        expect(bob.status).toBe(200);
+        expect(JSON.stringify(bob.body)).not.toMatch(LEAKS);
+        expect(bob.body.data.changeRequest).toEqual({ id: RUN, projectId: P, title: BOB_TITLE });
+        expect(bob.body.data.statement).toBe(`Requirements of change request "${BOB_TITLE}"`);
+        const list = await get("bob", `/api/portfolio-assessments?analysisId=${RUN}`);
+        expect(list.status).toBe(200);
+        expect(list.body.data.some((i: { id: string }) => i.id === CHECK_CR)).toBe(true);
+        expect(JSON.stringify(list.body)).not.toMatch(LEAKS);
+        const md = await get("bob", `/api/portfolio-assessments/${CHECK_CR}/export?format=md`);
+        expect(md.status).toBe(200);
+        expect(md.text).not.toMatch(LEAKS);
+        for (const who of ["alice", "root"] as const) {
+          const res = await get(who, `/api/portfolio-assessments/${CHECK_CR}`);
+          expect(res.body.data.changeRequest.title, who).toBe(PAYROLL_NAME);
+          expect(res.body.data.statement, who).toContain(PAYROLL_NAME);
+        }
+      });
+
+      it("a check Bob starts from the change request stores no name he cannot see", async () => {
+        const before = new Set((await db.portfolioAssessment.findMany()).map((a) => a.id));
+        const bob = await post("bob", "/api/portfolio-assessments", {
+          scope: "product",
+          productIds: [PRODUCT],
+          analysisId: RUN,
+        });
+        expect(bob.status).toBe(202);
+        const id = bob.body.data.id as string;
+        expect(before.has(id)).toBe(false);
+        let row = await db.portfolioAssessment.findUnique({ where: { id } });
+        for (
+          let i = 0;
+          i < 300 && row && (row.status === "pending" || row.status === "running");
+          i++
+        ) {
+          await new Promise((r) => setTimeout(r, 10));
+          row = await db.portfolioAssessment.findUnique({ where: { id } });
+        }
+        expect(row!.statement).toBe(`Requirements of change request "${BOB_TITLE}"`);
+      });
+    });
+
+    describe("#2546 review — the quarantine list", () => {
+      it("lists the restricted document to Bob without its name, and names it to Alice", async () => {
+        await db.document.update({ where: { id: PAYROLL }, data: { indexState: "quarantined" } });
+        try {
+          const bob = await get("bob", `/api/projects/${P}/quarantine`);
+          expect(bob.status).toBe(200);
+          expect(JSON.stringify(bob.body)).not.toMatch(LEAKS);
+          expect(bob.body.data.items).toEqual([
+            expect.objectContaining({
+              documentId: PAYROLL,
+              filename: RESTRICTED_SOURCE_TITLE,
+              restricted: true,
+            }),
+          ]);
+          for (const who of ["alice", "root"] as const) {
+            const res = await get(who, `/api/projects/${P}/quarantine`);
+            expect(res.body.data.items[0].filename, who).toBe(PAYROLL_NAME);
+            expect(res.body.data.items[0], who).not.toHaveProperty("restricted");
+          }
+        } finally {
+          await db.document.update({ where: { id: PAYROLL }, data: { indexState: "indexed" } });
+        }
+      });
+    });
+
+    describe("#2546 review — refusals are audited", () => {
+      it("an impact analysis Bob tries to start from the document is audited as denied", async () => {
+        vi.mocked(audit).mockClear();
+        const bob = await post("bob", "/api/impact-analyses", {
+          documentId: PAYROLL,
+          projectIds: [P],
+        });
+        expect(bob.status).toBe(404);
+        expect(vi.mocked(audit)).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action: "impact_analysis.document.denied",
+            actor: expect.objectContaining({ id: "bob" }),
+          }),
+        );
+      });
+
+      it("a portfolio check Bob tries to start from the document is audited as denied", async () => {
+        vi.mocked(audit).mockClear();
+        const bob = await post("bob", "/api/portfolio-assessments", {
+          scope: "product",
+          productIds: [PRODUCT],
+          documentId: PAYROLL,
+        });
+        expect(bob.status).toBe(404);
+        expect(vi.mocked(audit)).toHaveBeenCalledWith(
+          expect.objectContaining({
+            action: "portfolio_assessment.document.denied",
+            actor: expect.objectContaining({ id: "bob" }),
+          }),
+        );
       });
     });
   },

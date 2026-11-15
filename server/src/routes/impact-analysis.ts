@@ -757,7 +757,18 @@ async function assertDocumentReadable(
     resourceId: documentId,
     action: "impact_analysis.document",
   });
-  if (!allowed || !(await canSeeDocument(actor.id, doc))) throw notFound();
+  if (!allowed) throw notFound();
+  if (!(await canSeeDocument(actor.id, doc))) {
+    // #2546 — a member its access list leaves out is refused as for an unknown
+    // document, and the refusal is audited like the project-access one above.
+    audit({
+      actor: { id: actor.id },
+      action: "impact_analysis.document.denied",
+      target: { type: "document", id: documentId },
+      metadata: { reason: "acl-denied", projectId: doc.projectId },
+    });
+    throw notFound();
+  }
 }
 
 /** #2345 — `GET /?analysisId=`: the runs started from one change request. */
@@ -1198,7 +1209,11 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
       const detail = await loadAccessibleImpactDetail(actor, String(req.params.id));
       // #2345 — the change request it was started from, for the link back: looked
       // up among the run's projects only, every one of which the reader can read.
-      const changeRequest = await changeRequestRef(detail.sourceAnalysisId, detail.projectIds);
+      const changeRequest = await changeRequestRef(
+        detail.sourceAnalysisId,
+        detail.projectIds,
+        userSourceReader(actor.id),
+      );
       res.json(ok({ ...detail, changeRequest }));
     } catch (err) {
       next(asAppError(err));

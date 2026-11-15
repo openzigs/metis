@@ -34,6 +34,7 @@
  * stopped, so a restart never leaves an assessment `running` for ever (#1657).
  */
 import { userSourceReader } from "../lib/analysis/source-redaction.js";
+import { audit } from "../lib/audit/audit-service.js";
 import { Router } from "express";
 import {
   PORTFOLIO_STATEMENT_MAX_CHARS,
@@ -114,6 +115,7 @@ import {
   type PortfolioDocumentReader,
 } from "../lib/portfolio/document-requirements.js";
 import {
+  changeRequestStatement,
   renderPortfolioAssessmentMarkdown,
   resolveReaderAccess,
   toListItem,
@@ -206,12 +208,23 @@ async function loadReadableSourceDocument(
       aclSubjects: true,
     },
   });
+  const notFound = () => new AppError(404, "NOT_FOUND", "Document not found");
   if (
     !doc ||
-    !(await canAccessProjectDiscussions({ id: user.userId, role: user.role }, doc.projectId)) ||
-    !(await canSeeDocument(user.userId, doc))
+    !(await canAccessProjectDiscussions({ id: user.userId, role: user.role }, doc.projectId))
   ) {
-    throw new AppError(404, "NOT_FOUND", "Document not found");
+    throw notFound();
+  }
+  if (!(await canSeeDocument(user.userId, doc))) {
+    // #2546 — refused as for an unknown document, and audited: a member probing
+    // restricted document ids leaves a trace.
+    audit({
+      actor: { id: user.userId },
+      action: "portfolio_assessment.document.denied",
+      target: { type: "document", id: documentId },
+      metadata: { reason: "acl-denied", projectId: doc.projectId },
+    });
+    throw notFound();
   }
   // Only after the read check, so neither answer is an existence oracle. The page offers
   // neither; the API refuses them too: a repository's file is code, not requirements, and a
@@ -298,10 +311,7 @@ export async function gapInputFor(
     );
     return {
       input: portfolioGapInputSchema.parse({
-        statement: cutText(
-          `Requirements of change request "${changeRequest.title}"`,
-          PORTFOLIO_STATEMENT_MAX_CHARS,
-        ).text,
+        statement: changeRequestStatement(changeRequest.title),
         criteria: criteria.criteria,
         sourceProjectId: changeRequest.projectId,
         ...scoped,
@@ -684,6 +694,7 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
         const changeRequest = await changeRequestRef(
           view.sourceAnalysisId,
           view.sourceProjectId ? [view.sourceProjectId] : [],
+          userSourceReader(req.user!.userId),
         );
         res.json(ok({ ...view, changeRequest }));
       } catch (err) {

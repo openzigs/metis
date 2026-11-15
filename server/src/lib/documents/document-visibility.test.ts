@@ -85,31 +85,53 @@ describe("#2546 — document visibility outside a run", () => {
     expect(findMany.mock.calls.map((c) => c[0].where.id.in.length)).toEqual([500, 500, 1]);
   });
 
-  it("a restricted row keeps its id and counts, and loses its name, path and error", () => {
+  it("a restricted row is an allowlist: its id, status and counts, and nothing that names it", () => {
     const row = restrictedDocumentRow({
       id: "d",
+      projectId: "p",
       filename: "payroll.docx",
       title: "Payroll",
+      mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       storagePath: "/data/payroll.docx",
       checksum: "abc",
       errorMessage: "could not parse payroll.docx",
+      aclSubjects: JSON.stringify([{ kind: "user", value: "alice" }]),
+      uploadedById: "alice",
+      sourceUrl: "https://intranet.example/payroll", // a column added later
+      source: "upload",
+      status: "ready",
+      indexState: "indexed",
+      isSpec: false,
       sizeBytes: 10,
       chunkCount: 2,
+      uploadedAt: "2026-11-01T00:00:00.000Z",
+      processedAt: null,
     });
     expect(row).toEqual({
       id: "d",
+      projectId: "p",
       filename: RESTRICTED_SOURCE_TITLE,
       title: null,
-      storagePath: "",
-      checksum: "",
       errorMessage: null,
+      source: "upload",
+      status: "ready",
+      indexState: "indexed",
+      isSpec: false,
       sizeBytes: 10,
       chunkCount: 2,
+      uploadedAt: "2026-11-01T00:00:00.000Z",
+      processedAt: null,
       restricted: true,
     });
+    // Never who may read it, nor any field not on the allowlist.
+    expect(row).not.toHaveProperty("aclSubjects");
+    expect(row).not.toHaveProperty("sourceUrl");
     // A field the row does not carry is not added.
-    expect(restrictedDocumentRow({ filename: "x" })).toEqual({
+    expect(restrictedDocumentRow({ id: "x" })).toEqual({
+      id: "x",
       filename: RESTRICTED_SOURCE_TITLE,
+      title: null,
+      errorMessage: null,
       restricted: true,
     });
   });

@@ -97,27 +97,51 @@ export async function hiddenDocumentIds(
 }
 
 /**
- * A document row as a reader who cannot see it is shown it: marked
- * `restricted`, with no name, title, path, checksum or error text (an
- * ingest error may quote the file). Its id, status and counts stay, so a list
- * keeps its length and the row can still be told apart.
+ * The fields of a document row a reader its access list leaves out is sent:
+ * enough to keep its place in a list, tell it apart, and count it (#2437).
+ * An ALLOWLIST, so a column added to `Document` later (a source URL, an
+ * external title) is not sent to such a reader by default. Never `aclSubjects`:
+ * who may read it is not told to someone it leaves out (#2547 sends a reader
+ * of the document its subjects; a non-reader gets none of them).
  */
-export function restrictedDocumentRow<
-  T extends {
-    filename: string;
-    title?: string | null;
-    storagePath?: string;
-    checksum?: string;
-    errorMessage?: string | null;
-  },
->(row: T): T & { restricted: true } {
+export const RESTRICTED_DOCUMENT_FIELDS = [
+  "id",
+  "projectId",
+  "source",
+  "status",
+  "indexState",
+  "isSpec",
+  "sizeBytes",
+  "chunkCount",
+  "uploadedAt",
+  "processedAt",
+] as const;
+
+type RestrictedField = (typeof RESTRICTED_DOCUMENT_FIELDS)[number];
+
+/**
+ * A document row as a reader who cannot see it is shown it: the
+ * {@link RESTRICTED_DOCUMENT_FIELDS} it carries, its name the restricted
+ * placeholder, no title or error text (an ingest error may quote the file),
+ * and `restricted: true`. Every other field is dropped.
+ */
+export function restrictedDocumentRow<T extends object>(
+  row: T,
+): Pick<T, Extract<keyof T, RestrictedField>> & {
+  filename: string;
+  title: null;
+  errorMessage: null;
+  restricted: true;
+} {
+  const kept: Partial<Record<RestrictedField, unknown>> = {};
+  for (const field of RESTRICTED_DOCUMENT_FIELDS) {
+    if (field in row) kept[field] = (row as Record<string, unknown>)[field];
+  }
   return {
-    ...row,
+    ...(kept as Pick<T, Extract<keyof T, RestrictedField>>),
     filename: RESTRICTED_SOURCE_TITLE,
-    ...("title" in row ? { title: null } : {}),
-    ...("storagePath" in row ? { storagePath: "" } : {}),
-    ...("checksum" in row ? { checksum: "" } : {}),
-    ...("errorMessage" in row ? { errorMessage: null } : {}),
+    title: null,
+    errorMessage: null,
     restricted: true,
   };
 }

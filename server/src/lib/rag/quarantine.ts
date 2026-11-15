@@ -41,7 +41,8 @@ import {
   type ProjectWriteCapability,
   type ProjectVectorWrite,
 } from "./project-vector-write.js";
-import type { AclSubject } from "@metis/shared";
+import { RESTRICTED_SOURCE_TITLE, type AclSubject } from "@metis/shared";
+import { documentVisibilityFor, type DocumentReader } from "../documents/document-visibility.js";
 import type { Prisma } from "@prisma/client";
 import { resolveEvidencePolicy } from "../docs-gen/evidence-policy.js";
 import { publicIndexingErrorMessage } from "./indexing-failure-message.js";
@@ -792,8 +793,15 @@ export async function rejectDocument(
   log.info("rejected document", { documentId, projectId: doc.projectId });
 }
 
-/** List quarantine and approvals whose selected index still needs cleanup. */
-export async function listQuarantine(projectId: string) {
+/**
+ * List quarantine and approvals whose selected index still needs cleanup.
+ *
+ * #2546 — given a `reader`, a document whose access list leaves them out keeps
+ * its row (the review queue's length is not a secret) but is not named: its
+ * name is the restricted placeholder, its error text is dropped, and it is
+ * marked `restricted`. With no reader every row is as stored (internal reads).
+ */
+export async function listQuarantine(projectId: string, reader?: string | DocumentReader) {
   const docs = await prisma.document.findMany({
     where: {
       projectId,
@@ -819,9 +827,32 @@ export async function listQuarantine(projectId: string) {
       indexState: true,
       autoApproveTrusted: true,
       errorMessage: true,
+      aclSubjects: true,
     },
   });
-  return docs.map((d) => ({
+  const sees = reader ? await documentVisibilityFor(reader, docs) : () => true;
+  return docs.map((d) =>
+    sees(d)
+      ? quarantineRow(d)
+      : {
+          ...quarantineRow(d),
+          filename: RESTRICTED_SOURCE_TITLE,
+          errorMessage: null,
+          restricted: true as const,
+        },
+  );
+}
+
+function quarantineRow(d: {
+  id: string;
+  filename: string;
+  uploadedAt: Date;
+  chunkCount: number;
+  indexState: string;
+  autoApproveTrusted: boolean;
+  errorMessage: string | null;
+}) {
+  return {
     documentId: d.id,
     filename: d.filename,
     uploadedAt: d.uploadedAt.toISOString(),
@@ -830,7 +861,7 @@ export async function listQuarantine(projectId: string) {
     autoApproveTrusted: d.autoApproveTrusted,
     // #98 — a reconciling row holds the approval cleanup's raw exception text.
     errorMessage: publicIndexingErrorMessage(d.errorMessage, d.indexState),
-  }));
+  };
 }
 
 function safeParseJson(raw: string | null | undefined): unknown {

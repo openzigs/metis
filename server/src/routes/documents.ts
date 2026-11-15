@@ -689,12 +689,16 @@ function decodeDocumentCursor(raw: unknown): { uploadedAt: Date; id: string } {
 /**
  * #2546 — the rows as `userId` may see them: one whose access list does not
  * name them keeps its place (the list's length and paging are unchanged) but
- * is marked `restricted`, with its name and title the placeholder, so the page
- * offers nothing to do with it that reads its text.
+ * is the allowlisted `restrictedDocumentRow`: marked `restricted`, named by the
+ * placeholder, and without its access list, path, uploader or error text, so
+ * the page offers nothing to do with it that reads its text.
  */
 async function readableDocumentRows<
   T extends { aclSubjects: string; filename: string; errorMessage: string | null },
->(userId: string, rows: readonly T[]): Promise<T[]> {
+>(
+  userId: string,
+  rows: readonly T[],
+): Promise<Array<T | ReturnType<typeof restrictedDocumentRow<T>>>> {
   const sees = await documentVisibilityFor(userId, rows);
   return rows.map((row) =>
     sees(row) ? publicDocumentRow(row) : restrictedDocumentRow(publicDocumentRow(row)),

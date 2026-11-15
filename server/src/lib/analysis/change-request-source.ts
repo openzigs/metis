@@ -13,7 +13,7 @@
 import type { PortfolioNotChecked } from "@metis/shared";
 import { AppError } from "../../middleware/error-handler.js";
 import { prisma } from "../prisma.js";
-import { clampTitle, sourcelessRunTitle } from "./change-request.js";
+import { readerChangeRequestTitles, sourcelessRunTitle } from "./change-request.js";
 import { restrictedIds, type SourceReader } from "./source-redaction.js";
 
 /** A requirement of a change request, as a check reads it. */
@@ -77,10 +77,12 @@ export async function loadChangeRequestSource(
     },
   });
   const restricted = await restrictedIds(reader, rows);
+  // #2546 — named as the starter sees it: the check's statement quotes it.
+  const named = (await readerChangeRequestTitles([run.id], [run.projectId], reader)).get(run.id);
   return {
     id: run.id,
     projectId: run.projectId,
-    title: run.title?.trim() ? clampTitle(run.title) : sourcelessRunTitle(run.startedAt),
+    title: named?.title ?? sourcelessRunTitle(run.startedAt),
     restrictedLeftOut: restricted.size,
     requirements: rows
       .filter((r) => !restricted.has(r.id))
@@ -142,21 +144,16 @@ export function assertHasRequirements(source: ChangeRequestSource): void {
 /**
  * The change request `analysisId` named for a link back, or null when it is
  * gone. Scoped on its project too: a caller passes a project the reader may
- * read, so a run of another project is never named.
+ * read, so a run of another project is never named. #2546 — named as `reader`
+ * sees it: a generated title made from a document they cannot see is made
+ * again without it.
  */
 export async function changeRequestRef(
   analysisId: string | null | undefined,
   projectIds: readonly string[],
+  reader: SourceReader,
 ): Promise<{ id: string; projectId: string; title: string } | null> {
   if (!analysisId || projectIds.length === 0) return null;
-  const run = await prisma.analysis.findFirst({
-    where: { id: analysisId, projectId: { in: [...projectIds] }, deletedAt: null },
-    select: { id: true, projectId: true, title: true, startedAt: true },
-  });
-  if (!run) return null;
-  return {
-    id: run.id,
-    projectId: run.projectId,
-    title: run.title?.trim() ? clampTitle(run.title) : sourcelessRunTitle(run.startedAt),
-  };
+  const named = (await readerChangeRequestTitles([analysisId], projectIds, reader)).get(analysisId);
+  return named ? { id: analysisId, projectId: named.projectId, title: named.title } : null;
 }
