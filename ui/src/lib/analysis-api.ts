@@ -432,6 +432,11 @@ export interface AnalysisSnapshot extends AnalysisListItem {
   restrictedView?: AnalysisRestrictedView;
   /** Issue #1131 — the budget Continue would run with; present only while it is offered. */
   codeContinuation?: AnalysisCodeContinuationQuote | null;
+  /**
+   * #2554 — the viewer cannot see every document this run read: Regenerate,
+   * Cancel and the resume actions are refused them, so none is offered.
+   */
+  runRestricted?: true;
   metadata: Record<string, unknown> | null;
   agentResults: AgentResultSummary[];
   requirements: RequirementSummary[];
@@ -483,6 +488,7 @@ type AnalysisSnapshotPayload = AnalysisListItem &
     ledgerUsage: AnalysisLedgerUsage | null;
     codeContinuation: AnalysisCodeContinuationQuote | null;
     restrictedView: AnalysisRestrictedView;
+    runRestricted: true;
   }>;
 
 export interface AnalysisCostCapStatus {
@@ -1460,6 +1466,12 @@ export interface ApprovalRequestPayload {
    * approving promotes it without one. Absent otherwise, and before synthesis.
    */
   noCodeEvidence?: boolean;
+  /**
+   * #2554 — the viewer cannot see the entry this checkpoint decides (it rests
+   * on a document they cannot read): the server refuses their decision on it,
+   * and on any set it is part of (Approve all, leave out the added).
+   */
+  restricted?: true;
 }
 
 export interface TicketStatus {

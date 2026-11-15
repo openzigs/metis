@@ -28,5 +28,36 @@ describe("DocumentSourceSelector — #2547 restricted documents", () => {
     ]);
     expect(screen.getByRole("option", { name: "handbook.md (HR)" })).not.toBeDisabled();
     expect(screen.getByRole("option", { name: "plan.md (HR) — restricted" })).not.toBeDisabled();
+    expect(screen.queryByTestId("source-documents-awaiting-review")).toBeNull();
+  });
+});
+
+describe("DocumentSourceSelector — #2555 documents awaiting review", () => {
+  it("labels a quarantined document and counts them under the list", () => {
+    renderSelector([
+      { id: "d-open", filename: "handbook.md", projectName: "HR" },
+      { id: "d-q1", filename: "draft.md", projectName: "HR", awaitingReview: true },
+      {
+        id: "d-q2",
+        filename: "pay.md",
+        projectName: "HR",
+        restricted: true,
+        awaitingReview: true,
+      },
+    ]);
+    expect(screen.getByRole("option", { name: "draft.md (HR) — awaiting review" })).toBeVisible();
+    expect(
+      screen.getByRole("option", { name: "pay.md (HR) — restricted, awaiting review" }),
+    ).toBeVisible();
+    expect(screen.getByTestId("source-documents-awaiting-review")).toHaveTextContent(
+      "2 of these documents are awaiting review",
+    );
+  });
+
+  it("says one in the singular", () => {
+    renderSelector([{ id: "d-q1", filename: "draft.md", projectName: "HR", awaitingReview: true }]);
+    expect(screen.getByTestId("source-documents-awaiting-review")).toHaveTextContent(
+      "1 of these documents is awaiting review",
+    );
   });
 });

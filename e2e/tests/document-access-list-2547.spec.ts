@@ -9,6 +9,7 @@
  * | a "Restricted" badge says who can read it                          | Alice sees the badge                        |
  * | a second member doesn't get it                                     | Bob: badge, no editor, no portfolio check   |
  * | the new-change-request picker marks it; Bob cannot select it       | Bob's change-request form                   |
+ * | #2555: a person is picked by name; the badge names them, not an id | Alice adds herself by name                  |
  *
  * The document is seeded `ready` through the CLI seam the other suites use, so
  * no ingest has to finish; the access list does not need chunks to be saved.
@@ -23,6 +24,8 @@ import { seedDocumentViaCli } from "../fixtures/seed-helpers.js";
 
 const ALICE = { username: "coordinator", password: "password" } as const;
 const BOB = { username: "developer", password: "password" } as const;
+/** The mock `coordinator` user's display name (`server/src/lib/auth/mock-provider.ts`). */
+const ALICE_NAME = "Test Coordinator";
 
 async function signedIn(browser: Browser, creds: typeof ALICE | typeof BOB): Promise<Page> {
   const context = await browser.newContext();
@@ -40,6 +43,7 @@ test.describe("Document access list — restrict from the UI, as non-admins (#25
     const filename = `payroll-${Date.now()}.md`;
     let projectId = "";
     let documentId = "";
+    let aliceId = "";
 
     await test.step("seed a project and a ready document", async () => {
       const { accessToken: adminToken } = await primeUser({
@@ -58,7 +62,7 @@ test.describe("Document access list — restrict from the UI, as non-admins (#25
       };
       projectId = (body.data?.project?.id ?? body.data?.id ?? body.id) as string;
       await admin.dispose();
-      const { userId: aliceId } = await primeUser(ALICE);
+      ({ userId: aliceId } = await primeUser(ALICE));
       await primeUser(BOB);
       documentId = seedDocumentViaCli({
         projectId,
@@ -69,16 +73,18 @@ test.describe("Document access list — restrict from the UI, as non-admins (#25
       });
     });
 
-    await test.step("Alice restricts it to coordinators from its Documents row", async () => {
+    await test.step("Alice restricts it to coordinators and herself, by name, from its Documents row", async () => {
       const page = await signedIn(browser, ALICE);
       const docs = new ProjectDocumentsPage(page);
       await docs.goto(projectId);
       await docs.expectLoaded();
       await expect(docs.restrictedBadge(documentId)).toHaveCount(0);
-      await docs.restrictToRole(documentId, "coordinator");
+      // #2555 — the role from the role list; Alice found by her name, not her id.
+      await docs.restrictToRole(documentId, "coordinator", ALICE_NAME);
       const badge = docs.restrictedBadge(documentId);
       await expect(badge).toContainText("Restricted", { timeout: 15_000 });
-      await expect(badge).toContainText("Readable by role coordinator");
+      await expect(badge).toContainText(`Readable by the coordinator role, ${ALICE_NAME}`);
+      await expect(badge).not.toContainText(aliceId);
       // Alice is on the list, so she keeps the editor.
       await expect(docs.accessToggle(documentId)).toBeVisible();
       await page.context().close();
@@ -95,6 +101,7 @@ test.describe("Document access list — restrict from the UI, as non-admins (#25
       const row = docs.documentRow(documentId);
       await expect(row).not.toContainText(filename);
       await expect(row).not.toContainText("coordinator");
+      await expect(row).not.toContainText(ALICE_NAME);
       await expect(docs.accessToggle(documentId)).toHaveCount(0);
       await expect(
         row.getByRole("link", { name: "Check requirements across portfolio" }),

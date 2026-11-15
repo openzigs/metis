@@ -8,6 +8,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import {
+  ALL_REQUIREMENTS_RESTRICTED_MESSAGE,
   RESTRICTED_OUTCOME_BODY,
   RESTRICTED_READ_WEB_RESEARCH_NOTICE,
   RESTRICTED_RUN_NOTICE,
@@ -203,7 +204,8 @@ describe("the change request's checks", () => {
   });
 
   it("says why there is nothing to check, and how many are left out otherwise", () => {
-    expect(restrictedCheckCopy(0, 20)).toMatch(/^Every requirement .* nothing you can check/);
+    // One sentence, shared with the server's 400 so the two cannot drift.
+    expect(restrictedCheckCopy(0, 20)).toBe(ALL_REQUIREMENTS_RESTRICTED_MESSAGE);
     expect(restrictedCheckCopy(3, 1)).toBe("1 requirement you don't have access to is left out.");
     expect(restrictedCheckCopy(3, 2)).toBe("2 requirements you don't have access to are left out.");
     expect(restrictedCheckCopy(3, 0)).toBeNull();

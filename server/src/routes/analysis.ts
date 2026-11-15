@@ -111,6 +111,13 @@ import {
   userSourceReader,
   type SourceReader,
 } from "../lib/analysis/source-redaction.js";
+import {
+  checkpointRows,
+  hiddenCheckpointIds,
+  type CheckpointRow,
+} from "../lib/analysis/checkpoint-access.js";
+import { documentVisibilityFor } from "../lib/documents/document-visibility.js";
+import { InactiveAclActorError, resolveAclActor } from "../lib/rag/acl.js";
 import { AppError } from "../middleware/error-handler.js";
 import { documentFile } from "../middleware/document-file-upload.js";
 import {
@@ -342,7 +349,10 @@ async function ensureRequirementSourcesVisible(
  * (404): an edit would send its text back and overwrite what they cannot read.
  * An entry promoted into a requirement is decided by that requirement's
  * sources; one not yet promoted rests on the run as a whole. An unknown
- * approval passes: the handler gives its own 404.
+ * approval passes: the handler gives its own 404. #2554 — an admin (durable
+ * role) passes too, as for every checkpoint refusal: the approvals list shows
+ * them none restricted, so its Edit must not 404 on a run whose source
+ * document was deleted since.
  */
 async function ensureCheckpointEntryVisible(
   req: Request,
@@ -351,18 +361,90 @@ async function ensureCheckpointEntryVisible(
 ): Promise<void> {
   const approval = await prisma.approvalRequest.findFirst({
     where: { id: approvalId, analysisId },
-    select: { itemId: true },
+    select: { id: true, itemId: true },
   });
   if (!approval) return;
-  const promoted = await prisma.requirement.findFirst({
-    where: { analysisId, promotedStructuredId: approval.itemId, deletedAt: null },
-    select: { analysisId: true, sourceIds: true },
-  });
-  const guard = await loadSourceGuard(readerOf(req), [promoted ?? { analysisId, sourceIds: null }]);
-  const visible = promoted ? guard.canSee(promoted) : guard.canSeeRun(analysisId);
-  if (!visible) {
+  if (
+    (await hiddenCheckpointIds(readerOf(req), analysisId, [approval])).size > 0 &&
+    !(await isDurableAdmin(req))
+  ) {
     throw new AppError(404, "APPROVAL_NOT_FOUND", `Approval request ${approvalId} not found`);
   }
+}
+
+/**
+ * #2554 — the way out the refusals below name ("ask ... an admin"): an admin
+ * (by durable role) is never refused them. The access list already lets an
+ * admin see every document; this covers the case it does not, a source
+ * document deleted since, which no one sees (#2447 fails closed), so such a run
+ * is never left with checkpoints no one may decide or a run no one may cancel.
+ * Read only once a refusal is due.
+ */
+async function isDurableAdmin(req: Request): Promise<boolean> {
+  try {
+    return (await resolveAclActor(actorFromReq(req).id)).role === "admin";
+  } catch (err) {
+    if (err instanceof InactiveAclActorError) return false;
+    throw err;
+  }
+}
+
+/**
+ * #2554 — owner policy, as #2547 is for a document: a checkpoint whose entry
+ * the caller cannot see (`hiddenCheckpointIds`) is not theirs to decide, nor
+ * one of a set decided at once (approve all, leave out the added). The
+ * approvals list already marks it `restricted`, so a 403 names nothing the list
+ * does not; the attempt is audited as `<action>.denied`. An empty `approvals`
+ * (an unknown approval) passes: the handler gives its own 404.
+ */
+async function refuseHiddenCheckpoints(
+  req: Request,
+  analysisId: string,
+  projectId: string,
+  approvals: readonly CheckpointRow[],
+  action: string,
+): Promise<void> {
+  const hidden = await hiddenCheckpointIds(readerOf(req), analysisId, approvals);
+  if (hidden.size === 0 || (await isDurableAdmin(req))) return;
+  audit({
+    actor: { id: actorFromReq(req).id },
+    action: `${action}.denied`,
+    target: { type: "analysis", id: analysisId },
+    metadata: { projectId, reason: "source-restricted", approvalIds: [...hidden] },
+  });
+  throw new AppError(
+    403,
+    "CHECKPOINT_RESTRICTED",
+    approvals.length === 1
+      ? "This checkpoint rests on a document you cannot read, so you cannot decide it. Ask one of its readers or an admin."
+      : "Some of these checkpoints rest on a document you cannot read, so you cannot decide them all at once. Decide the ones you can see one by one, or ask one of its readers or an admin.",
+  );
+}
+
+/**
+ * #2554 — a write that acts on run `analysisId` as a whole (Regenerate, Cancel,
+ * resume the skipped repositories) is refused (403) to a caller who cannot see
+ * every document it read (`seesRunAsWhole`): re-running a pass spends on, and
+ * rewrites, output they are shown only as "Restricted". The run is listed to
+ * them, so the 403 names nothing new; audited as `<action>.denied`.
+ */
+async function refuseUnlessSeesRunAsWhole(
+  req: Request,
+  analysis: { id: string; projectId: string },
+  action: string,
+): Promise<void> {
+  if ((await seesRunAsWhole(req, analysis.id)) || (await isDurableAdmin(req))) return;
+  audit({
+    actor: { id: actorFromReq(req).id },
+    action: `${action}.denied`,
+    target: { type: "analysis", id: analysis.id },
+    metadata: { projectId: analysis.projectId, reason: "source-restricted" },
+  });
+  throw new AppError(
+    403,
+    "ANALYSIS_RESTRICTED",
+    "This change request read a document you cannot read, so you cannot re-run or cancel it. Ask one of its readers or an admin.",
+  );
 }
 
 /**
@@ -388,6 +470,38 @@ async function ensureSeesRunAsWhole(
   notFound: AppError,
 ): Promise<void> {
   if (!(await seesRunAsWhole(req, analysisId))) throw notFound;
+}
+
+/**
+ * #2554 — a run started from documents reads each one, and its result is
+ * labelled with their names: a document of `projectId` whose access list
+ * leaves the caller out answers 404, as an unknown document does on the
+ * portfolio and impact starts (#2546), before the run is created or anything
+ * spent. Audited as `analysis.document.denied`. An id that names no document
+ * of the project is left to the run, which reads only the project's documents.
+ */
+async function refuseUnreadableDocuments(
+  actorId: string,
+  projectId: string,
+  documentIds: readonly string[],
+): Promise<void> {
+  if (documentIds.length === 0) return;
+  const docs = await prisma.document.findMany({
+    where: { id: { in: [...new Set(documentIds)] }, projectId },
+    select: { id: true, aclSubjects: true },
+  });
+  const sees = await documentVisibilityFor(actorId, docs);
+  const hidden = docs.filter((d) => !sees(d));
+  if (hidden.length === 0) return;
+  for (const doc of hidden) {
+    audit({
+      actor: { id: actorId },
+      action: "analysis.document.denied",
+      target: { type: "document", id: doc.id },
+      metadata: { projectId, reason: "acl-denied" },
+    });
+  }
+  throw new AppError(404, "NOT_FOUND", "Document not found");
 }
 
 /** #2447 — the snapshot loader of a report the caller reads: redacted for them. */
@@ -763,6 +877,10 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         ));
       }
       const actor = actorFromReq(req);
+      // #2554 — a document of this project the caller cannot read is refused
+      // before anything is spent, as for an unknown one (as a portfolio check
+      // and an impact analysis are, #2546).
+      await refuseUnreadableDocuments(actor.id, projectId, parsed.data.documentIds ?? []);
       try {
         const result = await ensureOrch().start({
           projectId,
@@ -887,7 +1005,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         req.user && flagsDue && hasPermission(req.user.role, "review.read")
           ? await flagApprovalReopened(snapshot.projectId, flagged)
           : flagged;
-      res.json(ok({ ...snapshot, requirements }));
+      // #2554 — `runRestricted` says the run-wide actions are refused; they
+      // never are to an admin (a deleted source hides the run from everyone).
+      const { runRestricted, ...rest } = snapshot;
+      const refused = runRestricted === true && !(await isDurableAdmin(req));
+      res.json(ok({ ...rest, ...(refused ? { runRestricted } : {}), requirements }));
     },
   );
 
@@ -898,7 +1020,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
     async (req: Request, res: Response) => {
       const id = String(req.params.id);
       // #1099 — no path project here; authorize against the analysis's own.
-      await ensureAnalysisAccessible(req, id);
+      const analysis = await ensureAnalysisAccessible(req, id);
+      await refuseUnlessSeesRunAsWhole(req, analysis, "analysis.cancel");
       const actor = actorFromReq(req);
       const cancelled = await ensureOrch().cancel(id, actor.id);
       res.json(ok({ cancelled }));
@@ -931,7 +1054,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         );
       }
       // #1099 — no path project here; authorize against the analysis's own.
-      await ensureAnalysisAccessible(req, id);
+      const analysis = await ensureAnalysisAccessible(req, id);
+      await refuseUnlessSeesRunAsWhole(req, analysis, "analysis.regenerate");
       const orch = ensureOrch();
       try {
         // Synchronous pre-flight: cap, project state, regeneratable status.
@@ -998,7 +1122,8 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
     async (req: Request, res: Response) => {
       const id = String(req.params.id);
       // #1099 — no path project here; authorize against the analysis's own.
-      await ensureAnalysisAccessible(req, id);
+      const analysis = await ensureAnalysisAccessible(req, id);
+      await refuseUnlessSeesRunAsWhole(req, analysis, "analysis.resume_repos");
       const orch = ensureOrch();
       let skippedRepos;
       try {
@@ -2024,11 +2149,20 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         rows,
         statusFilter !== undefined,
       );
+      // #2554 — a checkpoint whose entry the caller cannot see is marked, so
+      // the panel offers no decision on it (the review routes refuse one; an
+      // admin, whom they never refuse, is shown none marked).
+      const seen = await hiddenCheckpointIds(readerOf(req), analysisId, rows);
+      const hidden = seen.size > 0 && (await isDurableAdmin(req)) ? new Set<string>() : seen;
+      // Its reviewer's note goes too: a reader's note can quote the entry.
       const items = rows.map((row) => {
-        if (row.type !== "requirement") return row;
+        const marked = hidden.has(row.id)
+          ? { ...row, reviewNote: null, restricted: true as const }
+          : row;
+        if (row.type !== "requirement") return marked;
         const origin = origins.get(row.itemId);
         return {
-          ...row,
+          ...marked,
           ...(origin ? { origin } : {}),
           ...(withoutCode.has(row.itemId) ? { noCodeEvidence: true } : {}),
         };
@@ -2068,6 +2202,14 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       if (!body?.status || !["approved", "rejected"].includes(body.status)) {
         throw new AppError(400, "VALIDATION_ERROR", "status must be 'approved' or 'rejected'");
       }
+      // #2554 — not a checkpoint whose entry the caller cannot see.
+      await refuseHiddenCheckpoints(
+        req,
+        analysisId,
+        projectId,
+        await checkpointRows(analysisId, { id: approvalId }),
+        "analysis.approval.review",
+      );
 
       const actor = actorFromReq(req);
       const updated = await reviewApprovalRequest(analysisId, approvalId, {
@@ -2313,12 +2455,24 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         throw new AppError(400, "VALIDATION_ERROR", "reviewNote must be a string");
       }
       const reviewNote = rawNote?.trim() ? rawNote.trim() : undefined;
+      // #2554 — not while any pending checkpoint is one the caller cannot see;
+      // and the write approves only the ones checked here, so a checkpoint
+      // created in between is left pending rather than approved unchecked.
+      const checked = await checkpointRows(analysisId, { status: "pending" });
+      await refuseHiddenCheckpoints(
+        req,
+        analysisId,
+        projectId,
+        checked,
+        "analysis.approval.approve_all",
+      );
 
       const actor = actorFromReq(req);
-      const { approvedCount } = await approveAllPendingApprovalRequests(analysisId, {
-        reviewerId: actor.id,
-        reviewNote,
-      });
+      const { approvedCount } = await approveAllPendingApprovalRequests(
+        analysisId,
+        { reviewerId: actor.id, reviewNote },
+        checked.map((c) => c.id),
+      );
 
       audit({
         actor: { id: actor.id },
@@ -2366,11 +2520,33 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
 
       const origins = await requirementOriginsFor(analysisId, analysis.metadata);
       const addedIds = [...origins].filter(([, o]) => o === "added").map(([id]) => id);
+      // #2554 — not while any of them is a checkpoint the caller cannot see;
+      // and only the ones checked here are written (as for approve all).
+      const checked =
+        addedIds.length > 0
+          ? await checkpointRows(analysisId, {
+              type: "requirement",
+              status: "pending",
+              itemId: { in: addedIds },
+            })
+          : [];
+      await refuseHiddenCheckpoints(
+        req,
+        analysisId,
+        projectId,
+        checked,
+        "analysis.approval.reject_added",
+      );
       const actor = actorFromReq(req);
-      const { rejectedCount } = await rejectPendingRequirementApprovals(analysisId, addedIds, {
-        reviewerId: actor.id,
-        reviewNote: "Left out: added by the analysis, not one of the ticked items.",
-      });
+      const { rejectedCount } = await rejectPendingRequirementApprovals(
+        analysisId,
+        addedIds,
+        {
+          reviewerId: actor.id,
+          reviewNote: "Left out: added by the analysis, not one of the ticked items.",
+        },
+        checked.map((c) => c.id),
+      );
 
       audit({
         actor: { id: actor.id },
@@ -2412,6 +2588,14 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       const projectId = String(req.params.projectId);
       const approvalId = String(req.params.approvalId);
       await ensureAnalysisVisible(analysisId, projectId);
+      // #2554 — reopening puts a decision back on the caller: not one they cannot see.
+      await refuseHiddenCheckpoints(
+        req,
+        analysisId,
+        projectId,
+        await checkpointRows(analysisId, { id: approvalId }),
+        "analysis.approval.reopen",
+      );
 
       const actor = actorFromReq(req);
       const updated = await reopenApprovalRequest(analysisId, approvalId);

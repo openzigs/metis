@@ -25,6 +25,7 @@ import { ApiError } from "@/lib/api-client";
 import { urlSuggestionMessage, urlProtocolSuggestionMessage } from "@/lib/error-suggestion";
 import { documentsApi, type DocumentRow } from "@/lib/projects-api";
 import { isUnreadableDocument } from "@/lib/document-access";
+import { isDocumentAwaitingReview } from "@/lib/project-pipeline";
 import { DocumentName } from "@/components/projects/document-name";
 import { RestrictedBadge } from "@/components/projects/restricted-badge";
 import { useRepoNames } from "@/hooks/use-repo-names";
@@ -200,6 +201,14 @@ export function AddDocumentsPanel({
                   data-testid={`add-documents-status-${d.id}`}
                 >
                   {d.status}
+                </span>
+              ) : isDocumentAwaitingReview(d) ? (
+                // #2555 — not yet approved: the run reads its unreviewed sections.
+                <span
+                  className="ml-auto inline-block rounded border border-warning/40 bg-warning/10 px-1.5 py-0.5 text-[10px] text-warning"
+                  data-testid={`add-documents-review-${d.id}`}
+                >
+                  awaiting review
                 </span>
               ) : null}
             </label>

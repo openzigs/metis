@@ -743,7 +743,8 @@ export function redactAnalysisSnapshot<T extends AnalysisSnapshot>(
     ...snapshot,
     ...(seesRun
       ? { metadata, capability }
-      : redactRunRecords({ ...snapshot, capability }, metadata)),
+      : // #2554 — and says so, so the page offers no run-wide action the server refuses.
+        { ...redactRunRecords({ ...snapshot, capability }, metadata), runRestricted: true }),
     agents: snapshot.agents.map((a) => ({
       ...a,
       ...(seesRun ? {} : { summary: null, notes: [] }),

@@ -98,8 +98,19 @@ export type { DocumentSource };
  * also `restricted: true` (#2546). Absent from a row a route does not annotate.
  */
 export type DocumentAccess =
-  | { restricted: boolean; canRead: true; subjects: AclSubject[] }
-  | { restricted: true; canRead: false; subjects?: undefined };
+  | { restricted: boolean; canRead: true; subjects: AclSubject[]; users?: AclUserName[] }
+  | { restricted: true; canRead: false; subjects?: undefined; users?: undefined };
+
+/**
+ * #2555 — a person a `user` subject names, told to a reader of the document
+ * (the people picker's fields, `GET /api/users`). The server names only active
+ * people who can open the project; a subject it does not name is someone else.
+ */
+export interface AclUserName {
+  id: string;
+  username: string;
+  displayName: string;
+}
 
 export interface DocumentRow {
   id: string;
@@ -477,8 +488,14 @@ export const documentsApi = {
    * `duplicateOf` names an earlier copy of the same file under the same name
    * the uploader can read: the upload is kept, and the page warns.
    */
-  upload: async (projectId: string, file: File): Promise<DocumentUploadResult> => {
+  upload: async (
+    projectId: string,
+    file: File,
+    /** #2555 — restrict the document from the start: it is created with this list. */
+    aclSubjects: AclSubject[] = [],
+  ): Promise<DocumentUploadResult> => {
     const fd = new FormData();
+    if (aclSubjects.length > 0) fd.append("aclSubjects", JSON.stringify(aclSubjects));
     fd.append("file", file);
     const res = await fetch(`${API_BASE}/projects/${projectId}/documents`, {
       method: "POST",

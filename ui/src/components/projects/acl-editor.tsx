@@ -16,19 +16,20 @@
  * reviewer. A save that leaves the editor off the list is allowed, but they
  * then cannot read the document or change its list again (`PATCH /acl`
  * refuses a member it is restricted away from), so the editor says so first.
+ *
+ * #2555 — subjects are picked, not typed: a person by name among the project's
+ * people, a role from the role list (`AclSubjectPicker`), and each is listed by
+ * name (`aclSubjectLabel`), never by internal id.
  */
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { aclApi, type AclSubject } from "@/lib/projects-api";
+import { aclApi, type AclSubject, type AclUserName } from "@/lib/projects-api";
+import { aclSubjectLabel } from "@/lib/document-access";
 import { queryKeys } from "@/lib/query-keys";
 import { useAuth } from "@/lib/auth-context";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-
-/** The subject kinds a reviewer can add (#2248 — not `group`; see above). */
-type AddableKind = Exclude<AclSubject["kind"], "group">;
+import { AclSubjectPicker } from "@/components/projects/acl-subject-picker";
 
 /**
  * #2547 — `subjects` would shut `viewer` out: a non-empty list naming neither
@@ -50,17 +51,24 @@ export function aclLocksOut(
   );
 }
 
+/** #2555 — a listed person's username beside their name, to tell two namesakes apart. */
+function Username({ id, people }: { id: string; people: readonly AclUserName[] }) {
+  const person = people.find((p) => p.id === id);
+  return person ? <span className="text-muted-foreground">{` @${person.username}`}</span> : null;
+}
+
 export function AclEditor(props: {
   projectId: string;
   documentId: string;
   initialSubjects: AclSubject[];
+  /** #2555 — the people `initialSubjects` names (`access.users`), to list them by name. */
+  initialUsers?: AclUserName[];
   onSaved?: () => void;
 }) {
   const qc = useQueryClient();
   const { user } = useAuth();
   const [subjects, setSubjects] = useState<AclSubject[]>(props.initialSubjects);
-  const [draftKind, setDraftKind] = useState<AddableKind>("user");
-  const [draftValue, setDraftValue] = useState("");
+  const [people, setPeople] = useState<AclUserName[]>(props.initialUsers ?? []);
 
   const save = useMutation({
     mutationFn: () => aclApi.update(props.projectId, props.documentId, subjects),
@@ -72,10 +80,10 @@ export function AclEditor(props: {
     },
   });
 
-  const add = () => {
-    if (!draftValue.trim()) return;
-    setSubjects([...subjects, { kind: draftKind, value: draftValue.trim() }]);
-    setDraftValue("");
+  const add = (subject: AclSubject, person?: AclUserName) => {
+    if (subjects.some((s) => s.kind === subject.kind && s.value === subject.value)) return;
+    setSubjects([...subjects, subject]);
+    if (person) setPeople([...people.filter((p) => p.id !== person.id), person]);
   };
 
   const remove = (index: number) => {
@@ -97,7 +105,8 @@ export function AclEditor(props: {
               className="flex items-center justify-between gap-2 rounded border px-2 py-1 text-xs"
             >
               <span>
-                <code>{s.kind}</code> · {s.value}
+                {aclSubjectLabel(s, people)}
+                {s.kind === "user" ? <Username id={s.value} people={people} /> : null}
                 {s.kind === "group" && (
                   <span className="block text-muted-foreground" data-testid="acl-group-warning">
                     Matches no one: METIS does not know group membership, so this entry grants no
@@ -110,7 +119,7 @@ export function AclEditor(props: {
                 size="sm"
                 variant="ghost"
                 onClick={() => remove(i)}
-                aria-label={`Remove ${s.kind} ${s.value}`}
+                aria-label={`Remove ${aclSubjectLabel(s, people)}`}
               >
                 Remove
               </Button>
@@ -118,34 +127,12 @@ export function AclEditor(props: {
           ))}
         </ul>
       )}
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
-        <div className="space-y-1">
-          <Label htmlFor={`acl-kind-${props.documentId}`}>Kind</Label>
-          <select
-            id={`acl-kind-${props.documentId}`}
-            className="h-9 w-full rounded-md border bg-background px-3 text-sm"
-            value={draftKind}
-            onChange={(e) => setDraftKind(e.target.value as AddableKind)}
-            data-testid="acl-kind-select"
-          >
-            <option value="user">user</option>
-            <option value="role">role</option>
-          </select>
-        </div>
-        <div className="flex-1 space-y-1">
-          <Label htmlFor={`acl-value-${props.documentId}`}>Value</Label>
-          <Input
-            id={`acl-value-${props.documentId}`}
-            value={draftValue}
-            onChange={(e) => setDraftValue(e.target.value)}
-            placeholder="e.g. u_123 or admin"
-            data-testid="acl-value-input"
-          />
-        </div>
-        <Button type="button" onClick={add} variant="outline" data-testid="acl-add">
-          Add
-        </Button>
-      </div>
+      <AclSubjectPicker
+        projectId={props.projectId}
+        idPrefix={`acl-${props.documentId}`}
+        chosen={subjects}
+        onAdd={add}
+      />
       {/* #2356 — a refused save (a new group, or another editor saving at the
           same time) says why, instead of leaving the old list in place unexplained. */}
       {aclLocksOut(subjects, user) ? (

@@ -3,11 +3,8 @@
  * requirement yet, or every one resting on a source the reader cannot see.
  */
 import { describe, expect, it } from "vitest";
-import {
-  ALL_REQUIREMENTS_RESTRICTED_MESSAGE,
-  assertHasRequirements,
-  type ChangeRequestSource,
-} from "./change-request-source.js";
+import { ALL_REQUIREMENTS_RESTRICTED_MESSAGE } from "@metis/shared";
+import { assertHasRequirements, type ChangeRequestSource } from "./change-request-source.js";
 
 const source = (over: Partial<ChangeRequestSource>): ChangeRequestSource => ({
   id: "cr-1",

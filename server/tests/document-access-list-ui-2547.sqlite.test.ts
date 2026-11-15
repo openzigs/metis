@@ -176,6 +176,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         restricted: false,
         canRead: true,
         subjects: [],
+        users: [],
       });
 
       const alice = await as(ALICE).get(`/api/projects/${PROJECT}/documents`);
@@ -183,6 +184,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         restricted: true,
         canRead: true,
         subjects: TO_COORDINATORS,
+        users: [],
       });
       // The admin reads it through the bypass, as retrieval does, and is told to whom.
       const admin = await as(ADMIN).get(`/api/projects/${PROJECT}/documents`);
@@ -190,6 +192,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         restricted: true,
         canRead: true,
         subjects: TO_COORDINATORS,
+        users: [],
       });
     });
 
@@ -202,7 +205,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       );
       const both = [...first.body.data.items, ...next.body.data.items];
       expect(accessOf(both, PAYROLL)).toEqual({ restricted: true, canRead: false });
-      expect(accessOf(both, HANDBOOK)).toEqual({ restricted: false, canRead: true, subjects: [] });
+      expect(accessOf(both, HANDBOOK)).toEqual({
+        restricted: false,
+        canRead: true,
+        subjects: [],
+        users: [],
+      });
     });
 
     it("the document's own read carries the access", async () => {
@@ -214,6 +222,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         restricted: true,
         canRead: true,
         subjects: TO_COORDINATORS,
+        users: [],
       });
     });
 
@@ -231,6 +240,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         restricted: true,
         canRead: true,
         subjects: TO_COORDINATORS,
+        users: [],
       });
     });
 
@@ -299,6 +309,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           restricted: true,
           canRead: true,
           subjects: TO_COORDINATORS,
+          users: [],
         });
         const trust = await as(ALICE).patch(
           `/api/projects/${PROJECT}/documents/${PAYROLL}/auto-approve`,
@@ -339,6 +350,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         restricted: true,
         canRead: true,
         subjects: [...TO_COORDINATORS, { kind: "user", value: BOB }],
+        users: [{ id: BOB, username: BOB, displayName: BOB }],
       });
     });
 

@@ -62,15 +62,27 @@ beforeEach(() => {
 describe("QuarantinePanel — #2547 access lists", () => {
   it("badges a restricted document and opens its editor seeded with the list", async () => {
     listQuarantine.mockResolvedValue({
-      items: [row({ access: { restricted: true, canRead: true, subjects: toCoordinators } })],
+      items: [
+        row({
+          access: {
+            restricted: true,
+            canRead: true,
+            subjects: [...toCoordinators, { kind: "user", value: "u-alice" }],
+            // #2555 — the people on it, by name.
+            users: [{ id: "u-alice", username: "asmith", displayName: "Alice Smith" }],
+          },
+        }),
+      ],
       autoApproveTrustedSources: false,
     });
     renderPanel();
     expect(await screen.findByTestId("quarantine-restricted-d1")).toHaveTextContent(
-      "Readable by role coordinator",
+      "Readable by the coordinator role, Alice Smith and admins",
     );
     fireEvent.click(screen.getByTestId("quarantine-access-toggle-d1"));
-    expect(await screen.findByTestId("acl-editor")).toHaveTextContent("role · coordinator");
+    const editor = await screen.findByTestId("acl-editor");
+    expect(editor).toHaveTextContent("the coordinator role");
+    expect(editor).toHaveTextContent("Alice Smith @asmith");
     fireEvent.click(screen.getByTestId("quarantine-access-toggle-d1"));
     expect(screen.queryByTestId("acl-editor")).toBeNull();
   });

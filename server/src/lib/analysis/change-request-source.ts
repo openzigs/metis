@@ -10,7 +10,7 @@
  * its project), live, and not rejected or deferred: a rejected requirement is
  * not part of the change, a deferred one not part of this change.
  */
-import type { PortfolioNotChecked } from "@metis/shared";
+import { ALL_REQUIREMENTS_RESTRICTED_MESSAGE, type PortfolioNotChecked } from "@metis/shared";
 import { AppError } from "../../middleware/error-handler.js";
 import { prisma } from "../prisma.js";
 import { readerChangeRequestTitles, sourcelessRunTitle } from "./change-request.js";
@@ -129,13 +129,6 @@ export function restrictedNotChecked(source: ChangeRequestSource): PortfolioNotC
     },
   ];
 }
-
-/**
- * #2548 — why a change request has nothing for this reader to check when every
- * requirement it holds rests on a source they cannot see. A count only.
- */
-export const ALL_REQUIREMENTS_RESTRICTED_MESSAGE =
-  "Every requirement of this change request draws on sources you don't have access to, so there is nothing you can check. Someone who can see them can run the check.";
 
 /**
  * A change request with no requirement to check is a 400, said in words.

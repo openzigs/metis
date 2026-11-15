@@ -1685,6 +1685,14 @@ export interface AnalysisRestrictedView {
 export const RESTRICTED_RUN_NOTICE =
   "This analysis read documents you can't see; results that may draw on them are hidden.";
 
+/**
+ * #2548 — why a change request has nothing for this reader to check when every
+ * requirement it holds rests on a source they cannot see. A count only. The
+ * server's 400 and the checks panel say this one sentence.
+ */
+export const ALL_REQUIREMENTS_RESTRICTED_MESSAGE =
+  "Every requirement of this change request draws on sources you don't have access to, so there is nothing you can check. Someone who can see them can run the check.";
+
 /** #2548 — the run's Outcome, when its reader cannot see the run as a whole. */
 export const RESTRICTED_OUTCOME_BODY =
   "The outcome draws on documents you don't have access to, so it is hidden.";
@@ -1755,6 +1763,13 @@ export interface AnalysisSnapshot {
    * present only while it is offered ({@link codeInvestigationContinueOffered}).
    */
   codeContinuation?: AnalysisCodeContinuationQuote | null;
+  /**
+   * #2554 — the reader cannot see every document this run read (#2447's
+   * "run as a whole"): what rests on it is shown to them as "Restricted", and
+   * run-wide actions (Regenerate, Cancel, resume) are refused them. Absent
+   * otherwise.
+   */
+  runRestricted?: true;
   metadata: Record<string, unknown> | null;
   agents: Array<{
     agentKey: AnalysisResultAgentKey;

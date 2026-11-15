@@ -12,6 +12,11 @@
  * (`GET /api/users?projectId=`); the requester is left out, since the server
  * refuses a self-review — unless (#2436) the project allows self-approval and
  * the requester holds `requirement.approve`, when they are offered too.
+ *
+ * #2554 — a reviewer who cannot read a document the chosen requirements rest
+ * on is refused by the server (`REVIEWER_CANNOT_SEE_ITEMS`, before any draft is
+ * written); the form marks them with why, blocks the request until they are
+ * removed, and offers them no more for these requirements.
  */
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -117,6 +122,22 @@ export function inReviewSentence(count: number, approvedCount: number): string {
     : `The other ${others} show as in review until the review is decided. `;
 }
 
+/**
+ * #2554 — the reviewers a create answered 403 `REVIEWER_CANNOT_SEE_ITEMS` for
+ * (`details.reviewerIds`): they cannot read a document the requirements rest
+ * on. Empty for any other error.
+ */
+export function refusedReviewerIds(err: unknown): string[] {
+  if (!(err instanceof ApiError) || err.code !== "REVIEWER_CANNOT_SEE_ITEMS") return [];
+  const ids = (err.details as { reviewerIds?: unknown } | null | undefined)?.reviewerIds;
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [];
+}
+
+/** #2554 — why the marked reviewers cannot be asked, and what to do instead. */
+export function blockedReviewersSentence(names: readonly string[]): string {
+  return `${names.join(", ")} cannot read a document some of these requirements rest on, so they cannot review them. Remove them, or leave those requirements out.`;
+}
+
 export function RequestReviewCard({
   projectId,
   requirementIds: allRequirementIds,
@@ -148,17 +169,25 @@ export function RequestReviewCard({
   const choose = (next: ReadonlySet<string>): void => {
     setExcluded(new Set(allRequirementIds.filter((id) => !next.has(id))));
     setDraftId(null);
+    setCannotSee(new Set());
   };
   const [title, setTitle] = useState("Requirements review");
   const [search, setSearch] = useState("");
   const [reviewers, setReviewers] = useState<UserHit[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // #2554 — reviewers the server refused for these requirements
+  // (REVIEWER_CANNOT_SEE_ITEMS): marked with why, and not offered again until
+  // the requirements chosen change.
+  const [cannotSee, setCannotSee] = useState<ReadonlySet<string>>(() => new Set());
   const [createdId, setCreatedId] = useState<string | null>(null);
   // A draft whose submit failed: a retry submits it instead of opening another.
   // Editing the title or reviewers drops it, so the retry carries the edit.
   const [draftId, setDraftId] = useState<string | null>(null);
   // A draft opened over another set of requirements is not this request.
-  useEffect(() => setDraftId(null), [scopeKey]);
+  useEffect(() => {
+    setDraftId(null);
+    setCannotSee(new Set());
+  }, [scopeKey]);
 
   const term = search.trim();
   const hits = useQuery({
@@ -179,8 +208,12 @@ export function RequestReviewCard({
   });
   const selfReviewAllowed = canApprove && gate.data?.allowSelfApproval === true;
   const candidates = (hits.data ?? []).filter(
-    (u) => (selfReviewAllowed || u.id !== currentUserId) && !reviewers.some((r) => r.id === u.id),
+    (u) =>
+      (selfReviewAllowed || u.id !== currentUserId) &&
+      !reviewers.some((r) => r.id === u.id) &&
+      !cannotSee.has(u.id),
   );
+  const blockedReviewers = reviewers.filter((r) => cannotSee.has(r.id));
   // #2347 — say why the picker offers nobody, instead of a silent empty list
   // and a disabled button (#2330: the server answers SELF_REVIEW_FORBIDDEN).
   const searched = term !== "" && hits.isSuccess;
@@ -218,6 +251,12 @@ export function RequestReviewCard({
       ]);
     },
     onError: (err: unknown) => {
+      const refused = refusedReviewerIds(err);
+      if (refused.length > 0) {
+        setCannotSee((prev) => new Set([...prev, ...refused]));
+        setError(null);
+        return;
+      }
       setError(err instanceof ApiError ? err.message : "Could not request the review");
     },
   });
@@ -381,9 +420,13 @@ export function RequestReviewCard({
               {reviewers.map((r) => (
                 <li
                   key={r.id}
-                  className="flex items-center gap-1 rounded bg-muted px-2 py-0.5 text-xs"
+                  className={`flex items-center gap-1 rounded px-2 py-0.5 text-xs ${
+                    cannotSee.has(r.id) ? "bg-destructive/10 text-destructive" : "bg-muted"
+                  }`}
+                  data-testid={cannotSee.has(r.id) ? "request-review-reviewer-blocked" : undefined}
                 >
                   {r.displayName}
+                  {cannotSee.has(r.id) ? <span>(cannot read these requirements)</span> : null}
                   <button
                     type="button"
                     className="underline"
@@ -400,6 +443,11 @@ export function RequestReviewCard({
             </ul>
           ) : null}
         </div>
+        {blockedReviewers.length > 0 ? (
+          <p className="text-sm text-destructive" role="alert" data-testid="request-review-blocked">
+            {blockedReviewersSentence(blockedReviewers.map((r) => r.displayName))}
+          </p>
+        ) : null}
         {error ? (
           <p className="text-sm text-destructive" role="alert">
             {error}
@@ -417,7 +465,13 @@ export function RequestReviewCard({
           <Button
             type="submit"
             size="sm"
-            disabled={!title.trim() || reviewers.length === 0 || count === 0 || request.isPending}
+            disabled={
+              !title.trim() ||
+              reviewers.length === 0 ||
+              blockedReviewers.length > 0 ||
+              count === 0 ||
+              request.isPending
+            }
           >
             {request.isPending ? "Requesting…" : `Request review of ${count} ${noun}`}
           </Button>

@@ -63,6 +63,14 @@ export function defaultHubRunId(analyses: readonly AnalysisListItem[]): string |
   );
 }
 
+/**
+ * #2554 — why the change request's review is not offered: a review asks
+ * colleagues to sign off every requirement, and the server refuses one naming
+ * a requirement the requester cannot see.
+ */
+export const REVIEW_RESTRICTED_NOTICE =
+  "Some of this change request's requirements draw on documents you don't have access to, so you can't ask for a review of all of them. Tick the ones you can see in the list to ask for a review of those.";
+
 function plural(n: number, word: string): string {
   return `${n} ${word}${n === 1 ? "" : "s"}`;
 }
@@ -201,7 +209,18 @@ export function RequirementsHub({ projectId }: { projectId: string }) {
                 : "Open this analysis"}
           </Link>
         </Button>
-        {canRequestReview && user && detail.data && detail.data.requirements.length > 0 ? (
+        {canRequestReview &&
+        user &&
+        detail.data &&
+        detail.data.requirements.length > 0 &&
+        detail.data.requirements.some((r) => r.restricted) ? (
+          <p
+            className="text-xs text-muted-foreground"
+            data-testid="requirements-hub-review-restricted"
+          >
+            {REVIEW_RESTRICTED_NOTICE}
+          </p>
+        ) : canRequestReview && user && detail.data && detail.data.requirements.length > 0 ? (
           <RequestReviewCard
             key={selected.id}
             projectId={projectId}

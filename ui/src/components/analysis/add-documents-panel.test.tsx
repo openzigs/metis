@@ -71,7 +71,7 @@ describe("AddDocumentsPanel — #2547 restricted documents", () => {
       doc({ id: "d-pay", access: { restricted: true, canRead: true, subjects: toCoordinators } }),
     ]);
     expect(screen.getByTestId("add-documents-restricted-badge-d-pay")).toHaveTextContent(
-      "Readable by role coordinator and admins",
+      "Readable by the coordinator role and admins",
     );
     expect(screen.queryByTestId("add-documents-restricted-d-pay")).toBeNull();
     expect(checkboxOf("d-pay")).not.toBeDisabled();
@@ -210,5 +210,16 @@ describe("AddDocumentsPanel — list states and the URL form", () => {
     expect(await screen.findByTestId("add-documents-url-error")).toHaveTextContent(
       "Failed to fetch URL",
     );
+  });
+});
+
+describe("AddDocumentsPanel — documents awaiting review (#2555)", () => {
+  it("labels a document still awaiting review, and leaves an approved one unlabelled", () => {
+    renderPanel([
+      doc({ id: "d-q", filename: "draft.md", indexState: "quarantined" }),
+      doc({ id: "d-ok", filename: "spec.md", indexState: "indexed" }),
+    ]);
+    expect(screen.getByTestId("add-documents-review-d-q")).toHaveTextContent("awaiting review");
+    expect(screen.queryByTestId("add-documents-review-d-ok")).toBeNull();
   });
 });

@@ -7,7 +7,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { RESTRICTED_SOURCE_TITLE } from "@metis/shared";
 
 const findMany = vi.fn();
-vi.mock("../prisma.js", () => ({ prisma: { document: { findMany } } }));
+const userFindMany = vi.fn();
+vi.mock("../prisma.js", () => ({
+  prisma: { document: { findMany }, user: { findMany: userFindMany } },
+}));
+const projectAudienceWhere = vi.fn();
+vi.mock("../auth/project-audience.js", () => ({ projectAudienceWhere }));
 const resolveAclActor = vi.fn();
 vi.mock("../rag/acl.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../rag/acl.js")>()),
@@ -16,6 +21,7 @@ vi.mock("../rag/acl.js", async (importOriginal) => ({
 
 const { InactiveAclActorError } = await import("../rag/acl.js");
 const {
+  aclUserNames,
   canSeeDocument,
   documentAccessOf,
   documentVisibilityFor,
@@ -148,15 +154,100 @@ describe("#2547 — documentAccessOf", () => {
       restricted: true,
       canRead: true,
       subjects: [{ kind: "user", value: "alice" }],
+      users: [],
     });
     expect(documentAccessOf(OPEN, true)).toEqual({
       restricted: false,
       canRead: true,
       subjects: [],
+      users: [],
     });
   });
 
   it("tells a reader the list leaves out only that it is restricted, never who reads it", () => {
     expect(documentAccessOf(ALICE_ONLY, false)).toEqual({ restricted: true, canRead: false });
+  });
+});
+
+describe("#2555 — the people a reader's access list names", () => {
+  const ALICE = { id: "alice", username: "asmith", displayName: "Alice Smith" };
+  const AUDIENCE = { workspaceMemberships: { some: { workspaceId: "ws-1" } } };
+
+  beforeEach(() => {
+    userFindMany.mockReset();
+    projectAudienceWhere.mockReset();
+    projectAudienceWhere.mockResolvedValue({ live: true, where: AUDIENCE });
+  });
+
+  it("names a user subject to a reader, by the picker's fields", () => {
+    const names = new Map([[ALICE.id, ALICE]]);
+    expect(documentAccessOf(ALICE_ONLY, true, names)).toEqual({
+      restricted: true,
+      canRead: true,
+      subjects: [{ kind: "user", value: "alice" }],
+      users: [ALICE],
+    });
+    // A user it cannot name is left out of `users`; a non-reader is told no names.
+    expect(documentAccessOf(ALICE_ONLY, true, new Map())).toMatchObject({ users: [] });
+    expect(documentAccessOf(ALICE_ONLY, false, names)).toEqual({
+      restricted: true,
+      canRead: false,
+    });
+  });
+
+  it("names each person once, however many times the list names them", () => {
+    const twice = {
+      aclSubjects: JSON.stringify([
+        { kind: "user", value: "alice" },
+        { kind: "role", value: "alice" },
+        { kind: "user", value: "alice" },
+      ]),
+    };
+    expect(documentAccessOf(twice, true, new Map([[ALICE.id, ALICE]]))).toMatchObject({
+      users: [ALICE],
+    });
+  });
+
+  it("asks only for the users the lists name, among the project's active audience", async () => {
+    userFindMany.mockResolvedValue([ALICE]);
+    const roleOnly = { aclSubjects: JSON.stringify([{ kind: "role", value: "alice" }]) };
+    const names = await aclUserNames("p-1", [ALICE_ONLY, roleOnly, ALICE_ONLY, OPEN]);
+    expect(names.get("alice")).toEqual(ALICE);
+    expect(projectAudienceWhere).toHaveBeenCalledWith("p-1");
+    expect(userFindMany).toHaveBeenCalledTimes(1);
+    expect(userFindMany).toHaveBeenCalledWith({
+      where: {
+        id: { in: ["alice"] },
+        status: "active",
+        deletedAt: null,
+        AND: [AUDIENCE],
+      },
+      select: { id: true, username: true, displayName: true },
+    });
+  });
+
+  it("reads nothing when no list names a user", async () => {
+    const roleOnly = { aclSubjects: JSON.stringify([{ kind: "role", value: "coordinator" }]) };
+    expect((await aclUserNames("p-1", [OPEN, roleOnly])).size).toBe(0);
+    expect(projectAudienceWhere).not.toHaveBeenCalled();
+    expect(userFindMany).not.toHaveBeenCalled();
+  });
+
+  it("names no one for a project that does not exist", async () => {
+    projectAudienceWhere.mockResolvedValue(null);
+    expect((await aclUserNames("p-gone", [ALICE_ONLY])).size).toBe(0);
+    expect(userFindMany).not.toHaveBeenCalled();
+  });
+
+  it("asks in batches a long list cannot overflow", async () => {
+    const many = {
+      aclSubjects: JSON.stringify(
+        Array.from({ length: 501 }, (_, i) => ({ kind: "user", value: `u-${i}` })),
+      ),
+    };
+    userFindMany.mockResolvedValue([]);
+    await aclUserNames("p-1", [many]);
+    expect(userFindMany).toHaveBeenCalledTimes(2);
+    expect(userFindMany.mock.calls[1]![0].where.id.in).toEqual(["u-500"]);
   });
 });

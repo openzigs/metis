@@ -22,6 +22,7 @@ import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { Network, Radar } from "lucide-react";
 import {
+  ALL_REQUIREMENTS_RESTRICTED_MESSAGE,
   MAX_IMPACT_REQUIREMENT_IDS,
   NO_CODE_IMPACT_REASON,
   PORTFOLIO_PRE_APPROVAL_LABEL,
@@ -85,7 +86,7 @@ export function checkedRequirements(snapshot: Pick<AnalysisSnapshot, "requiremen
 export function restrictedCheckCopy(count: number, restricted: number): string | null {
   if (restricted === 0) return null;
   if (count === 0) {
-    return "Every requirement of this change request draws on sources you don't have access to, so there is nothing you can check. Someone who can see them can run the checks.";
+    return ALL_REQUIREMENTS_RESTRICTED_MESSAGE;
   }
   return `${restricted === 1 ? "1 requirement" : `${restricted} requirements`} you don't have access to ${restricted === 1 ? "is" : "are"} left out.`;
 }

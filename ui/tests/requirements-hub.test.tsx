@@ -246,6 +246,45 @@ describe("<RequirementsHub />", () => {
     expect(screen.queryByTestId("requirements-skipped-empty")).not.toBeInTheDocument();
   });
 
+  it("#2554 — no review of the whole change request is offered when one of its requirements is restricted", async () => {
+    list.mockResolvedValue({
+      items: [{ ...run("cr", "completed", { draft: 2 }), completedAt: "2026-09-01T11:00:00Z" }],
+    } as never);
+    const user = {
+      id: "me",
+      username: "me",
+      displayName: "me",
+      email: "me@example.test",
+      role: "developer" as const,
+      permissions: getPermissionsForRole("developer"),
+    };
+    get.mockResolvedValue({
+      requirements: [
+        { id: "r1", reviewStatus: "draft" },
+        { id: "r2", reviewStatus: "draft" },
+      ],
+    } as never);
+    const first = render(<RequirementsHub projectId="p1" />, {
+      wrapper: makeWrapper({ initialUser: user, withAuth: true }),
+    });
+    expect(await screen.findByTestId("requirements-hub-request-review")).toBeInTheDocument();
+    first.unmount();
+
+    get.mockResolvedValue({
+      requirements: [
+        { id: "r1", reviewStatus: "draft" },
+        { id: "r2", reviewStatus: "draft", restricted: true },
+      ],
+    } as never);
+    render(<RequirementsHub projectId="p1" />, {
+      wrapper: makeWrapper({ initialUser: user, withAuth: true }),
+    });
+    expect(await screen.findByTestId("requirements-hub-review-restricted")).toHaveTextContent(
+      "Tick the ones you can see",
+    );
+    expect(screen.queryByTestId("requirements-hub-request-review")).not.toBeInTheDocument();
+  });
+
   it("#1016 — the 'stays approved' note counts the rows the server reports approved, one by one", async () => {
     // The server resolves each row's status (column, else a legacy
     // `review:approved` label) and its submit keeps exactly those approved.

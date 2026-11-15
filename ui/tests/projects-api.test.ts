@@ -81,6 +81,21 @@ describe("documentsApi.upload", () => {
     expect(url).toContain("/projects/proj_aaaa1/documents");
     expect(init.method).toBe("POST");
     expect(init.body).toBeInstanceOf(FormData);
+    // Unrestricted: no access list is sent.
+    expect((init.body as FormData).has("aclSubjects")).toBe(false);
+  });
+
+  // #2555 — a file restricted as it is uploaded carries its list in the form.
+  it("sends the access list a file is restricted to, as JSON", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ document: { id: "doc_aaaa1" }, ingest: { status: "queued", chunkCount: 0 } }),
+    );
+    const file = new File([new Uint8Array([1])], "n.md", { type: "text/markdown" });
+    const list = [{ kind: "user" as const, value: "u-alice" }];
+    await documentsApi.upload("proj_aaaa1", file, list);
+    const body = (fetchMock.mock.calls[0] as [string, RequestInit])[1].body as FormData;
+    expect(JSON.parse(body.get("aclSubjects") as string)).toEqual(list);
+    expect(body.get("file")).toBeInstanceOf(File);
   });
 
   it("throws ApiError on 4xx", async () => {
