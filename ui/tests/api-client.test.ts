@@ -5,6 +5,7 @@ import {
   apiFetch,
   MFA_REQUIRED_MESSAGE,
   streamFetch,
+  beginSignedInSession,
   refreshAccessToken,
   setOnRefreshFailure,
   setOnRefreshSuccess,
@@ -301,6 +302,7 @@ describe("401 → refresh → retry", () => {
     });
 
     expect(onFail).toHaveBeenCalledTimes(1);
+    expect(onFail).toHaveBeenCalledWith({ stale: false });
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -318,6 +320,7 @@ describe("401 → refresh → retry", () => {
       status: 401,
     });
     expect(onFail).toHaveBeenCalledTimes(1);
+    expect(onFail).toHaveBeenCalledWith({ stale: false });
   });
 
   it("never retries the refresh endpoint itself", async () => {
@@ -356,6 +359,27 @@ describe("401 → refresh → retry", () => {
     expect(refreshCalls.length).toBe(1);
   });
 
+  it("#2549 — marks a failed retry stale when a sign-in came in between", async () => {
+    const onFail = vi.fn();
+    setOnRefreshFailure(onFail);
+    let answerRefresh!: (r: Response) => void;
+    fetchMock
+      .mockResolvedValueOnce(makeResponse({ success: false }, { status: 401 }))
+      .mockImplementationOnce(
+        () =>
+          new Promise<Response>((r) => {
+            answerRefresh = r;
+          }),
+      )
+      .mockResolvedValueOnce(makeResponse({ success: false }, { status: 401 }));
+    const pending = apiFetch("/things").catch((e: unknown) => e);
+    await vi.waitFor(() => expect(answerRefresh).toBeDefined());
+    beginSignedInSession();
+    answerRefresh(makeResponse({ success: true }, { status: 200 }));
+    await pending;
+    expect(onFail).toHaveBeenCalledWith({ stale: true });
+  });
+
   it("handles refresh fetch rejection gracefully", async () => {
     const onFail = vi.fn();
     setOnRefreshFailure(onFail);
@@ -366,6 +390,7 @@ describe("401 → refresh → retry", () => {
 
     await expect(apiFetch("/things")).rejects.toMatchObject({ status: 401 });
     expect(onFail).toHaveBeenCalledTimes(1);
+    expect(onFail).toHaveBeenCalledWith({ stale: false });
   });
 });
 
@@ -528,6 +553,7 @@ describe("401 taxonomy — authz vs auth-expiry (apiFetch)", () => {
     // Refresh WAS attempted and, on failure, logout fired — today's behavior.
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(onFail).toHaveBeenCalledTimes(1);
+    expect(onFail).toHaveBeenCalledWith({ stale: false });
   });
 });
 
@@ -588,6 +614,7 @@ describe("streamFetch", () => {
     const res = await streamFetch("/ai/stream", { method: "POST" });
     expect(res.status).toBe(401);
     expect(onFail).toHaveBeenCalledTimes(1);
+    expect(onFail).toHaveBeenCalledWith({ stale: false });
   });
 
   it("returns the 401 when the retry itself returns 401", async () => {
@@ -601,7 +628,35 @@ describe("streamFetch", () => {
     const res = await streamFetch("/ai/stream", { method: "POST" });
     expect(res.status).toBe(401);
     expect(onFail).toHaveBeenCalledTimes(1);
+    expect(onFail).toHaveBeenCalledWith({ stale: false });
   });
+
+  // #2549 — a stream whose refresh started before a sign-in, and failed after
+  // it, says so; one under the current session (above) says it is not stale.
+  it.each([
+    ["the refresh fails", [makeResponse({ success: false }, { status: 401 })]],
+    ["the retry returns 401", [makeResponse({ success: true }), streamingResponse("", 401)]],
+  ] as const)(
+    "marks the failure stale when a sign-in came in between: %s",
+    async (_case, after) => {
+      const onFail = vi.fn();
+      setOnRefreshFailure(onFail);
+      let answerRefresh!: (r: Response) => void;
+      fetchMock.mockResolvedValueOnce(streamingResponse("", 401)).mockImplementationOnce(
+        () =>
+          new Promise<Response>((r) => {
+            answerRefresh = r;
+          }),
+      );
+      if (after.length > 1) fetchMock.mockResolvedValueOnce(after[1]!);
+      const pending = streamFetch("/ai/stream", { method: "POST" });
+      await vi.waitFor(() => expect(answerRefresh).toBeDefined());
+      beginSignedInSession();
+      answerRefresh(after[0]!);
+      expect((await pending).status).toBe(401);
+      expect(onFail).toHaveBeenCalledWith({ stale: true });
+    },
+  );
 
   it("does not retry the refresh endpoint itself", async () => {
     fetchMock.mockResolvedValueOnce(streamingResponse("", 401));
@@ -664,6 +719,7 @@ describe("streamFetch", () => {
     const res = await streamFetch("/ai/stream", { method: "POST" });
     expect(res.status).toBe(401);
     expect(onFail).toHaveBeenCalledTimes(1);
+    expect(onFail).toHaveBeenCalledWith({ stale: false });
   });
 });
 
@@ -722,6 +778,7 @@ describe("retryable refresh refusal (#582)", () => {
       .mockResolvedValueOnce(makeResponse({ success: false }, { status: 401 }));
     await expect(apiFetch("/things")).rejects.toMatchObject({ status: 401 });
     expect(onFail).toHaveBeenCalledTimes(1);
+    expect(onFail).toHaveBeenCalledWith({ stale: false });
   });
 });
 
