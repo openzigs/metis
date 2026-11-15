@@ -443,7 +443,8 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       try {
         const result = await approveDocument(documentId, { id: actor.id });
         const refreshed = await prisma.document.findUnique({ where: { id: documentId } });
-        res.json(ok({ document: publicDocumentRow(refreshed), ...result }));
+        // #2546 — the row as the caller may see it, as the list shows it.
+        res.json(ok({ document: await readableDocumentRow(actor.id, refreshed), ...result }));
       } catch (err) {
         // #108 — the cleanup exception stays in the server log.
         log.warn("document approve failed", { documentId, error: String(err) });
@@ -472,7 +473,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       try {
         await rejectDocument(documentId, { id: actor.id }, reason);
         const refreshed = await prisma.document.findUnique({ where: { id: documentId } });
-        res.json(ok({ document: publicDocumentRow(refreshed) }));
+        res.json(ok({ document: await readableDocumentRow(actor.id, refreshed) }));
       } catch (err) {
         // #108 — the cleanup exception stays in the server log.
         log.warn("document reject failed", { documentId, error: String(err) });
@@ -551,7 +552,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         target: { type: "document", id: documentId },
         metadata: { projectId, autoApproveTrusted: parsed.data.autoApproveTrusted },
       });
-      res.json(ok(publicDocumentRow(updated)));
+      res.json(ok(await readableDocumentRow(actor.id, updated)));
     },
   );
 
@@ -582,7 +583,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         target: { type: "document", id: documentId },
         metadata: { projectId, isSpec },
       });
-      res.json(ok(publicDocumentRow(updated)));
+      res.json(ok(await readableDocumentRow(actor.id, updated)));
     },
   );
 
@@ -703,6 +704,13 @@ async function readableDocumentRows<
   return rows.map((row) =>
     sees(row) ? publicDocumentRow(row) : restrictedDocumentRow(publicDocumentRow(row)),
   );
+}
+
+/** One row (or none) as `userId` may see it: see {@link readableDocumentRows}. */
+async function readableDocumentRow<
+  T extends { aclSubjects: string; filename: string; errorMessage: string | null },
+>(userId: string, row: T | null) {
+  return row ? (await readableDocumentRows(userId, [row]))[0]! : null;
 }
 
 function clampInt(raw: unknown, fallback: number, min: number, max: number): number {

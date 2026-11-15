@@ -143,6 +143,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       request(app()).get(path).set("Authorization", bearer(who));
     const post = (who: Who, path: string, body: object) =>
       request(app()).post(path).set("Authorization", bearer(who)).send(body);
+    const patch = (who: Who, path: string, body: object) =>
+      request(app()).patch(path).set("Authorization", bearer(who)).send(body);
 
     beforeAll(async () => {
       sqlite = createMigratedSqlite("2546-restricted-document-surfaces");
@@ -643,6 +645,63 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           row = await db.portfolioAssessment.findUnique({ where: { id } });
         }
         expect(row!.statement).toBe(`Requirements of change request "${BOB_TITLE}"`);
+      });
+    });
+
+    describe("#2546 review — a document's toggles answer with the same row", () => {
+      it("Bob's spec and auto-approve toggles answer with the restricted row", async () => {
+        try {
+          for (const [path, body] of [
+            ["spec", { isSpec: true }],
+            ["auto-approve", { autoApproveTrusted: true }],
+          ] as const) {
+            const bob = await patch("bob", `/api/projects/${P}/documents/${PAYROLL}/${path}`, body);
+            expect(bob.status, path).toBe(200);
+            expect(JSON.stringify(bob.body), path).not.toMatch(LEAKS);
+            expect(bob.body.data, path).toMatchObject({ id: PAYROLL, restricted: true });
+            expect(bob.body.data, path).not.toHaveProperty("aclSubjects");
+          }
+          const alice = await patch("alice", `/api/projects/${P}/documents/${PAYROLL}/spec`, {
+            isSpec: false,
+          });
+          expect(alice.body.data.filename).toBe(PAYROLL_NAME);
+          expect(alice.body.data).not.toHaveProperty("restricted");
+        } finally {
+          await db.document.update({
+            where: { id: PAYROLL },
+            data: { isSpec: false, autoApproveTrusted: false },
+          });
+        }
+      });
+    });
+
+    describe("#2546 panel — a run from before #2446 (no recorded source access)", () => {
+      it("names a document restricted now as the placeholder to Bob, and to Alice by its name", async () => {
+        await db.analysis.update({ where: { id: RUN }, data: { sourceAccess: null } });
+        try {
+          const list = await get("bob", `/api/projects/${P}/analyses`);
+          expect(JSON.stringify(list.body)).not.toMatch(LEAKS);
+          const [item] = list.body.data.items;
+          expect(item.sources.documents).toEqual([{ id: PAYROLL, name: RESTRICTED_SOURCE_TITLE }]);
+          expect(item.title).toBe(BOB_TITLE);
+          const reqs = await get("bob", `/api/projects/${P}/requirements`);
+          const open = reqs.body.data.items.find((i: { id: string }) => i.id === REQ_OPEN);
+          expect(open.changeRequest.title).toBe(BOB_TITLE);
+          const impact = await get("bob", `/api/impact-analyses/${IMPACT_CR}`);
+          expect(impact.body.data.changeRequest.title).toBe(BOB_TITLE);
+          const check = await get("bob", `/api/portfolio-assessments/${CHECK_CR}`);
+          expect(JSON.stringify(check.body.data.changeRequest)).not.toMatch(LEAKS);
+          expect(check.body.data.statement).not.toMatch(LEAKS);
+          const subject = await resolveChatSubject(payload("bob"), "change-request", RUN);
+          expect(subject.title).not.toMatch(LEAKS);
+          for (const who of ["alice", "root"] as const) {
+            const [mine] = (await get(who, `/api/projects/${P}/analyses`)).body.data.items;
+            expect(mine.title, who).toBe(PAYROLL_NAME);
+            expect(mine.sources.documents, who).toEqual([{ id: PAYROLL, name: PAYROLL_NAME }]);
+          }
+        } finally {
+          await db.analysis.update({ where: { id: RUN }, data: { sourceAccess: "starter" } });
+        }
       });
     });
 

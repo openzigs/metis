@@ -21,6 +21,7 @@ import {
 } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import { documentSourceRow, loadSourceGuard, type SourceReader } from "./source-redaction.js";
+import { hiddenDocumentIds } from "../documents/document-visibility.js";
 
 /** How much of the free-text requirements a generated title quotes. */
 export const GENERATED_TITLE_EXCERPT = 80;
@@ -126,8 +127,9 @@ export interface ChangeRequestDetails {
 
 /**
  * #2546 — per run, the documents it was started from that `reader` cannot see
- * (their access list, as it is now, does not name them; or they are not the
- * run's project's). One guard load for every run.
+ * (their access list, as it is now, does not name them, whatever the run's
+ * recorded source access; or the run's guard hides them). One guard load and
+ * one access-list read for every run.
  */
 async function hiddenSourceDocuments(
   reader: SourceReader,
@@ -146,8 +148,15 @@ async function hiddenSourceDocuments(
     reader,
     cited.map((c) => c.source),
   );
+  // The guard decides a run's OUTPUT, and opens a run with no recorded source
+  // access (from before #2446) to everyone. A name is the document's own: it is
+  // decided on the document's access list as it is now, for every run.
+  const restrictedNow = await hiddenDocumentIds(
+    reader,
+    cited.map((c) => c.documentId),
+  );
   for (const c of cited) {
-    if (guard.canSee(c.source)) continue;
+    if (guard.canSee(c.source) && !restrictedNow.has(c.documentId)) continue;
     hidden.set(c.analysisId, (hidden.get(c.analysisId) ?? new Set()).add(c.documentId));
   }
   return hidden;
