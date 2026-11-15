@@ -42,6 +42,14 @@ function app(limiter: RequestHandler, userId: string) {
   return a;
 }
 
+/**
+ * A value unique to this attempt. The store is process-wide and `retry: 2`
+ * reruns a case against what the failed attempt already spent, so every user id
+ * and every IPv6 /64 below carries one: a retry starts from an empty bucket.
+ */
+let attempt = 0;
+const fresh = () => ++attempt;
+
 afterEach(() => {
   for (const [, env] of PER_USER) delete process.env[env];
 });
@@ -51,7 +59,7 @@ describe("approval limiters on one shared store (#2171)", () => {
     "a user who spent the %s limit can still use every other approval limiter",
     async (spent) => {
       for (const [, env] of PER_USER) process.env[env] = "1";
-      const userId = `keys-user-${spent}`;
+      const userId = `keys-user-${spent}-${fresh()}`;
       const [, , spentLimiter] = PER_USER.find(([name]) => name === spent)!;
       expect((await request(app(spentLimiter, userId)).post("/")).status).toBe(200);
       expect((await request(app(spentLimiter, userId)).post("/")).status).toBe(429);
@@ -84,11 +92,14 @@ describe("an unauthenticated IPv6 caller is keyed by its /64 (#2171)", () => {
     "%s: one /64 shares a bucket, the next /64 has its own",
     async (_name, env, limiter) => {
       process.env[env] = "1";
-      expect((await request(ipv6App(limiter, "2001:db8:0:1::1")).post("/")).status).toBe(200);
+      // Two /64s under a /48 of this attempt's own (third group), so no case
+      // and no retry shares a bucket with another.
+      const n = fresh().toString(16);
+      expect((await request(ipv6App(limiter, `2001:db8:${n}:1::1`)).post("/")).status).toBe(200);
       // Same /64, another address: the same caller rotating its interface id.
-      expect((await request(ipv6App(limiter, "2001:db8:0:1::2")).post("/")).status).toBe(429);
-      // A different /64 in the same /32 is a different caller.
-      expect((await request(ipv6App(limiter, "2001:db8:0:2::1")).post("/")).status).toBe(200);
+      expect((await request(ipv6App(limiter, `2001:db8:${n}:1::2`)).post("/")).status).toBe(429);
+      // A different /64 in the same /48 is a different caller.
+      expect((await request(ipv6App(limiter, `2001:db8:${n}:2::1`)).post("/")).status).toBe(200);
     },
   );
 });
