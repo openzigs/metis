@@ -42,7 +42,11 @@ import {
   type ProjectVectorWrite,
 } from "./project-vector-write.js";
 import { RESTRICTED_SOURCE_TITLE, type AclSubject } from "@metis/shared";
-import { documentVisibilityFor, type DocumentReader } from "../documents/document-visibility.js";
+import {
+  documentAccessOf,
+  documentVisibilityFor,
+  type DocumentReader,
+} from "../documents/document-visibility.js";
 import type { Prisma } from "@prisma/client";
 import { resolveEvidencePolicy } from "../docs-gen/evidence-policy.js";
 import { publicIndexingErrorMessage } from "./indexing-failure-message.js";
@@ -800,6 +804,10 @@ export async function rejectDocument(
  * its row (the review queue's length is not a secret) but is not named: its
  * name is the restricted placeholder, its error text is dropped, and it is
  * marked `restricted`. With no reader every row is as stored (internal reads).
+ *
+ * #2547 — given a `reader`, each row carries `access` as that reader may see
+ * it ({@link documentAccessOf}): a reader of the document is told who it is
+ * restricted to; a reader it leaves out only that it is restricted.
  */
 export async function listQuarantine(projectId: string, reader?: string | DocumentReader) {
   const docs = await prisma.document.findMany({
@@ -830,15 +838,17 @@ export async function listQuarantine(projectId: string, reader?: string | Docume
       aclSubjects: true,
     },
   });
-  const sees = reader ? await documentVisibilityFor(reader, docs) : () => true;
+  if (!reader) return docs.map((d) => quarantineRow(d));
+  const sees = await documentVisibilityFor(reader, docs);
   return docs.map((d) =>
     sees(d)
-      ? quarantineRow(d)
+      ? { ...quarantineRow(d), access: documentAccessOf(d, true) }
       : {
           ...quarantineRow(d),
           filename: RESTRICTED_SOURCE_TITLE,
           errorMessage: null,
           restricted: true as const,
+          access: documentAccessOf(d, false),
         },
   );
 }

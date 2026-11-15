@@ -15,7 +15,7 @@
  * coverage record. Counts (its size, its indexed sections) stay, as #2437
  * shows counts only.
  */
-import { RESTRICTED_SOURCE_TITLE } from "@metis/shared";
+import { RESTRICTED_SOURCE_TITLE, type AclSubject } from "@metis/shared";
 import { prisma } from "../prisma.js";
 import {
   InactiveAclActorError,
@@ -144,4 +144,23 @@ export function restrictedDocumentRow<T extends object>(
     errorMessage: null,
     restricted: true,
   };
+}
+
+/**
+ * #2547 — what a document row says about its access list, for the reader. A
+ * reader (named on the list, or an admin, or anyone when the list is empty)
+ * is told whether it is restricted and who it is restricted to; a reader the
+ * list leaves out is told only that it is restricted, never who reads it, as
+ * {@link restrictedDocumentRow} sends no `aclSubjects`. One shape: on a row a
+ * reader cannot see, `access.canRead` is false and the row is `restricted`.
+ */
+export type DocumentAccess =
+  | { restricted: boolean; canRead: true; subjects: AclSubject[] }
+  | { restricted: true; canRead: false };
+
+/** {@link DocumentAccess} for `doc`, given whether its reader may see it. */
+export function documentAccessOf(doc: AclDocument, visible: boolean): DocumentAccess {
+  if (!visible) return { restricted: true, canRead: false };
+  const subjects = parseAclSubjects(doc.aclSubjects);
+  return { restricted: subjects.length > 0, canRead: true, subjects };
 }

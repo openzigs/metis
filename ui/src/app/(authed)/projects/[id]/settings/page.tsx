@@ -175,7 +175,7 @@ export default function ProjectSettingsPage() {
         </div>
       </details>
 
-      <QuarantinePanel projectId={id} />
+      <QuarantinePanel projectId={id} isArchived={isArchived} />
 
       <ChroniclePanel projectId={id} />
     </div>

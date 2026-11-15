@@ -15,8 +15,13 @@ vi.mock("../rag/acl.js", async (importOriginal) => ({
 }));
 
 const { InactiveAclActorError } = await import("../rag/acl.js");
-const { canSeeDocument, documentVisibilityFor, hiddenDocumentIds, restrictedDocumentRow } =
-  await import("./document-visibility.js");
+const {
+  canSeeDocument,
+  documentAccessOf,
+  documentVisibilityFor,
+  hiddenDocumentIds,
+  restrictedDocumentRow,
+} = await import("./document-visibility.js");
 
 const OPEN = { aclSubjects: "[]" };
 const ALICE_ONLY = { aclSubjects: JSON.stringify([{ kind: "user", value: "alice" }]) };
@@ -134,5 +139,24 @@ describe("#2546 — document visibility outside a run", () => {
       errorMessage: null,
       restricted: true,
     });
+  });
+});
+
+describe("#2547 — documentAccessOf", () => {
+  it("tells a reader whether the document is restricted, and to whom", () => {
+    expect(documentAccessOf(ALICE_ONLY, true)).toEqual({
+      restricted: true,
+      canRead: true,
+      subjects: [{ kind: "user", value: "alice" }],
+    });
+    expect(documentAccessOf(OPEN, true)).toEqual({
+      restricted: false,
+      canRead: true,
+      subjects: [],
+    });
+  });
+
+  it("tells a reader the list leaves out only that it is restricted, never who reads it", () => {
+    expect(documentAccessOf(ALICE_ONLY, false)).toEqual({ restricted: true, canRead: false });
   });
 });

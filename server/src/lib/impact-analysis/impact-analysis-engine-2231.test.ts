@@ -248,6 +248,28 @@ describe("impact analysis on a document (#2231)", () => {
     );
   });
 
+  // #2547 — the `job:{id}` room is joined on the run's projects alone (it is
+  // not redacted per reader), and a run's summary quotes its document (here
+  // its section names), so the completed event carries no summary: a member
+  // its access list leaves out reads it from the redacted detail, or not at all.
+  it("announces completion on the job room without the summary", async () => {
+    const { prisma, analyses } = prismaMock({ sourceText: null, documentId: "doc-1" });
+    const completed = vi.spyOn(jobEvents, "completed");
+    try {
+      await run(prisma, {
+        documentReader: vi.fn(async () => READING),
+        extractor: { extract: vi.fn(async () => []) },
+      });
+      expect(String(analyses.get("ia")?.summary)).toContain("Clinic booking FRD");
+      expect(completed).toHaveBeenCalledTimes(1);
+      const [, , , message] = completed.mock.calls[0]!;
+      expect(message).toBe("Impact analysis complete");
+      expect(JSON.stringify(completed.mock.calls)).not.toContain("Clinic booking");
+    } finally {
+      completed.mockRestore();
+    }
+  });
+
   it("falls back to the splitter, and says so, when the reading fails", async () => {
     const { prisma, analyses, items } = prismaMock({ sourceText: null, documentId: "doc-1" });
     const documentReader = vi.fn(async () => {

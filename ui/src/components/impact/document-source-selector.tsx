@@ -15,6 +15,17 @@ export interface SourceDocument {
   id: string;
   filename: string;
   projectName: string;
+  /**
+   * #2547 — the document has an access list the caller is on. (One it leaves
+   * out is not offered at all: the page drops it, #2546.)
+   */
+  restricted?: boolean;
+}
+
+/** #2547 — the option's text: a restricted document says so. */
+function optionLabel(doc: SourceDocument): string {
+  const base = `${doc.filename} (${doc.projectName})`;
+  return doc.restricted ? `${base} — restricted` : base;
 }
 
 export interface DocumentSourceSelectorProps {
@@ -93,7 +104,7 @@ export function DocumentSourceSelector({
           <option value="">Select a document…</option>
           {documents.map((doc) => (
             <option key={doc.id} value={doc.id}>
-              {doc.filename} ({doc.projectName})
+              {optionLabel(doc)}
             </option>
           ))}
         </select>

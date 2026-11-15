@@ -90,6 +90,17 @@ export interface ProjectListPage {
 // #547 — the closed set is defined once, in `@metis/shared`.
 export type { DocumentSource };
 
+/**
+ * #2547 — a document's access list as the caller sees it. A reader of the
+ * document (named on it, an admin, or anyone when it is empty) is told whether
+ * it is restricted and who it is restricted to; a member it leaves out is told
+ * only that it is restricted (`canRead: false`, no subjects), on a row that is
+ * also `restricted: true` (#2546). Absent from a row a route does not annotate.
+ */
+export type DocumentAccess =
+  | { restricted: boolean; canRead: true; subjects: AclSubject[] }
+  | { restricted: true; canRead: false; subjects?: undefined };
+
 export interface DocumentRow {
   id: string;
   projectId: string;
@@ -119,6 +130,8 @@ export interface DocumentRow {
    * state, spec flag, size, sections, dates) and never its access list.
    */
   restricted?: boolean;
+  /** #2547 — see {@link DocumentAccess}. */
+  access?: DocumentAccess;
   uploadedAt: string;
   processedAt?: string | null;
 }
@@ -530,6 +543,8 @@ export interface QuarantineRow {
   errorMessage?: string | null;
   /** #2546 — its access list leaves the caller out: `filename` is the placeholder. */
   restricted?: true;
+  /** #2547 — see {@link DocumentAccess}. */
+  access?: DocumentAccess;
 }
 
 export interface QuarantineListResponse {

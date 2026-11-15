@@ -32,6 +32,9 @@ const { saveDocumentAcl, AclGroupUnsupportedError, AclSaveConflictError, ACL_SAV
   await import("../src/lib/rag/acl.js");
 const { writeQuarantine } = await import("../src/lib/rag/quarantine.js");
 
+/** #2547 — `saveDocumentAcl` requires its caller; a test writer is an admin, which reads every list. */
+const ACL_ADMIN = { userId: "acl-test-admin", role: "admin" };
+
 const USER = "u-owner";
 const PROJECT = "p-2356";
 const OTHER_PROJECT = "p-2356-other";
@@ -110,7 +113,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           { kind: "role" as const, value: "developer" },
         ];
         await expect(
-          saveDocumentAcl({ documentId: DOC, projectId: PROJECT, aclSubjects: next }),
+          saveDocumentAcl({
+            actor: ACL_ADMIN,
+            documentId: DOC,
+            projectId: PROJECT,
+            aclSubjects: next,
+          }),
         ).resolves.toEqual({ chunkCount: 2 });
         expect(await acl()).toBe(JSON.stringify(next));
         expect(await chunkAcls()).toEqual([JSON.stringify(next), JSON.stringify(next)]);
@@ -118,6 +126,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
       it("refuses a new group and writes nothing", async () => {
         const err = await saveDocumentAcl({
+          actor: ACL_ADMIN,
           documentId: DOC,
           projectId: PROJECT,
           aclSubjects: [{ kind: "group", value: "finance" }],
@@ -130,7 +139,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
       it("answers null for a document of another project, and writes nothing", async () => {
         await expect(
-          saveDocumentAcl({ documentId: DOC, projectId: OTHER_PROJECT, aclSubjects: [] }),
+          saveDocumentAcl({
+            actor: ACL_ADMIN,
+            documentId: DOC,
+            projectId: OTHER_PROJECT,
+            aclSubjects: [],
+          }),
         ).resolves.toBeNull();
         expect(await acl()).toBe(LEGACY);
       });
@@ -145,12 +159,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ];
         let raced = false;
         const err = await saveDocumentAcl(
-          { documentId: DOC, projectId: PROJECT, aclSubjects: bob },
+          { actor: ACL_ADMIN, documentId: DOC, projectId: PROJECT, aclSubjects: bob },
           {
             afterRead: async () => {
               if (raced) return;
               raced = true;
-              await saveDocumentAcl({ documentId: DOC, projectId: PROJECT, aclSubjects: alice });
+              await saveDocumentAcl({
+                actor: ACL_ADMIN,
+                documentId: DOC,
+                projectId: PROJECT,
+                aclSubjects: alice,
+              });
             },
           },
         ).catch((e: unknown) => e);
@@ -163,7 +182,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const bob = [{ kind: "user" as const, value: "bob" }];
         let raced = false;
         await saveDocumentAcl(
-          { documentId: DOC, projectId: PROJECT, aclSubjects: bob },
+          { actor: ACL_ADMIN, documentId: DOC, projectId: PROJECT, aclSubjects: bob },
           {
             afterRead: async () => {
               if (raced) return;
@@ -182,7 +201,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       it("gives up with a conflict when the ACL changes under every attempt", async () => {
         let n = 0;
         const err = await saveDocumentAcl(
-          { documentId: DOC, projectId: PROJECT, aclSubjects: [] },
+          { actor: ACL_ADMIN, documentId: DOC, projectId: PROJECT, aclSubjects: [] },
           {
             afterRead: async () => {
               n += 1;

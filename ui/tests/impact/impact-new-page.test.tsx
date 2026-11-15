@@ -181,6 +181,39 @@ describe("NewImpactAnalysisPage", () => {
     expect(values).not.toContain("doc-0000002");
   });
 
+  it("#2547 — marks a readable restricted document and drops one whose access says canRead false", async () => {
+    vi.mocked(documentsApi.list).mockResolvedValueOnce({
+      items: [
+        { id: "doc-0000001", filename: "spec.docx" },
+        {
+          id: "doc-0000003",
+          filename: "plan.docx",
+          access: {
+            restricted: true,
+            canRead: true,
+            subjects: [{ kind: "role", value: "coordinator" }],
+          },
+        },
+        { id: "doc-0000004", filename: "Restricted", access: { restricted: true, canRead: false } },
+      ],
+    } as unknown as Awaited<ReturnType<typeof documentsApi.list>>);
+    render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
+    await openScope();
+    fireEvent.click(await screen.findByLabelText("Alpha"));
+    fireEvent.click(screen.getByTestId("source-mode-document"));
+    const select = await screen.findByTestId("source-document-select");
+    await waitFor(() =>
+      expect(
+        within(select).getByRole("option", { name: "plan.docx (Alpha) — restricted" }),
+      ).toBeInTheDocument(),
+    );
+    expect(within(select).getByRole("option", { name: "spec.docx (Alpha)" })).toBeInTheDocument();
+    const values = within(select)
+      .getAllByRole("option")
+      .map((o) => (o as HTMLOptionElement).value);
+    expect(values).not.toContain("doc-0000004");
+  });
+
   it("#2280 — offers to read the document again only for a document source, and sends it when ticked", async () => {
     render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
     await openScope();

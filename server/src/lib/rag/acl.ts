@@ -118,6 +118,18 @@ export class AclSaveConflictError extends Error {
   }
 }
 
+/**
+ * #2547 — the caller of an ACL write cannot read the document under the ACL
+ * the write would replace: a member a document is restricted away from may
+ * not rewrite its access list (to name themselves, say). Nothing was written.
+ */
+export class AclEditForbiddenError extends Error {
+  constructor() {
+    super("The caller cannot read this document, so may not change its access list");
+    this.name = "AclEditForbiddenError";
+  }
+}
+
 /** Attempts {@link saveDocumentAcl} makes before giving up on a document whose ACL keeps changing. */
 export const ACL_SAVE_ATTEMPTS = 3;
 
@@ -129,6 +141,12 @@ export const ACL_SAVE_ATTEMPTS = 3;
  * so a group another editor just removed is never written back as "already
  * held". The document and its chunks change in one transaction.
  *
+ * #2547 — the write is refused ({@link AclEditForbiddenError}, nothing
+ * written) when `actor` cannot read the document under the ACL it replaces;
+ * the compare-and-set means a restriction saved in between is the one checked.
+ * `actor` is required so no caller can skip that check by omission: a trusted
+ * server-side writer passes an admin actor, a visible choice.
+ *
  * Returns the chunk count, or `null` when the document is not live in the
  * project. Throws {@link AclGroupUnsupportedError} (nothing written) or, past
  * {@link ACL_SAVE_ATTEMPTS} lost races, {@link AclSaveConflictError}.
@@ -136,7 +154,7 @@ export const ACL_SAVE_ATTEMPTS = 3;
  * `afterRead` is a test seam: it runs between the read and the write.
  */
 export async function saveDocumentAcl(
-  input: { documentId: string; projectId: string; aclSubjects: AclSubject[] },
+  input: { documentId: string; projectId: string; aclSubjects: AclSubject[]; actor: AclActor },
   deps: { afterRead?: () => Promise<void> } = {},
 ): Promise<{ chunkCount: number } | null> {
   const serialized = serializeAclSubjects(input.aclSubjects);
@@ -144,7 +162,11 @@ export async function saveDocumentAcl(
   for (let attempt = 1; attempt <= ACL_SAVE_ATTEMPTS; attempt++) {
     const doc = await prisma.document.findFirst({ where, select: { aclSubjects: true } });
     if (!doc) return null;
-    const groups = newGroupSubjects(parseAclSubjects(doc.aclSubjects), input.aclSubjects);
+    const current = parseAclSubjects(doc.aclSubjects);
+    if (!isVisibleTo({ subjects: current }, input.actor)) {
+      throw new AclEditForbiddenError();
+    }
+    const groups = newGroupSubjects(current, input.aclSubjects);
     if (groups.length > 0) throw new AclGroupUnsupportedError(groups);
     await deps.afterRead?.();
     const chunkCount = await prisma.$transaction(async (tx) => {

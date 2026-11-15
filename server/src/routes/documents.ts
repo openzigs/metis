@@ -37,12 +37,20 @@ import { getKnowledgeService, type KnowledgeService } from "../lib/rag/knowledge
 import { getIngestQueue, type IngestQueue } from "../lib/rag/ingest-queue.js";
 import { getProject } from "../lib/projects/project-service.js";
 import { approveDocument, rejectDocument } from "../lib/rag/quarantine.js";
-import { resolveAclActor, saveDocumentAcl } from "../lib/rag/acl.js";
+import {
+  AclEditForbiddenError,
+  resolveAclActor,
+  saveDocumentAcl,
+  type AclActor,
+} from "../lib/rag/acl.js";
 import { aclSaveErrorAsHttp, inactiveCallerAsUnauthenticated } from "./acl-errors.js";
 import { createChildLogger } from "../lib/logger.js";
 import {
+  canSeeDocument,
+  documentAccessOf,
   documentVisibilityFor,
   restrictedDocumentRow,
+  type DocumentAccess,
 } from "../lib/documents/document-visibility.js";
 import {
   approvalFailureMessage,
@@ -60,6 +68,49 @@ function ok<T>(data: T): ApiResponse<T> {
 function actorFromReq(req: Request) {
   if (!req.user) throw new AppError(401, "AUTH_REQUIRED", "Authentication required");
   return { id: req.user.userId, role: req.user.role };
+}
+
+/**
+ * #2547 — the caller as the ACL sees them (durable role, live account), for a
+ * route that says whether they can read each document. An inactive caller is
+ * the 401 `TOKEN_INVALID` #2261 chose.
+ */
+function callerAclActor(req: Request): Promise<AclActor> {
+  return resolveAclActor(actorFromReq(req).id).catch((err: unknown) => {
+    throw inactiveCallerAsUnauthenticated(err);
+  });
+}
+
+/**
+ * #2547 — owner policy: a member who cannot read a document under its current
+ * access list cannot manage it either (approve, reject, the auto-approve and
+ * spec toggles; the access list itself is refused inside `saveDocumentAcl`).
+ * The row is already listed to them as restricted, so a 403 names nothing the
+ * list does not; the attempt is audited as `<action>.denied`.
+ */
+async function refuseUnlessReader(
+  actorId: string,
+  doc: { id: string; aclSubjects: string },
+  projectId: string,
+  action: string,
+): Promise<void> {
+  if (await canSeeDocument(actorId, doc)) return;
+  auditManageDenied(actorId, doc.id, projectId, action);
+  throw new AppError(
+    403,
+    "DOCUMENT_RESTRICTED",
+    "This document is restricted and you are not one of its readers, so you cannot manage it. Ask one of its readers or an admin.",
+  );
+}
+
+/** #2547 — the audit row of a refused change to a document the caller cannot read. */
+function auditManageDenied(actorId: string, documentId: string, projectId: string, action: string) {
+  audit({
+    actor: { id: actorId },
+    action: `${action}.denied`,
+    target: { type: "document", id: documentId },
+    metadata: { projectId, reason: "document_restricted" },
+  });
 }
 
 async function ensureProjectActive(projectId: string) {
@@ -440,6 +491,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         where: { id: documentId, projectId, deletedAt: null },
       });
       if (!doc) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
+      await refuseUnlessReader(actor.id, doc, projectId, "document.approve");
       try {
         const result = await approveDocument(documentId, { id: actor.id });
         const refreshed = await prisma.document.findUnique({ where: { id: documentId } });
@@ -466,6 +518,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         where: { id: documentId, projectId, deletedAt: null },
       });
       if (!doc) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
+      await refuseUnlessReader(actor.id, doc, projectId, "document.reject");
       const reasonParse = z
         .object({ reason: z.string().max(500).optional() })
         .safeParse(req.body ?? {});
@@ -497,14 +550,23 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
           issues: parsed.error.flatten(),
         });
       }
+      // #2547 — an archived project's access lists are frozen like its
+      // documents, on every surface that offers the editor.
+      await ensureProjectActive(projectId);
       // #2261 — a NEW group subject is refused (400 ACL_GROUP_UNSUPPORTED).
       // #2356 — checked against the ACL the write replaces, not one read
       // earlier: a group another editor just removed is not "already held".
+      // #2547 — so is the caller: one the document is restricted away from
+      // may not rewrite its list (403 ACL_EDIT_FORBIDDEN, audited).
       const saved = await saveDocumentAcl({
         documentId,
         projectId,
         aclSubjects: parsed.data.aclSubjects,
+        actor: await callerAclActor(req),
       }).catch((err: unknown) => {
+        if (err instanceof AclEditForbiddenError) {
+          auditManageDenied(actor.id, documentId, projectId, "document.acl.update");
+        }
         throw aclSaveErrorAsHttp(err);
       });
       if (!saved) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
@@ -542,6 +604,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         where: { id: documentId, projectId, deletedAt: null },
       });
       if (!doc) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
+      await refuseUnlessReader(actor.id, doc, projectId, "document.autoApprove.update");
       const updated = await prisma.document.update({
         where: { id: documentId },
         data: { autoApproveTrusted: parsed.data.autoApproveTrusted },
@@ -573,6 +636,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         where: { id: documentId, projectId, deletedAt: null },
       });
       if (!doc) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
+      await refuseUnlessReader(actor.id, doc, projectId, "document.spec.update");
       const updated = await prisma.document.update({
         where: { id: documentId },
         data: { isSpec },
@@ -699,10 +763,18 @@ async function readableDocumentRows<
 >(
   userId: string,
   rows: readonly T[],
-): Promise<Array<T | ReturnType<typeof restrictedDocumentRow<T>>>> {
+): Promise<
+  Array<
+    | (T & { access: DocumentAccess })
+    | (ReturnType<typeof restrictedDocumentRow<T>> & { access: DocumentAccess })
+  >
+> {
   const sees = await documentVisibilityFor(userId, rows);
+  // #2547 — each row's `access`: who reads it, only to one who may read it.
   return rows.map((row) =>
-    sees(row) ? publicDocumentRow(row) : restrictedDocumentRow(publicDocumentRow(row)),
+    sees(row)
+      ? { ...publicDocumentRow(row), access: documentAccessOf(row, true) }
+      : { ...restrictedDocumentRow(publicDocumentRow(row)), access: documentAccessOf(row, false) },
   );
 }
 

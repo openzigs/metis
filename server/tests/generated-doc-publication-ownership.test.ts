@@ -81,11 +81,11 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
     app.use(errorHandler);
     return app;
   }
-  function authorization(role: RoleKey, workspaces: string[]) {
+  function authorization(role: RoleKey, workspaces: string[], userId = "actor") {
     return `Bearer ${
       issueTokens({
-        userId: "actor",
-        username: "actor",
+        userId,
+        username: userId,
         role,
         permissions: getPermissionsForRole(role),
         workspaces,
@@ -357,7 +357,9 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
       );
       const response = await request(approvalApp())
         .post(`/projects/project/documents/${syntheticId}/approve`)
-        .set("Authorization", authorization("developer", ["workspace"]));
+        // #2547 — a generated document is restricted to its initiator, and only
+        // a reader of a document may approve it.
+        .set("Authorization", authorization("coordinator", ["workspace"], "initiator"));
       expect(response.status).toBe(409);
       expect(response.body.error.code).toBe("DOCUMENT_APPROVE_FAILED");
       await expectNoPublication();
@@ -408,7 +410,8 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
           new Error("cleanup unavailable"),
         );
         const app = approvalApp();
-        const token = authorization("developer", ["workspace"]);
+        // #2547 — the generated document's reader: its initiator.
+        const token = authorization("coordinator", ["workspace"], "initiator");
         const response = await request(app)
           .post(`/projects/project/documents/${syntheticId}/approve`)
           .set("Authorization", token);

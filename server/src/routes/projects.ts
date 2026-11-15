@@ -788,6 +788,7 @@ export function projectsRouter(): Router {
       const project = await getProject(projectId);
       if (!project) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
       // #2546 — a document restricted from the caller is listed, not named.
+      // #2547 — each row's `access` says whether they can read it.
       const items = await listQuarantine(projectId, req.user!.userId);
       res.json(
         ok({

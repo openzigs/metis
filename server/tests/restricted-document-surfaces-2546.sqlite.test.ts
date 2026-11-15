@@ -651,18 +651,21 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     describe("#2546 review — a document's toggles answer with the same row", () => {
-      it("Bob's spec and auto-approve toggles answer with the restricted row", async () => {
+      // #2547 owner policy — Bob, who cannot read it, cannot toggle it either;
+      // the refusal names nothing the restricted row does not.
+      it("Bob's spec and auto-approve toggles are refused, naming nothing", async () => {
         try {
           for (const [path, body] of [
             ["spec", { isSpec: true }],
             ["auto-approve", { autoApproveTrusted: true }],
           ] as const) {
             const bob = await patch("bob", `/api/projects/${P}/documents/${PAYROLL}/${path}`, body);
-            expect(bob.status, path).toBe(200);
+            expect(bob.status, path).toBe(403);
+            expect(bob.body.error.code, path).toBe("DOCUMENT_RESTRICTED");
             expect(JSON.stringify(bob.body), path).not.toMatch(LEAKS);
-            expect(bob.body.data, path).toMatchObject({ id: PAYROLL, restricted: true });
-            expect(bob.body.data, path).not.toHaveProperty("aclSubjects");
           }
+          const row = await db.document.findUnique({ where: { id: PAYROLL } });
+          expect(row).toMatchObject({ isSpec: false, autoApproveTrusted: false });
           const alice = await patch("alice", `/api/projects/${P}/documents/${PAYROLL}/spec`, {
             isSpec: false,
           });
@@ -794,17 +797,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     describe("#2546 panel round 2 — a quarantine decision answers with the reader's row", () => {
-      it("Bob's reject answers with the restricted row, Alice's with the document", async () => {
+      // #2547 owner policy — Bob's reject is refused (he cannot read it).
+      it("Bob's reject is refused naming nothing, Alice's answers with the document", async () => {
         const reject = async (who: Who) => {
           await db.document.update({ where: { id: PAYROLL }, data: { indexState: "quarantined" } });
           return post(who, `/api/projects/${P}/documents/${PAYROLL}/reject`, {});
         };
         try {
           const bob = await reject("bob");
-          expect(bob.status).toBe(200);
+          expect(bob.status).toBe(403);
+          expect(bob.body.error.code).toBe("DOCUMENT_RESTRICTED");
           expect(JSON.stringify(bob.body)).not.toMatch(LEAKS);
-          expect(bob.body.data.document).toMatchObject({ id: PAYROLL, restricted: true });
-          expect(bob.body.data.document).not.toHaveProperty("aclSubjects");
+          expect((await db.document.findUnique({ where: { id: PAYROLL } }))!.indexState).toBe(
+            "quarantined",
+          );
           const alice = await reject("alice");
           expect(alice.status).toBe(200);
           expect(alice.body.data.document.filename).toBe(PAYROLL_NAME);

@@ -148,6 +148,9 @@ describe("PATCH /documents/:id/acl — group subjects (#2261) and concurrent sav
     projectFindUnique.mockResolvedValue(inWorkspace);
     documentUpdateMany.mockResolvedValue({ count: 1 });
     chunkUpdateMany.mockResolvedValue({ count: 3 });
+    // #2547 — the editor here is an admin, who reads every document, so the
+    // group and race rules are tested apart from the reader rule below.
+    resolveAclActor.mockResolvedValue({ userId: "user-1", role: "admin" });
     app = createApp();
   });
 
@@ -280,5 +283,78 @@ describe("PATCH /documents/:id/acl — group subjects (#2261) and concurrent sav
     expect(documentUpdateMany).toHaveBeenCalledTimes(3);
     expect(chunkUpdateMany).not.toHaveBeenCalled();
     expect(audit).not.toHaveBeenCalled();
+  });
+});
+
+// #2547 — the access list is now edited from the Documents page, so a member a
+// document is restricted away from must not be able to rewrite it (to name
+// themselves). The check is against the ACL the write replaces.
+describe("PATCH /documents/:id/acl — only a reader of the document may change it (#2547)", () => {
+  let app: ReturnType<typeof createApp>;
+  const restricted = '[{"kind":"role","value":"coordinator"}]';
+  const patch = (aclSubjects: unknown) =>
+    request(app).patch("/api/projects/project-a01/documents/doc-9/acl").send({ aclSubjects });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    projectFindUnique.mockResolvedValue(inWorkspace);
+    documentUpdateMany.mockResolvedValue({ count: 1 });
+    chunkUpdateMany.mockResolvedValue({ count: 3 });
+    app = createApp();
+  });
+
+  it("refuses a member the document is restricted away from with 403, writing nothing", async () => {
+    resolveAclActor.mockResolvedValue({ userId: "user-1", role: "developer" });
+    documentFindFirst.mockResolvedValue({ aclSubjects: restricted });
+    const res = await patch([{ kind: "user", value: "user-1" }]);
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("ACL_EDIT_FORBIDDEN");
+    expect(resolveAclActor).toHaveBeenCalledWith("user-1");
+    expect(documentUpdateMany).not.toHaveBeenCalled();
+    expect(chunkUpdateMany).not.toHaveBeenCalled();
+    // The refused attempt is audited, and nothing is recorded as an update.
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "document.acl.update.denied",
+        actor: { id: "user-1" },
+        target: { type: "document", id: "doc-9" },
+      }),
+    );
+  });
+
+  it("lets a reader the list names change it", async () => {
+    resolveAclActor.mockResolvedValue({ userId: "user-1", role: "coordinator" });
+    documentFindFirst.mockResolvedValue({ aclSubjects: restricted });
+    const res = await patch([]);
+    expect(res.status).toBe(200);
+    expect(documentUpdateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets any member restrict an unrestricted document", async () => {
+    resolveAclActor.mockResolvedValue({ userId: "user-1", role: "developer" });
+    documentFindFirst.mockResolvedValue({ aclSubjects: "[]" });
+    const res = await patch([{ kind: "role", value: "coordinator" }]);
+    expect(res.status).toBe(200);
+  });
+
+  it("re-checks the reader rule when a restriction lands between its read and its write", async () => {
+    resolveAclActor.mockResolvedValue({ userId: "user-1", role: "developer" });
+    documentFindFirst
+      .mockResolvedValueOnce({ aclSubjects: "[]" })
+      .mockResolvedValueOnce({ aclSubjects: restricted });
+    documentUpdateMany.mockResolvedValueOnce({ count: 0 }); // the restriction won the row
+    const res = await patch([{ kind: "user", value: "user-1" }]);
+    expect(res.status).toBe(403);
+    expect(documentUpdateMany).toHaveBeenCalledTimes(1);
+    expect(chunkUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it("answers a deprovisioned caller 401 TOKEN_INVALID and writes nothing", async () => {
+    resolveAclActor.mockRejectedValue(new InactiveAclActorError());
+    documentFindFirst.mockResolvedValue({ aclSubjects: "[]" });
+    const res = await patch([]);
+    expect(res.status).toBe(401);
+    expect(documentUpdateMany).not.toHaveBeenCalled();
   });
 });

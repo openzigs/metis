@@ -4,6 +4,7 @@
  */
 import { AppError } from "../middleware/error-handler.js";
 import {
+  AclEditForbiddenError,
   AclGroupUnsupportedError,
   AclSaveConflictError,
   InactiveAclActorError,
@@ -22,8 +23,9 @@ export function inactiveCallerAsUnauthenticated(err: unknown): unknown {
 
 /**
  * #2261 / #2356 — the HTTP form of a refused document-ACL save: a new group
- * subject is a 400 naming the groups; an ACL that kept changing during the
- * save is a 409 the editor can retry. Any other error is returned unchanged.
+ * subject is a 400 naming the groups; a caller the document is restricted away
+ * from is a 403 (#2547); an ACL that kept changing during the save is a 409
+ * the editor can retry. Any other error is returned unchanged.
  */
 export function aclSaveErrorAsHttp(err: unknown): unknown {
   if (err instanceof AclGroupUnsupportedError) {
@@ -32,6 +34,13 @@ export function aclSaveErrorAsHttp(err: unknown): unknown {
       "ACL_GROUP_UNSUPPORTED",
       "Group subjects are not supported: METIS does not store group membership, so a group would match no one. Use a user or role subject.",
       { groups: err.groups },
+    );
+  }
+  if (err instanceof AclEditForbiddenError) {
+    return new AppError(
+      403,
+      "ACL_EDIT_FORBIDDEN",
+      "This document is restricted and you are not one of its readers, so you cannot change who can read it. Ask one of its readers or an admin.",
     );
   }
   if (err instanceof AclSaveConflictError) {

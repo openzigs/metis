@@ -51,4 +51,31 @@ export class ProjectDocumentsPage {
   textIngestForm(): Locator {
     return this.page.getByTestId("text-ingest-form");
   }
+
+  /** #2547 — one document's row in the list. */
+  documentRow(documentId: string): Locator {
+    return this.page.getByTestId(`document-row-${documentId}`);
+  }
+
+  /** #2547 — the "Restricted" badge on a document's row. */
+  restrictedBadge(documentId: string): Locator {
+    return this.page.getByTestId(`document-restricted-badge-${documentId}`);
+  }
+
+  /** #2547 — the row action that opens the document's access-list editor. */
+  accessToggle(documentId: string): Locator {
+    return this.page.getByTestId(`document-access-toggle-${documentId}`);
+  }
+
+  /** #2547 — restrict a document to one role through its access-list editor. */
+  async restrictToRole(documentId: string, role: string): Promise<void> {
+    await this.accessToggle(documentId).click();
+    const editor = this.documentRow(documentId).getByTestId("acl-editor");
+    await expect(editor).toBeVisible();
+    await editor.getByLabel("Kind").selectOption("role");
+    await editor.getByLabel("Value").fill(role);
+    await editor.getByRole("button", { name: "Add" }).click();
+    await editor.getByRole("button", { name: "Save access list" }).click();
+    await expect(editor).toBeHidden({ timeout: 15_000 });
+  }
 }
