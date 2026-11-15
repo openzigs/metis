@@ -131,49 +131,70 @@ export function buildJudgeMessages(
   ];
 }
 
+/**
+ * The verdict's full shape, as the prompt asks for it. #2533 review — `facts`
+ * and `spans` must be present, with no defaults: with defaults, an aside like
+ * `{"behaviour": "abstain"}` in prose after the verdict was itself a valid
+ * verdict, and as the last candidate it won.
+ */
 const verdictSchema = z.object({
   behaviour: z.enum(BEHAVIOURS),
-  facts: z.record(z.string(), z.enum(FACT_VERDICTS)).default({}),
-  spans: z.record(z.string(), z.boolean()).default({}),
+  facts: z.record(z.string(), z.enum(FACT_VERDICTS)),
+  spans: z.record(z.string(), z.boolean()),
 });
 
-/** Index of the `}` that closes the `{` at `start`, skipping braces inside JSON strings; -1 if none. */
-function closingBrace(text: string, start: number): number {
-  let depth = 0;
+/** `facts` or `spans` left out: read only when nothing in the reply has the full shape. */
+const partialVerdictSchema = verdictSchema.partial({ facts: true, spans: true });
+
+type Verdict = z.infer<typeof verdictSchema>;
+
+/**
+ * Every balanced `{ … }` in `text`, in one stack-based pass. Braces inside a
+ * JSON string do not count. Strings are tracked only inside an open brace,
+ * so a quote in prose (`a 5" gap`) changes nothing. A string also ends at a
+ * newline, which JSON forbids inside one, so a stray quote inside an unclosed
+ * prose brace cannot hide the rest of the reply. A `{` that never closes
+ * yields nothing.
+ */
+function balancedObjects(text: string): { start: number; end: number }[] {
+  const open: number[] = [];
+  const objects: { start: number; end: number }[] = [];
   let inString = false;
-  for (let i = start; i < text.length; i++) {
+  for (let i = 0; i < text.length; i++) {
     const c = text[i];
     if (inString) {
       if (c === "\\") i++;
-      else if (c === '"') inString = false;
-    } else if (c === '"') inString = true;
-    else if (c === "{") depth++;
-    else if (c === "}" && --depth === 0) return i;
+      else if (c === '"' || c === "\n") inString = false;
+    } else if (c === '"' && open.length > 0) inString = true;
+    else if (c === "{") open.push(i);
+    else if (c === "}" && open.length > 0) objects.push({ start: open.pop()!, end: i });
   }
-  return -1;
+  return objects;
 }
 
 /**
  * The texts a verdict may be in, in the order they are tried (#2521): the last
  * fenced ```json block, then every balanced `{ … }` from the last back to the
  * first (an enclosing object before the ones inside it). A judge that corrects
- * itself means its last verdict, and braces in its prose (`{base_url}`) or an
- * unclosed one are only candidates that fail to parse, not the start of a
- * slice that swallows the real verdict.
+ * itself means its last verdict. A brace in its prose (`{base_url}`) is at
+ * most a candidate that fails to parse, and an unclosed one is never a
+ * candidate, so neither starts a slice that swallows the real verdict.
  */
 function verdictCandidates(text: string): string[] {
-  const fenced = [...text.matchAll(/```json[^\n]*\n([\s\S]*?)```/gi)].map((m) => m[1]);
-  const objects: { start: number; end: number }[] = [];
-  for (let i = text.indexOf("{"); i >= 0; i = text.indexOf("{", i + 1)) {
-    const end = closingBrace(text, i);
-    if (end >= 0) objects.push({ start: i, end });
-  }
-  objects.sort((a, b) => b.end - a.end || a.start - b.start);
+  const fenced = [...text.matchAll(/```json[^\n]*\n([\s\S]*?)```/gi)].map((m) => m[1]!);
+  const objects = balancedObjects(text).sort((a, b) => b.end - a.end || a.start - b.start);
   return [...fenced.slice(-1), ...objects.map((o) => text.slice(o.start, o.end + 1))];
 }
 
-/** The first candidate that is JSON of the verdict's shape. */
-function readVerdict(text: string): z.infer<typeof verdictSchema> | null {
+/**
+ * The first candidate with the verdict's full shape. #2533 review — when none
+ * has it, one that leaves out `facts` or `spans` (`{"behaviour": "abstain"}`)
+ * is read with the missing ones empty, but only when it is the reply's only
+ * such object. Two that differ (a verdict, then an example in prose) leave the
+ * question unscored rather than scored by whichever came last.
+ */
+function readVerdict(text: string): Verdict | null {
+  const partial = new Map<string, Verdict>();
   for (const candidate of verdictCandidates(text)) {
     let raw: unknown;
     try {
@@ -181,10 +202,15 @@ function readVerdict(text: string): z.infer<typeof verdictSchema> | null {
     } catch {
       continue;
     }
-    const parsed = verdictSchema.safeParse(raw);
-    if (parsed.success) return parsed.data;
+    const full = verdictSchema.safeParse(raw);
+    if (full.success) return full.data;
+    const some = partialVerdictSchema.safeParse(raw);
+    if (some.success) {
+      const v = { facts: {}, spans: {}, ...some.data };
+      partial.set(JSON.stringify(v), v);
+    }
   }
-  return null;
+  return partial.size === 1 ? [...partial.values()][0]! : null;
 }
 
 /**

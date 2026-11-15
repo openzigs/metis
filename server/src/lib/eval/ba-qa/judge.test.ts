@@ -185,5 +185,40 @@ describe("parseJudgeVerdict", () => {
   it("needs only a behaviour for a question with no facts and no spans", () => {
     const v = parseJudgeVerdict('{"behaviour": "abstain"}', { ...q, facts: undefined }, []);
     expect(v).toEqual({ behaviour: "abstain", facts: {}, spans: {} });
+    // The same object fenced and so seen twice is still one verdict.
+    const fenced = '```json\n{"behaviour": "abstain"}\n```';
+    expect(parseJudgeVerdict(fenced, { ...q, facts: undefined }, [])?.behaviour).toBe("abstain");
+  });
+
+  // #2533 review — a behaviour-only aside in prose AFTER the verdict.
+  describe("a behaviour-only object in prose after the verdict", () => {
+    const note = '\nNote: an abstention would be {"behaviour": "abstain"}.';
+    const bare = { ...q, facts: undefined };
+
+    it("does not replace a verdict that has its facts and spans", () => {
+      expect(parseJudgeVerdict(`${JSON.stringify(good)}${note}`, q, spans)).toEqual({
+        behaviour: "answer",
+        facts: { "S1.a": "stated", "S1.b": "contradicted" },
+        spans: { 1: true },
+      });
+      const full = JSON.stringify({ behaviour: "answer", facts: {}, spans: {} });
+      expect(parseJudgeVerdict(`${full}${note}`, bare, [])?.behaviour).toBe("answer");
+    });
+
+    it("leaves the question unscored when two behaviour-only objects disagree", () => {
+      expect(parseJudgeVerdict(`{"behaviour": "answer"}${note}`, bare, [])).toBeNull();
+    });
+  });
+
+  it("finds the verdict after a stray quote inside an unclosed brace in prose", () => {
+    const reply = `The reply's map { has a 5" gap\n${JSON.stringify(good)}`;
+    expect(parseJudgeVerdict(reply, q, spans)?.behaviour).toBe("answer");
+  });
+
+  it("matches braces in one pass: many unclosed braces stay fast", () => {
+    const reply = `${"{".repeat(50_000)}\n${JSON.stringify(good)}`;
+    const started = performance.now();
+    expect(parseJudgeVerdict(reply, q, spans)?.behaviour).toBe("answer");
+    expect(performance.now() - started).toBeLessThan(1_000);
   });
 });
