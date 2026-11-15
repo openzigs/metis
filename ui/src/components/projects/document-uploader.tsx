@@ -209,7 +209,7 @@ export function DocumentUploader({ projectId, onUploaded }: Props) {
               ? "Files you add are readable by every project member."
               : `Files you add are readable only by ${restrictTo
                   .map((s) => aclSubjectLabel(s, people))
-                  .join(", ")} and admins.`}
+                  .join(", ")} and admins. Pasted text and links are not restricted by this list.`}
           </p>
         </div>
         {restrictOpen ? (

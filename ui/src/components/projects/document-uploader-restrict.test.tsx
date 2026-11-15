@@ -80,6 +80,10 @@ describe("DocumentUploader — Restrict to… (#2555)", () => {
     expect(screen.getByTestId("upload-restrict-summary")).toHaveTextContent(
       "readable only by Alice Smith, the coordinator role and admins",
     );
+    // The list does not reach the paste-text and link forms beside the uploader.
+    expect(screen.getByTestId("upload-restrict-summary")).toHaveTextContent(
+      "Pasted text and links are not restricted by this list.",
+    );
     expect(screen.getByTestId("upload-restrict-subjects")).not.toHaveTextContent("u-alice");
     const file = chooseFile();
     await waitFor(() =>
