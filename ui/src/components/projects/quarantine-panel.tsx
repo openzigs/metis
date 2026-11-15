@@ -10,13 +10,17 @@
  *
  * #2547 — each row shows the document's "Restricted" badge, and a reviewer
  * holding `document.upload` who can read the document may set its access
- * list before approving it.
+ * list before approving it (not on an archived project, whose access lists
+ * the server freezes). A reviewer the document's access list leaves out is
+ * offered no approve, reject or trust toggle for it: the server refuses them
+ * (403 `DOCUMENT_RESTRICTED`), as it refuses their access-list edit.
  */
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { hasPermission } from "@metis/shared";
 import { useAuth } from "@/lib/auth-context";
 import { quarantineApi, type QuarantineRow } from "@/lib/projects-api";
+import { isUnreadableDocument } from "@/lib/document-access";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { AclEditor } from "@/components/projects/acl-editor";
@@ -44,7 +48,14 @@ function ToggleCheckbox(props: {
   );
 }
 
-export function QuarantinePanel({ projectId }: { projectId: string }) {
+export function QuarantinePanel({
+  projectId,
+  isArchived = false,
+}: {
+  projectId: string;
+  /** #2547 — an archived project offers no access-list editor. */
+  isArchived?: boolean;
+}) {
   const qc = useQueryClient();
   const { user } = useAuth();
   const canEditAccess = user ? hasPermission(user.role, "document.upload") : false;
@@ -130,6 +141,8 @@ export function QuarantinePanel({ projectId }: { projectId: string }) {
         <ul className="divide-y" data-testid="quarantine-list">
           {list.data.items.map((row: QuarantineRow) => {
             const accessOpen = accessOpenFor === row.documentId;
+            // #2547 — a reviewer who cannot read the document cannot manage it.
+            const unreadable = isUnreadableDocument(row);
             return (
               <li
                 key={row.documentId}
@@ -144,7 +157,7 @@ export function QuarantinePanel({ projectId }: { projectId: string }) {
                       {new Date(row.uploadedAt).toLocaleString()}
                     </p>
                     <RestrictedBadge
-                      access={row.access}
+                      access={unreadable ? { restricted: true, canRead: false } : row.access}
                       testId={`quarantine-restricted-${row.documentId}`}
                     />
                     {row.indexState === "reconciling" && (
@@ -157,7 +170,7 @@ export function QuarantinePanel({ projectId }: { projectId: string }) {
                     )}
                   </div>
                   <div className="flex items-center gap-2">
-                    {row.indexState === "quarantined" && (
+                    {row.indexState === "quarantined" && !unreadable && (
                       <label className="flex items-center gap-1 text-xs text-muted-foreground">
                         <ToggleCheckbox
                           checked={row.autoApproveTrusted}
@@ -169,20 +182,22 @@ export function QuarantinePanel({ projectId }: { projectId: string }) {
                         trust
                       </label>
                     )}
-                    <Button
-                      size="sm"
-                      variant="default"
-                      onClick={() => approve.mutate(row.documentId)}
-                      disabled={approve.isPending || reject.isPending}
-                      data-testid={`approve-${row.documentId}`}
-                    >
-                      {row.indexState === "reconciling"
-                        ? approve.isPending && approve.variables === row.documentId
-                          ? "Retrying indexing…"
-                          : "Retry indexing"
-                        : "Approve"}
-                    </Button>
-                    {row.indexState === "quarantined" && (
+                    {!unreadable && (
+                      <Button
+                        size="sm"
+                        variant="default"
+                        onClick={() => approve.mutate(row.documentId)}
+                        disabled={approve.isPending || reject.isPending}
+                        data-testid={`approve-${row.documentId}`}
+                      >
+                        {row.indexState === "reconciling"
+                          ? approve.isPending && approve.variables === row.documentId
+                            ? "Retrying indexing…"
+                            : "Retry indexing"
+                          : "Approve"}
+                      </Button>
+                    )}
+                    {row.indexState === "quarantined" && !unreadable && (
                       <Button
                         size="sm"
                         variant="outline"
@@ -193,7 +208,15 @@ export function QuarantinePanel({ projectId }: { projectId: string }) {
                         Reject
                       </Button>
                     )}
-                    {canEditAccess && row.access?.canRead !== false ? (
+                    {unreadable ? (
+                      <span
+                        className="text-xs text-muted-foreground"
+                        data-testid={`quarantine-unreadable-${row.documentId}`}
+                      >
+                        Only its readers or an admin can review it
+                      </span>
+                    ) : null}
+                    {canEditAccess && !isArchived && !unreadable ? (
                       <Button
                         size="sm"
                         variant="ghost"

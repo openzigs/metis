@@ -1,8 +1,10 @@
 /**
  * #2547 — the document access list gets a UI, so the routes that UI reads and
- * writes say, per caller, whether each document is restricted, to whom, and
- * whether the caller can read it; and a member a document is restricted away
- * from cannot rewrite its list. Through the real application over a real
+ * writes say, per caller, whether each document is restricted and whether the
+ * caller can read it; only a reader (or an admin) is told who it is restricted
+ * to (#2546: a non-reader's row never carries the subjects). A member a
+ * document is restricted away from cannot manage it: not its list, not its
+ * approval, rejection or toggles. Through the real application over a real
  * (migrated SQLite) database.
  *
  * Alice is a `coordinator`, Bob a `developer`: both are members of the
@@ -26,6 +28,10 @@ const state = vi.hoisted(() => {
   process.env.AI_RATE_LIMIT_MAX = "100000";
   return { db: null as unknown };
 });
+vi.mock("../src/lib/audit/audit-service.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/audit/audit-service.js")>()),
+  audit: vi.fn(),
+}));
 vi.mock("../src/lib/prisma.js", async () => {
   const { Prisma } = await import("@prisma/client");
   return {
@@ -37,6 +43,7 @@ vi.mock("../src/lib/prisma.js", async () => {
 });
 
 const { createApp } = await import("../src/app.js");
+const { audit } = await import("../src/lib/audit/audit-service.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { getPermissionsForRole } = await import("@metis/shared");
 
@@ -77,6 +84,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       return {
         get: (path: string) => set(request(app).get(path)),
         patch: (path: string, body: object) => set(request(app).patch(path)).send(body),
+        post: (path: string, body: object) => set(request(app).post(path)).send(body),
       };
     };
     const accessOf = (items: Array<{ id: string; access: unknown }>, id: string) =>
@@ -125,26 +133,45 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       app = createApp();
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
+    // Every test starts from the same state, whatever ran before it.
     beforeEach(async () => {
       await db.document.update({
         where: { id: PAYROLL },
-        data: { aclSubjects: JSON.stringify(TO_COORDINATORS) },
+        data: {
+          aclSubjects: JSON.stringify(TO_COORDINATORS),
+          isSpec: false,
+          autoApproveTrusted: false,
+          indexState: "quarantined",
+        },
       });
+      await db.document.update({ where: { id: HANDBOOK }, data: { aclSubjects: "[]" } });
+      await db.project.update({ where: { id: PROJECT }, data: { status: "active" } });
+      vi.mocked(audit).mockClear();
     });
+
+    const deniedAudit = (action: string, documentId: string) =>
+      expect(vi.mocked(audit)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action,
+          actor: { id: BOB },
+          target: { type: "document", id: documentId },
+        }),
+      );
 
     afterAll(async () => {
       await db?.$disconnect();
       sqlite?.cleanup();
     });
 
-    it("the Documents list says the document is restricted, to whom, and that Bob cannot read it", async () => {
+    it("the Documents list tells Bob, a non-reader, only that it is restricted; readers are told to whom", async () => {
       const bob = await as(BOB).get(`/api/projects/${PROJECT}/documents`);
       expect(bob.status).toBe(200);
-      expect(accessOf(bob.body.data.items, PAYROLL)).toEqual({
-        restricted: true,
-        canRead: false,
-        subjects: TO_COORDINATORS,
-      });
+      const bobRow = bob.body.data.items.find((d: { id: string }) => d.id === PAYROLL);
+      // One shape: the #2546 restricted row, its access saying no more.
+      expect(bobRow.access).toEqual({ restricted: true, canRead: false });
+      expect(bobRow.restricted).toBe(true);
+      expect(bobRow).not.toHaveProperty("aclSubjects");
+      expect(JSON.stringify(bobRow)).not.toContain("coordinator");
       expect(accessOf(bob.body.data.items, HANDBOOK)).toEqual({
         restricted: false,
         canRead: true,
@@ -152,13 +179,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
 
       const alice = await as(ALICE).get(`/api/projects/${PROJECT}/documents`);
-      expect(accessOf(alice.body.data.items, PAYROLL)).toMatchObject({
+      expect(accessOf(alice.body.data.items, PAYROLL)).toEqual({
         restricted: true,
         canRead: true,
+        subjects: TO_COORDINATORS,
       });
-      // The admin reads it through the bypass, as retrieval does.
+      // The admin reads it through the bypass, as retrieval does, and is told to whom.
       const admin = await as(ADMIN).get(`/api/projects/${PROJECT}/documents`);
-      expect(accessOf(admin.body.data.items, PAYROLL)).toMatchObject({ canRead: true });
+      expect(accessOf(admin.body.data.items, PAYROLL)).toEqual({
+        restricted: true,
+        canRead: true,
+        subjects: TO_COORDINATORS,
+      });
     });
 
     it("a cursor page carries the same access", async () => {
@@ -169,34 +201,37 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         `/api/projects/${PROJECT}/documents?limit=1&cursor=${encodeURIComponent(cursor)}`,
       );
       const both = [...first.body.data.items, ...next.body.data.items];
-      expect(accessOf(both, PAYROLL)).toMatchObject({ restricted: true, canRead: false });
+      expect(accessOf(both, PAYROLL)).toEqual({ restricted: true, canRead: false });
+      expect(accessOf(both, HANDBOOK)).toEqual({ restricted: false, canRead: true, subjects: [] });
     });
 
     it("the document's own read carries the access", async () => {
-      const res = await as(BOB).get(`/api/projects/${PROJECT}/documents/${PAYROLL}`);
-      expect(res.status).toBe(200);
-      expect(res.body.data.access).toEqual({
+      const bob = await as(BOB).get(`/api/projects/${PROJECT}/documents/${PAYROLL}`);
+      expect(bob.status).toBe(200);
+      expect(bob.body.data.access).toEqual({ restricted: true, canRead: false });
+      const alice = await as(ALICE).get(`/api/projects/${PROJECT}/documents/${PAYROLL}`);
+      expect(alice.body.data.access).toEqual({
         restricted: true,
-        canRead: false,
+        canRead: true,
         subjects: TO_COORDINATORS,
       });
     });
 
-    it("the quarantine reviewer's list carries the access", async () => {
+    it("the quarantine reviewer's list carries the access, the subjects to readers only", async () => {
       const bob = await as(BOB).get(`/api/projects/${PROJECT}/quarantine`);
       expect(bob.status).toBe(200);
-      const rows = bob.body.data.items as Array<{ documentId: string; access: unknown }>;
-      expect(rows.find((r) => r.documentId === PAYROLL)?.access).toEqual({
+      const rows = bob.body.data.items as Array<Record<string, unknown>>;
+      const bobRow = rows.find((r) => r.documentId === PAYROLL)!;
+      expect(bobRow.access).toEqual({ restricted: true, canRead: false });
+      expect(bobRow.restricted).toBe(true);
+      expect(JSON.stringify(bobRow)).not.toContain("coordinator");
+      const alice = await as(ALICE).get(`/api/projects/${PROJECT}/quarantine`);
+      const aliceRows = alice.body.data.items as Array<{ documentId: string; access: unknown }>;
+      expect(aliceRows.find((r) => r.documentId === PAYROLL)?.access).toEqual({
         restricted: true,
-        canRead: false,
+        canRead: true,
         subjects: TO_COORDINATORS,
       });
-      const alice = await as(ALICE).get(`/api/projects/${PROJECT}/quarantine`);
-      const aliceRows = alice.body.data.items as Array<{
-        documentId: string;
-        access: { canRead: boolean };
-      }>;
-      expect(aliceRows.find((r) => r.documentId === PAYROLL)?.access.canRead).toBe(true);
     });
 
     it("Bob cannot rewrite the list of a document restricted away from him", async () => {
@@ -207,6 +242,91 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(res.body.error.code).toBe("ACL_EDIT_FORBIDDEN");
       const row = await db.document.findUnique({ where: { id: PAYROLL } });
       expect(JSON.parse(row!.aclSubjects)).toEqual(TO_COORDINATORS);
+      // The refused attempt leaves an audit row (A09).
+      deniedAudit("document.acl.update.denied", PAYROLL);
+    });
+
+    describe("owner policy — a member who cannot read a document cannot manage it", () => {
+      it("Bob cannot approve it", async () => {
+        const res = await as(BOB).post(`/api/projects/${PROJECT}/documents/${PAYROLL}/approve`, {});
+        expect(res.status).toBe(403);
+        expect(res.body.error.code).toBe("DOCUMENT_RESTRICTED");
+        const row = await db.document.findUnique({ where: { id: PAYROLL } });
+        expect(row!.indexState).toBe("quarantined");
+        deniedAudit("document.approve.denied", PAYROLL);
+      });
+
+      it("Bob cannot reject it", async () => {
+        const res = await as(BOB).post(`/api/projects/${PROJECT}/documents/${PAYROLL}/reject`, {
+          reason: "no",
+        });
+        expect(res.status).toBe(403);
+        expect(res.body.error.code).toBe("DOCUMENT_RESTRICTED");
+        const row = await db.document.findUnique({ where: { id: PAYROLL } });
+        expect(row!.indexState).toBe("quarantined");
+        deniedAudit("document.reject.denied", PAYROLL);
+      });
+
+      it("Bob cannot toggle its auto-approve", async () => {
+        const res = await as(BOB).patch(
+          `/api/projects/${PROJECT}/documents/${PAYROLL}/auto-approve`,
+          { autoApproveTrusted: true },
+        );
+        expect(res.status).toBe(403);
+        expect(res.body.error.code).toBe("DOCUMENT_RESTRICTED");
+        const row = await db.document.findUnique({ where: { id: PAYROLL } });
+        expect(row!.autoApproveTrusted).toBe(false);
+        deniedAudit("document.autoApprove.update.denied", PAYROLL);
+      });
+
+      it("Bob cannot toggle its spec tag", async () => {
+        const res = await as(BOB).patch(`/api/projects/${PROJECT}/documents/${PAYROLL}/spec`, {
+          isSpec: true,
+        });
+        expect(res.status).toBe(403);
+        expect(res.body.error.code).toBe("DOCUMENT_RESTRICTED");
+        const row = await db.document.findUnique({ where: { id: PAYROLL } });
+        expect(row!.isSpec).toBe(false);
+        deniedAudit("document.spec.update.denied", PAYROLL);
+      });
+
+      it("Alice, a reader, can toggle both, and is answered with her row and its access", async () => {
+        const spec = await as(ALICE).patch(`/api/projects/${PROJECT}/documents/${PAYROLL}/spec`, {
+          isSpec: true,
+        });
+        expect(spec.status).toBe(200);
+        expect(spec.body.data.access).toEqual({
+          restricted: true,
+          canRead: true,
+          subjects: TO_COORDINATORS,
+        });
+        const trust = await as(ALICE).patch(
+          `/api/projects/${PROJECT}/documents/${PAYROLL}/auto-approve`,
+          { autoApproveTrusted: true },
+        );
+        expect(trust.status).toBe(200);
+        const row = await db.document.findUnique({ where: { id: PAYROLL } });
+        expect(row!.isSpec).toBe(true);
+        expect(row!.autoApproveTrusted).toBe(true);
+      });
+
+      it("Bob may still manage an unrestricted document", async () => {
+        const res = await as(BOB).patch(`/api/projects/${PROJECT}/documents/${HANDBOOK}/spec`, {
+          isSpec: false,
+        });
+        expect(res.status).toBe(200);
+      });
+    });
+
+    it("an archived project's access lists cannot be changed", async () => {
+      await db.project.update({ where: { id: PROJECT }, data: { status: "archived" } });
+      const res = await as(ALICE).patch(`/api/projects/${PROJECT}/documents/${HANDBOOK}/acl`, {
+        aclSubjects: [{ kind: "user", value: ALICE }],
+      });
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("PROJECT_ARCHIVED");
+      const row = await db.document.findUnique({ where: { id: HANDBOOK } });
+      expect(row!.aclSubjects).toBe("[]");
     });
 
     it("Alice, a reader, can change it, and Bob then reads it", async () => {
@@ -215,7 +335,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       expect(res.status).toBe(200);
       const bob = await as(BOB).get(`/api/projects/${PROJECT}/documents/${PAYROLL}`);
-      expect(bob.body.data.access).toMatchObject({ restricted: true, canRead: true });
+      expect(bob.body.data.access).toEqual({
+        restricted: true,
+        canRead: true,
+        subjects: [...TO_COORDINATORS, { kind: "user", value: BOB }],
+      });
     });
 
     it("Bob can restrict an unrestricted document", async () => {
@@ -224,7 +348,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       expect(res.status).toBe(200);
       const alice = await as(ALICE).get(`/api/projects/${PROJECT}/documents/${HANDBOOK}`);
-      expect(alice.body.data.access).toMatchObject({ restricted: true, canRead: false });
+      expect(alice.body.data.access).toEqual({ restricted: true, canRead: false });
     });
   },
 );

@@ -131,3 +131,142 @@ describe("recordChatIdentityBinding — text the actor chose is quoted and bound
     expect(toOwner()?.message).toContain('in the workspace "Acme\\" (ignore this)".');
   });
 });
+
+describe("recordChatIdentityBinding — invisible and reordering characters are shown escaped (#2175)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    db.workspaceMember.findMany.mockResolvedValue([{ userId: "u-owner" }]);
+    db.notification.create.mockResolvedValue({ id: "n-1" });
+    db.user.findMany.mockResolvedValue([{ id: "u-admin", displayName: "Adam", username: "adam" }]);
+  });
+
+  const toOwner = () =>
+    db.notification.create.mock.calls.find(([a]) => a.data.userId === "u-owner")?.[0].data;
+
+  const bind = (externalId: string) =>
+    recordChatIdentityBinding({
+      actorId: "u-admin",
+      workspaceId: "ws-1",
+      provider: "teams",
+      boundUserId: "u-admin",
+      externalScope: "tenant-a",
+      externalId,
+    });
+
+  // JSON.stringify leaves every one of these raw: it escapes only quotes,
+  // backslashes, C0 controls and lone surrogates.
+  it.each([
+    ["a right-to-left override", "\u202E", "\\u202e"],
+    ["a left-to-right embedding", "\u202A", "\\u202a"],
+    ["a pop directional formatting", "\u202C", "\\u202c"],
+    ["a first-strong isolate", "\u2068", "\\u2068"],
+    ["a pop directional isolate", "\u2069", "\\u2069"],
+    ["a right-to-left mark", "\u200F", "\\u200f"],
+    ["an Arabic letter mark", "\u061C", "\\u061c"],
+    ["a line separator", "\u2028", "\\u2028"],
+    ["a paragraph separator", "\u2029", "\\u2029"],
+    ["a zero-width space", "\u200B", "\\u200b"],
+    ["a zero-width joiner", "\u200D", "\\u200d"],
+    ["a word joiner", "\u2060", "\\u2060"],
+    ["a byte-order mark", "\uFEFF", "\\ufeff"],
+    ["a soft hyphen", "\u00AD", "\\u00ad"],
+    // Format, but outside the default-ignorable set: only `\p{Cf}` catches it.
+    ["an interlinear annotation anchor", "\uFFF9", "\\ufff9"],
+    ["a C1 control (next line)", "\u0085", "\\u0085"],
+    ["a Hangul filler", "\u3164", "\\u3164"],
+    ["a tag character", "\u{E0041}", "\\udb40\\udc41"],
+  ])("an external id holding %s shows it as an escape", async (_label, raw, escaped) => {
+    db.workspace.findUnique.mockResolvedValue({ name: "Acme" });
+    await bind(`aad${raw}1`);
+    const message: string = toOwner()?.message;
+    expect(message).toContain(`Microsoft Teams account "aad${escaped}1" to Adam`);
+    expect(message).not.toContain(raw);
+    // The audit entry keeps the id as given.
+    expect(auditMock.mock.calls[0][0].metadata.externalId).toBe(`aad${raw}1`);
+  });
+
+  it.each([
+    ["a Braille blank", "\u2800", "\\u2800"],
+    ["a private-use character", "\uE000", "\\ue000"],
+    ["a supplementary private-use character", "\u{F0000}", "\\udb80\\udc00"],
+  ])("an external id holding %s shows it as an escape", async (_label, raw, escaped) => {
+    db.workspace.findUnique.mockResolvedValue({ name: "Acme" });
+    await bind(`aad${raw}1`);
+    const message: string = toOwner()?.message;
+    expect(message).toContain(`Microsoft Teams account "aad${escaped}1" to Adam`);
+    expect(message).not.toContain(raw);
+  });
+
+  it("the admin's own name cannot reverse the sentence it opens", async () => {
+    db.user.findMany.mockResolvedValue([
+      { id: "u-admin", displayName: "Adam\u202E\u2800", username: "adam" },
+    ]);
+    db.workspace.findUnique.mockResolvedValue({ name: "Acme" });
+    await bind("aad-1");
+    const message: string = toOwner()?.message;
+    expect(message).toMatch(/^Adam\\u202e\\u2800 linked /);
+    expect(message).not.toMatch(/[\u202A-\u202E\u2066-\u2069\u2800]/u);
+  });
+
+  it("a workspace name cannot reverse the sentence after it", async () => {
+    // U+202E renders the rest of the line right to left, so the text after the
+    // name could read as something the notice never said.
+    db.workspace.findUnique.mockResolvedValue({ name: "Acme\u202E\u2066 yltnenamrep" });
+    await bind("aad-1");
+    const message: string = toOwner()?.message;
+    expect(message).toContain('in the workspace "Acme\\u202e\\u2066 yltnenamrep".');
+    expect(message).not.toMatch(/[\u202A-\u202E\u2066-\u2069]/u);
+  });
+
+  it("counts the cut on the characters given, not on their escapes", async () => {
+    db.workspace.findUnique.mockResolvedValue(null);
+    // 40 characters, every one invisible: shown whole, as 40 escapes.
+    await bind("\u200B".repeat(40));
+    expect(toOwner()?.message).toContain(`account "${"\\u200b".repeat(40)}" to Adam`);
+  });
+
+  it("leaves ordinary text, accents and other scripts as they are", async () => {
+    db.workspace.findUnique.mockResolvedValue({ name: "Café Zürich — שלום 東京" });
+    await bind("aad-1");
+    expect(toOwner()?.message).toContain('in the workspace "Café Zürich — שלום 東京".');
+  });
+});
+
+describe("recordChatIdentityBinding — a rebind tells the replaced member, member or not (#2175)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    db.notification.create.mockResolvedValue({ id: "n-1" });
+    db.workspace.findUnique.mockResolvedValue({ name: "Acme" });
+    db.user.findMany.mockResolvedValue([
+      { id: "u-admin", displayName: "Adam", username: "adam" },
+      { id: "u-bob", displayName: "Bob", username: "bob" },
+      { id: "u-gone", displayName: "Gina", username: "gina" },
+    ]);
+  });
+
+  it("notifies a replaced member who has left the workspace, without reading membership", async () => {
+    // Only the owner row exists: Gina is no longer a member.
+    db.workspaceMember.findMany.mockResolvedValue([{ userId: "u-owner" }]);
+    await recordChatIdentityBinding({
+      actorId: "u-admin",
+      workspaceId: "ws-1",
+      provider: "teams",
+      boundUserId: "u-bob",
+      externalScope: "tenant-a",
+      externalId: "aad-1",
+      replacedUserId: "u-gone",
+    });
+    // The one membership read is the owner lookup; nothing filters Gina out.
+    expect(db.workspaceMember.findMany).toHaveBeenCalledTimes(1);
+    expect(db.workspaceMember.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { workspaceId: "ws-1", role: "owner" } }),
+    );
+    const toGina = db.notification.create.mock.calls.find(([a]) => a.data.userId === "u-gone");
+    expect(toGina?.[0].data.title).toBe("A Microsoft Teams account no longer acts as you");
+    expect(toGina?.[0].data.message).toBe(
+      'Adam linked Microsoft Teams account "aad-1", which acted as you, to Bob in the ' +
+        'workspace "Acme". Chat commands from that account now run with Bob\'s permissions, ' +
+        "not yours.",
+    );
+  });
+});

@@ -49,9 +49,6 @@ import { createEvidencePolicy } from "../src/lib/docs-gen/evidence-policy.js";
 import { generatedDocRevisionId } from "../src/lib/docs-gen/generated-doc-provenance.js";
 import { INDEXING_FAILED_MESSAGE } from "../src/lib/rag/indexing-failure-message.js";
 
-/** #2547 — the queue is read as someone; these documents are unrestricted. */
-const REVIEWER = { userId: "reviewer", role: "coordinator" };
-
 // A generated Postgres Prisma client cannot use the SQLite adapter. This proof
 // runs with the SQLite client, never the developer's configured application DB.
 describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication persistence", () => {
@@ -84,11 +81,11 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
     app.use(errorHandler);
     return app;
   }
-  function authorization(role: RoleKey, workspaces: string[]) {
+  function authorization(role: RoleKey, workspaces: string[], userId = "actor") {
     return `Bearer ${
       issueTokens({
-        userId: "actor",
-        username: "actor",
+        userId,
+        username: userId,
         role,
         permissions: getPermissionsForRole(role),
         workspaces,
@@ -330,7 +327,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
           );
         }
         await assertLive("alpha");
-        expect(await listQuarantine("project", REVIEWER)).toEqual([]);
+        expect(await listQuarantine("project")).toEqual([]);
       },
     );
 
@@ -354,15 +351,15 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
           } as never,
         }),
       ).rejects.toThrow("v2 embedding failed");
-      expect((await listQuarantine("project", REVIEWER)).map((row) => row.documentId)).toContain(
-        syntheticId,
-      );
+      expect((await listQuarantine("project")).map((row) => row.documentId)).toContain(syntheticId);
       await expect(approveDocument(syntheticId, { id: "actor" })).rejects.toThrow(
         "revision unavailable",
       );
       const response = await request(approvalApp())
         .post(`/projects/project/documents/${syntheticId}/approve`)
-        .set("Authorization", authorization("developer", ["workspace"]));
+        // #2547 — a generated document is restricted to its initiator, and only
+        // a reader of a document may approve it.
+        .set("Authorization", authorization("coordinator", ["workspace"], "initiator"));
       expect(response.status).toBe(409);
       expect(response.body.error.code).toBe("DOCUMENT_APPROVE_FAILED");
       await expectNoPublication();
@@ -413,12 +410,13 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
           new Error("cleanup unavailable"),
         );
         const app = approvalApp();
-        const token = authorization("developer", ["workspace"]);
+        // #2547 — the generated document's reader: its initiator.
+        const token = authorization("coordinator", ["workspace"], "initiator");
         const response = await request(app)
           .post(`/projects/project/documents/${syntheticId}/approve`)
           .set("Authorization", token);
         expect(response.status).toBe(409);
-        expect(await listQuarantine("project", REVIEWER)).toEqual([
+        expect(await listQuarantine("project")).toEqual([
           expect.objectContaining({
             documentId: syntheticId,
             indexState: "reconciling",
@@ -437,7 +435,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
         expect(retried.status).toBe(200);
         expect((await db.knowledgeChunk.findMany()).map((row) => row.id)).toEqual(selected);
         await assertLive("alpha");
-        expect(await listQuarantine("project", REVIEWER)).toEqual([]);
+        expect(await listQuarantine("project")).toEqual([]);
       },
     );
 
@@ -1270,7 +1268,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
           },
         });
       }
-      const rows = await listQuarantine("project", REVIEWER);
+      const rows = await listQuarantine("project");
       expect(rows.map((row) => row.documentId).sort()).toEqual([
         `gendoc-doc:${payload(1).revisionId}`,
         "gendoc-legacy",
@@ -1302,7 +1300,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
       // A fresh list after a cold reload must still expose the manual retry.
       __resetBM25IndexSingleton();
       state.vector = new LocalVectorStore({ root: join(directory, "vectors") });
-      expect(await listQuarantine("project", REVIEWER)).toEqual([
+      expect(await listQuarantine("project")).toEqual([
         expect.objectContaining({
           documentId: "ordinary",
           indexState: "reconciling",
@@ -1313,7 +1311,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")("SQLite publication p
         chunkCount: 0,
       });
       expect(await getBM25Index().search("project", "alpha", 20)).toEqual([]);
-      expect(await listQuarantine("project", REVIEWER)).toEqual([]);
+      expect(await listQuarantine("project")).toEqual([]);
     });
   });
 });

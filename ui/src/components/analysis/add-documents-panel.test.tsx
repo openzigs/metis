@@ -53,29 +53,53 @@ describe("AddDocumentsPanel — #2547 restricted documents", () => {
     const { onSelectedDocsChange } = renderPanel([
       doc({ id: "d-pay", access: { restricted: true, canRead: true, subjects: toCoordinators } }),
     ]);
-    expect(screen.getByTestId("add-documents-restricted-d-pay")).toHaveTextContent("Restricted");
+    expect(screen.getByTestId("add-documents-restricted-badge-d-pay")).toHaveTextContent(
+      "Readable by role coordinator and admins",
+    );
+    expect(screen.queryByTestId("add-documents-restricted-d-pay")).toBeNull();
     expect(checkboxOf("d-pay")).not.toBeDisabled();
     fireEvent.click(checkboxOf("d-pay"));
     expect(onSelectedDocsChange).toHaveBeenCalledWith(["d-pay"]);
   });
 
-  it("lists a document restricted away from the member as unselectable and never checked", () => {
+  it("lists a document restricted away from the member as unselectable, naming no reader", () => {
     renderPanel(
       [
         doc({
           id: "d-pay",
-          access: { restricted: true, canRead: false, subjects: toCoordinators },
+          filename: "Restricted",
+          restricted: true,
+          access: { restricted: true, canRead: false },
         }),
         doc({ id: "d-open", access: { restricted: false, canRead: true, subjects: [] } }),
       ],
-      ["d-pay"],
+      [],
+    );
+    expect(screen.getByTestId("add-documents-restricted-badge-d-pay")).toHaveTextContent(
+      /^Restricted$/,
     );
     expect(screen.getByTestId("add-documents-restricted-d-pay")).toHaveTextContent(
-      "you cannot read it",
+      "You don't have access to this document",
     );
     expect(checkboxOf("d-pay")).toBeDisabled();
     expect(checkboxOf("d-pay")).not.toBeChecked();
     expect(checkboxOf("d-open")).not.toBeDisabled();
-    expect(screen.queryByTestId("add-documents-restricted-d-open")).toBeNull();
+    expect(screen.queryByTestId("add-documents-restricted-badge-d-open")).toBeNull();
+  });
+
+  it("drops a selected document from the selection once a refetch marks it unreadable", () => {
+    const { onSelectedDocsChange } = renderPanel(
+      [doc({ id: "d-pay", access: { restricted: true, canRead: false } }), doc({ id: "d-open" })],
+      ["d-pay", "d-open"],
+    );
+    expect(onSelectedDocsChange).toHaveBeenCalledWith(["d-open"]);
+  });
+
+  it("leaves the selection alone when every selected document is readable", () => {
+    const { onSelectedDocsChange } = renderPanel(
+      [doc({ id: "d-pay", restricted: true }), doc({ id: "d-open" })],
+      ["d-open"],
+    );
+    expect(onSelectedDocsChange).not.toHaveBeenCalled();
   });
 });

@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { hasPermission } from "@metis/shared";
 import { useAuth } from "@/lib/auth-context";
 import { documentsApi, projectsApi, type DocumentRow } from "@/lib/projects-api";
+import { isUnreadableDocument } from "@/lib/document-access";
 import { ApiError } from "@/lib/api-client";
 import { isDocumentAwaitingReview, quarantineHref } from "@/lib/project-pipeline";
 import { queryKeys } from "@/lib/query-keys";
@@ -120,9 +121,9 @@ export default function ProjectDocumentsPage() {
         ) : docs.data && docs.data.items.length > 0 ? (
           <ul className="divide-y" data-testid="document-list">
             {docs.data.items.map((d) => {
-              // #2547 — a member the document is restricted away from may not
-              // change its list (the server refuses it) nor start a check from it.
-              const unreadable = d.access?.canRead === false;
+              // #2546 / #2547 — a member the document is restricted away from may
+              // not change its list (the server refuses it) nor start a check from it.
+              const unreadable = isUnreadableDocument(d);
               const accessOpen = accessOpenFor === d.id;
               return (
                 <li
@@ -144,7 +145,20 @@ export default function ProjectDocumentsPage() {
                         {(d.sizeBytes / 1024).toFixed(1)} KB
                         {d.errorMessage ? ` · ${d.errorMessage}` : ""}
                       </p>
-                      <RestrictedBadge access={d.access} testId={`document-restricted-${d.id}`} />
+                      <RestrictedBadge
+                        access={unreadable ? { restricted: true, canRead: false } : d.access}
+                        testId={`document-restricted-badge-${d.id}`}
+                      />
+                      {/* #2546 — its access list does not name the caller. */}
+                      {unreadable ? (
+                        <p
+                          className="text-xs text-muted-foreground"
+                          data-testid={`document-restricted-${d.id}`}
+                        >
+                          You don&apos;t have access to this document, so its name is hidden and
+                          your analyses don&apos;t read it.
+                        </p>
+                      ) : null}
                       {isDocumentAwaitingReview(d) ? (
                         <Link
                           href={quarantineHref(id)}
@@ -156,7 +170,8 @@ export default function ProjectDocumentsPage() {
                       ) : null}
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
-                      {/* #2272 — each requirement the document holds, checked across the portfolio. */}
+                      {/* #2272 — each requirement the document holds, checked across the portfolio.
+                          #2546 — not offered for one the caller cannot read. */}
                       {d.source !== "repo" && d.status === "ready" && !unreadable ? (
                         <PortfolioCheckLink
                           from={{ documentId: d.id, title: d.title ?? d.filename }}

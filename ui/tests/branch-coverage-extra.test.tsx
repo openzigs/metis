@@ -287,4 +287,31 @@ describe("AddDocumentsPanel — branch coverage", () => {
     }
     expect(document.body).toBeTruthy();
   });
+
+  it("#2546 — a document restricted from the caller cannot be ticked, and says why", () => {
+    const Wrapper = makeWrapper({});
+    const docs = [
+      makeDoc("d-open", "brief.md", "ready"),
+      { ...makeDoc("d-restricted", "Restricted", "ready"), restricted: true },
+    ];
+    render(
+      <Wrapper>
+        <AddDocumentsPanel
+          projectId="p1"
+          docs={docs}
+          selectedDocs={[]}
+          onSelectedDocsChange={vi.fn()}
+          onInvalidateDocs={vi.fn().mockResolvedValue(undefined)}
+        />
+      </Wrapper>,
+    );
+    const box = (id: string) =>
+      screen.getByTestId(`add-documents-row-${id}`).querySelector("input") as HTMLInputElement;
+    expect(box("d-restricted").disabled).toBe(true);
+    expect(box("d-open").disabled).toBe(false);
+    expect(screen.getByTestId("add-documents-restricted-d-restricted")).toHaveTextContent(
+      /don't have access/,
+    );
+    expect(screen.queryByTestId("add-documents-restricted-d-open")).toBeNull();
+  });
 });

@@ -41,6 +41,9 @@ const { selectPrismaAdapter } = await import("../src/lib/prisma.js");
 const { saveDocumentAcl, AclGroupUnsupportedError } = await import("../src/lib/rag/acl.js");
 const { writeQuarantine } = await import("../src/lib/rag/quarantine.js");
 
+/** #2547 — `saveDocumentAcl` requires its caller; a test writer is an admin, which reads every list. */
+const ACL_ADMIN = { userId: "acl-test-admin", role: "admin" };
+
 const SUFFIX = randomUUID().slice(0, 8);
 const USER = `u-2356pg-${SUFFIX}`;
 const WORKSPACE = `ws-2356pg-${SUFFIX}`;
@@ -219,9 +222,15 @@ describe.skipIf(!enabled)("#2356 — concurrent document ACL saves (Postgres)", 
     const { client, gate } = holdFirstTransaction(db);
     state.db = client;
 
-    const aliceSave = saveDocumentAcl({ documentId: DOC, projectId: PROJECT, aclSubjects: alice });
+    const aliceSave = saveDocumentAcl({
+      actor: ACL_ADMIN,
+      documentId: DOC,
+      projectId: PROJECT,
+      aclSubjects: alice,
+    });
     await gate.holding;
     const bobSave = saveDocumentAcl({
+      actor: ACL_ADMIN,
       documentId: DOC,
       projectId: PROJECT,
       aclSubjects: bob,
@@ -246,9 +255,19 @@ describe.skipIf(!enabled)("#2356 — concurrent document ACL saves (Postgres)", 
     const { client, gate } = holdFirstTransaction(db);
     state.db = client;
 
-    const aliceSave = saveDocumentAcl({ documentId: DOC, projectId: PROJECT, aclSubjects: alice });
+    const aliceSave = saveDocumentAcl({
+      actor: ACL_ADMIN,
+      documentId: DOC,
+      projectId: PROJECT,
+      aclSubjects: alice,
+    });
     await gate.holding;
-    const bobSave = saveDocumentAcl({ documentId: DOC, projectId: PROJECT, aclSubjects: bob });
+    const bobSave = saveDocumentAcl({
+      actor: ACL_ADMIN,
+      documentId: DOC,
+      projectId: PROJECT,
+      aclSubjects: bob,
+    });
     await untilUpdateWaitsOnLock(db);
     gate.release();
 
@@ -278,12 +297,15 @@ describe.skipIf(!enabled)("#2356 — concurrent document ACL saves (Postgres)", 
     });
     await gate.holding;
     let saved = false;
-    const save = saveDocumentAcl({ documentId: DOC, projectId: PROJECT, aclSubjects: alice }).then(
-      (r) => {
-        saved = true;
-        return r;
-      },
-    );
+    const save = saveDocumentAcl({
+      actor: ACL_ADMIN,
+      documentId: DOC,
+      projectId: PROJECT,
+      aclSubjects: alice,
+    }).then((r) => {
+      saved = true;
+      return r;
+    });
     await untilUpdateWaitsOnLock(db, () => saved);
     gate.release();
 

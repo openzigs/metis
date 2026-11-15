@@ -1076,10 +1076,7 @@ describe.runIf(readGeneratedClientProvider() === "sqlite")(
         db.quarantineChunk.count({ where: { documentId: syntheticId(), ord: { gte: 0 } } });
       const liveCount = () => db.knowledgeChunk.count({ where: { documentId: syntheticId() } });
       const row = () => db.document.findUniqueOrThrow({ where: { id: syntheticId() } });
-      const listed = async () =>
-        (await listQuarantine("project", { userId: "reviewer", role: "coordinator" })).map(
-          (d) => d.documentId,
-        );
+      const listed = async () => (await listQuarantine("project")).map((d) => d.documentId);
 
       /** Run the vector upsert, then do `after` — the step a concurrent actor takes. */
       function afterNextVectorUpsert(after: () => unknown) {

@@ -19,11 +19,12 @@
  * Collapsed by default; toggled via the in-house `aria-expanded` convention
  * (no accordion primitive), matching `data-mappings-panel.tsx`.
  */
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
 import { urlSuggestionMessage, urlProtocolSuggestionMessage } from "@/lib/error-suggestion";
 import { documentsApi, type DocumentRow } from "@/lib/projects-api";
+import { isUnreadableDocument } from "@/lib/document-access";
 import { DocumentName } from "@/components/projects/document-name";
 import { RestrictedBadge } from "@/components/projects/restricted-badge";
 import { useRepoNames } from "@/hooks/use-repo-names";
@@ -79,6 +80,16 @@ export function AddDocumentsPanel({
   const panelId = useId();
   // #23 — label repo files with the repository's name, not the id tail.
   const repoNames = useRepoNames(projectId);
+
+  // #2547 — a document picked before a refetch marked it unreadable (its
+  // access list changed) leaves the selection, so what the run is sent and
+  // the change request is named after match the unchecked box.
+  useEffect(() => {
+    const unreadable = new Set(docs.filter(isUnreadableDocument).map((d) => d.id));
+    if (selectedDocs.some((id) => unreadable.has(id))) {
+      onSelectedDocsChange(selectedDocs.filter((id) => !unreadable.has(id)));
+    }
+  }, [docs, selectedDocs, onSelectedDocsChange]);
 
   /** Await invalidation, then auto-select the freshly-ingested document. */
   async function handleAdded(doc: DocumentRow): Promise<void> {
@@ -148,7 +159,7 @@ export function AddDocumentsPanel({
           const ready = d.status === "ready";
           // #2547 — a document restricted away from the caller is listed,
           // marked, and cannot be picked for the change request.
-          const unreadable = d.access?.canRead === false;
+          const unreadable = isUnreadableDocument(d);
           const checked = selectedDocs.includes(d.id) && !unreadable;
           return (
             <label
@@ -159,6 +170,7 @@ export function AddDocumentsPanel({
               <input
                 type="checkbox"
                 checked={checked}
+                // #2546 / #2547 — a document restricted from the caller is not read by their run.
                 disabled={!ready || unreadable}
                 onChange={(e) => {
                   onSelectedDocsChange(
@@ -171,8 +183,18 @@ export function AddDocumentsPanel({
               {/* Issue #363 — path over repository label; the internal key
                   is only the tooltip. */}
               <DocumentName filename={d.filename} source={d.source} repoNames={repoNames} />
-              <RestrictedBadge access={d.access} testId={`add-documents-restricted-${d.id}`} />
-              {!ready ? (
+              <RestrictedBadge
+                access={unreadable ? { restricted: true, canRead: false } : d.access}
+                testId={`add-documents-restricted-badge-${d.id}`}
+              />
+              {unreadable ? (
+                <span
+                  className="ml-auto text-xs text-muted-foreground"
+                  data-testid={`add-documents-restricted-${d.id}`}
+                >
+                  You don&apos;t have access to this document
+                </span>
+              ) : !ready ? (
                 <span
                   className={`ml-auto inline-block rounded border px-1.5 py-0.5 text-[10px] ${statusBadgeClass(d.status)}`}
                   data-testid={`add-documents-status-${d.id}`}

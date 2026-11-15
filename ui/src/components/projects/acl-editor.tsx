@@ -33,6 +33,10 @@ type AddableKind = Exclude<AclSubject["kind"], "group">;
 /**
  * #2547 — `subjects` would shut `viewer` out: a non-empty list naming neither
  * their user id nor their role, and no admin bypass (the server's rule).
+ * An approximation for a warning only: `viewer.role` is the session's role,
+ * while the server decides on the durable role (`resolveAclActor`), so for a
+ * member whose role changed since sign-in it may be wrong either way, and the
+ * warning says so. The server stays authoritative.
  */
 export function aclLocksOut(
   subjects: AclSubject[],
@@ -147,7 +151,8 @@ export function AclEditor(props: {
       {aclLocksOut(subjects, user) ? (
         <p className="text-xs text-warning" role="status" data-testid="acl-lockout-warning">
           You are not on this list: once it is saved you will not be able to read this document or
-          change who can. Add yourself or your role to keep access.
+          change who can. Add yourself or your role to keep access. This uses your role from when
+          you signed in; if it has changed since, this warning may be out of date.
         </p>
       ) : null}
       {save.error ? (

@@ -2436,7 +2436,13 @@ async function requirementCountsByAnalysis(
   return counts;
 }
 
-export async function listAnalysesForProject(projectId: string) {
+export async function listAnalysesForProject(
+  projectId: string,
+  opts: {
+    /** #2546 — who reads the list: the source documents they cannot see go unnamed. */
+    reader?: SourceReader;
+  } = {},
+) {
   const rows = await prisma.analysis.findMany({
     where: { projectId, deletedAt: null },
     // #1230 — `id` breaks a `startedAt` tie, as `defaultRequirementsRunIdFor` does.
@@ -2482,18 +2488,22 @@ export async function listAnalysesForProject(projectId: string) {
     return null;
   });
   // #2341 — each run's title (stored or generated) and sources, one document read.
-  const details = await changeRequestDetails(projectId, runs);
-  return runs.map(({ agentResults, ...r }) => ({
+  // #2546 — a source document the reader cannot see is not named to them.
+  const details = await changeRequestDetails(projectId, runs, opts.reader);
+  // #2546 — the raw `metadata` is read here and never sent: it holds what a
+  // run's passes wrote (the reviewed list, web research, ...), which only its
+  // snapshot shows, redacted for its reader (`redactAnalysisSnapshot`). No
+  // client reads it from the list.
+  return runs.map(({ agentResults, metadata, ...r }) => ({
     ...r,
     ...(details.get(r.id) as ChangeRequestDetails),
     failedAgents: analysisFailedAgents(agentResults),
     // #1143 — and which agents lost malformed citations: "completed with warnings".
-    droppedCitations: extractCapability(parseMetadata(r.metadata))?.droppedCitations ?? [],
+    droppedCitations: extractCapability(parseMetadata(metadata))?.droppedCitations ?? [],
     // #2343 — "Questions waiting (N)" on the change-request list: a run with
     // questions on completes with them open (#2330), counted as its Questions
     // tab and Home count them.
-    openQuestions:
-      r.status === "completed" ? (openQuestionCount(parseMetadata(r.metadata)) ?? 0) : 0,
+    openQuestions: r.status === "completed" ? (openQuestionCount(parseMetadata(metadata)) ?? 0) : 0,
     requirementCounts: counts.get(r.id) as RequirementCounts,
     ledgerTokens: ledger ? (ledger.get(r.id) ?? { withCache: 0, withoutCache: 0 }) : null,
   }));
@@ -2537,7 +2547,8 @@ export async function getAnalysisSnapshot(
   const sourceById = new Map([...cited].map(([docId, d]) => [docId, d.source]));
   const snapshot = toSnapshot(row, crossDocFindings, sourceById);
   // #2341 — the change request's title and what it was started from.
-  const details = (await changeRequestDetails(row.projectId, [row])).get(
+  // #2546 — a source document the reader cannot see is not named to them.
+  const details = (await changeRequestDetails(row.projectId, [row], opts.reader)).get(
     row.id,
   ) as ChangeRequestDetails;
   // #2222 — the version each requirement was analysed at, so the findings it

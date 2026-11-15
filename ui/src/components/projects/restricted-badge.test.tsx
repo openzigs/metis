@@ -30,17 +30,40 @@ describe("RestrictedBadge (#2547)", () => {
     const badge = screen.getByTestId("b");
     expect(badge).toHaveTextContent("Restricted");
     expect(badge).toHaveTextContent("Readable by role coordinator, user u-alice and admins");
-    expect(badge).not.toHaveTextContent("you cannot read it");
   });
 
-  it("tells a member left off the list that they cannot read it", () => {
-    render(
+  it("says only Restricted to a member left off the list: no readers named", () => {
+    render(<RestrictedBadge access={{ restricted: true, canRead: false }} testId="b" />);
+    expect(screen.getByTestId("b")).toHaveTextContent(/^Restricted$/);
+  });
+
+  it("does not name a legacy group subject as a reader: it matches no one (#2261)", () => {
+    const { rerender } = render(
       <RestrictedBadge
-        access={{ restricted: true, canRead: false, subjects: [{ kind: "role", value: "x" }] }}
+        access={{
+          restricted: true,
+          canRead: true,
+          subjects: [
+            { kind: "group", value: "finance" },
+            { kind: "role", value: "coordinator" },
+          ],
+        }}
         testId="b"
       />,
     );
-    expect(screen.getByTestId("b")).toHaveTextContent("you cannot read it");
+    expect(screen.getByTestId("b")).toHaveTextContent("Readable by role coordinator and admins");
+    expect(screen.getByTestId("b")).not.toHaveTextContent("finance");
+    rerender(
+      <RestrictedBadge
+        access={{
+          restricted: true,
+          canRead: true,
+          subjects: [{ kind: "group", value: "finance" }],
+        }}
+        testId="b"
+      />,
+    );
+    expect(screen.getByTestId("b")).toHaveTextContent("Readable by admins only");
   });
 
   it("describes subjects in the editor's words", () => {

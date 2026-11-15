@@ -37,9 +37,21 @@ import { getKnowledgeService, type KnowledgeService } from "../lib/rag/knowledge
 import { getIngestQueue, type IngestQueue } from "../lib/rag/ingest-queue.js";
 import { getProject } from "../lib/projects/project-service.js";
 import { approveDocument, rejectDocument } from "../lib/rag/quarantine.js";
-import { documentAccess, resolveAclActor, saveDocumentAcl, type AclActor } from "../lib/rag/acl.js";
+import {
+  AclEditForbiddenError,
+  resolveAclActor,
+  saveDocumentAcl,
+  type AclActor,
+} from "../lib/rag/acl.js";
 import { aclSaveErrorAsHttp, inactiveCallerAsUnauthenticated } from "./acl-errors.js";
 import { createChildLogger } from "../lib/logger.js";
+import {
+  canSeeDocument,
+  documentAccessOf,
+  documentVisibilityFor,
+  restrictedDocumentRow,
+  type DocumentAccess,
+} from "../lib/documents/document-visibility.js";
 import {
   approvalFailureMessage,
   indexingFailureMessage,
@@ -69,12 +81,36 @@ function callerAclActor(req: Request): Promise<AclActor> {
   });
 }
 
-/** #2547 — a document row with its access list as the caller sees it. */
-function withAccess<T extends { aclSubjects: string; errorMessage?: string | null }>(
-  row: T,
-  actor: AclActor,
-) {
-  return { ...publicDocumentRow(row), access: documentAccess(row.aclSubjects, actor) };
+/**
+ * #2547 — owner policy: a member who cannot read a document under its current
+ * access list cannot manage it either (approve, reject, the auto-approve and
+ * spec toggles; the access list itself is refused inside `saveDocumentAcl`).
+ * The row is already listed to them as restricted, so a 403 names nothing the
+ * list does not; the attempt is audited as `<action>.denied`.
+ */
+async function refuseUnlessReader(
+  actorId: string,
+  doc: { id: string; aclSubjects: string },
+  projectId: string,
+  action: string,
+): Promise<void> {
+  if (await canSeeDocument(actorId, doc)) return;
+  auditManageDenied(actorId, doc.id, projectId, action);
+  throw new AppError(
+    403,
+    "DOCUMENT_RESTRICTED",
+    "This document is restricted and you are not one of its readers, so you cannot manage it. Ask one of its readers or an admin.",
+  );
+}
+
+/** #2547 — the audit row of a refused change to a document the caller cannot read. */
+function auditManageDenied(actorId: string, documentId: string, projectId: string, action: string) {
+  audit({
+    actor: { id: actorId },
+    action: `${action}.denied`,
+    target: { type: "document", id: documentId },
+    metadata: { projectId, reason: "document_restricted" },
+  });
 }
 
 async function ensureProjectActive(projectId: string) {
@@ -384,10 +420,9 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         take: limit + 1,
       });
       const page = rows.slice(0, limit);
-      const aclActor = await callerAclActor(req);
       res.json(
         ok({
-          items: page.map((item) => withAccess(item, aclActor)),
+          items: await readableDocumentRows(actorFromReq(req).id, page),
           limit,
           nextCursor: rows.length > limit ? encodeDocumentCursor(page[page.length - 1]) : null,
         }),
@@ -401,10 +436,9 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       prisma.document.count({ where }),
     ]);
     const items = rows.slice(0, limit);
-    const aclActor = await callerAclActor(req);
     res.json(
       ok({
-        items: items.map((item) => withAccess(item, aclActor)),
+        items: await readableDocumentRows(actorFromReq(req).id, items),
         total,
         limit,
         offset,
@@ -421,7 +455,8 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       where: { id: documentId, projectId, deletedAt: null },
     });
     if (!document) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
-    res.json(ok(withAccess(document, await callerAclActor(req))));
+    const [row] = await readableDocumentRows(actorFromReq(req).id, [document]);
+    res.json(ok(row));
   });
 
   // ── Delete ──────────────────────────────────────────────────────────────
@@ -456,10 +491,12 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         where: { id: documentId, projectId, deletedAt: null },
       });
       if (!doc) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
+      await refuseUnlessReader(actor.id, doc, projectId, "document.approve");
       try {
         const result = await approveDocument(documentId, { id: actor.id });
         const refreshed = await prisma.document.findUnique({ where: { id: documentId } });
-        res.json(ok({ document: publicDocumentRow(refreshed), ...result }));
+        // #2546 — the row as the caller may see it, as the list shows it.
+        res.json(ok({ document: await readableDocumentRow(actor.id, refreshed), ...result }));
       } catch (err) {
         // #108 — the cleanup exception stays in the server log.
         log.warn("document approve failed", { documentId, error: String(err) });
@@ -481,6 +518,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         where: { id: documentId, projectId, deletedAt: null },
       });
       if (!doc) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
+      await refuseUnlessReader(actor.id, doc, projectId, "document.reject");
       const reasonParse = z
         .object({ reason: z.string().max(500).optional() })
         .safeParse(req.body ?? {});
@@ -488,7 +526,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       try {
         await rejectDocument(documentId, { id: actor.id }, reason);
         const refreshed = await prisma.document.findUnique({ where: { id: documentId } });
-        res.json(ok({ document: publicDocumentRow(refreshed) }));
+        res.json(ok({ document: await readableDocumentRow(actor.id, refreshed) }));
       } catch (err) {
         // #108 — the cleanup exception stays in the server log.
         log.warn("document reject failed", { documentId, error: String(err) });
@@ -512,17 +550,23 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
           issues: parsed.error.flatten(),
         });
       }
+      // #2547 — an archived project's access lists are frozen like its
+      // documents, on every surface that offers the editor.
+      await ensureProjectActive(projectId);
       // #2261 — a NEW group subject is refused (400 ACL_GROUP_UNSUPPORTED).
       // #2356 — checked against the ACL the write replaces, not one read
       // earlier: a group another editor just removed is not "already held".
       // #2547 — so is the caller: one the document is restricted away from
-      // may not rewrite its list (403 ACL_EDIT_FORBIDDEN).
+      // may not rewrite its list (403 ACL_EDIT_FORBIDDEN, audited).
       const saved = await saveDocumentAcl({
         documentId,
         projectId,
         aclSubjects: parsed.data.aclSubjects,
         actor: await callerAclActor(req),
       }).catch((err: unknown) => {
+        if (err instanceof AclEditForbiddenError) {
+          auditManageDenied(actor.id, documentId, projectId, "document.acl.update");
+        }
         throw aclSaveErrorAsHttp(err);
       });
       if (!saved) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
@@ -560,6 +604,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         where: { id: documentId, projectId, deletedAt: null },
       });
       if (!doc) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
+      await refuseUnlessReader(actor.id, doc, projectId, "document.autoApprove.update");
       const updated = await prisma.document.update({
         where: { id: documentId },
         data: { autoApproveTrusted: parsed.data.autoApproveTrusted },
@@ -570,7 +615,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         target: { type: "document", id: documentId },
         metadata: { projectId, autoApproveTrusted: parsed.data.autoApproveTrusted },
       });
-      res.json(ok(publicDocumentRow(updated)));
+      res.json(ok(await readableDocumentRow(actor.id, updated)));
     },
   );
 
@@ -591,6 +636,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         where: { id: documentId, projectId, deletedAt: null },
       });
       if (!doc) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
+      await refuseUnlessReader(actor.id, doc, projectId, "document.spec.update");
       const updated = await prisma.document.update({
         where: { id: documentId },
         data: { isSpec },
@@ -601,7 +647,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         target: { type: "document", id: documentId },
         metadata: { projectId, isSpec },
       });
-      res.json(ok(publicDocumentRow(updated)));
+      res.json(ok(await readableDocumentRow(actor.id, updated)));
     },
   );
 
@@ -703,6 +749,40 @@ function decodeDocumentCursor(raw: unknown): { uploadedAt: Date; id: string } {
   const cursor = documentCursorSchema.safeParse(parsed);
   if (!cursor.success) throw new AppError(400, "INVALID_CURSOR", "Invalid document list cursor");
   return { uploadedAt: new Date(cursor.data.t), id: cursor.data.id };
+}
+
+/**
+ * #2546 — the rows as `userId` may see them: one whose access list does not
+ * name them keeps its place (the list's length and paging are unchanged) but
+ * is the allowlisted `restrictedDocumentRow`: marked `restricted`, named by the
+ * placeholder, and without its access list, path, uploader or error text, so
+ * the page offers nothing to do with it that reads its text.
+ */
+async function readableDocumentRows<
+  T extends { aclSubjects: string; filename: string; errorMessage: string | null },
+>(
+  userId: string,
+  rows: readonly T[],
+): Promise<
+  Array<
+    | (T & { access: DocumentAccess })
+    | (ReturnType<typeof restrictedDocumentRow<T>> & { access: DocumentAccess })
+  >
+> {
+  const sees = await documentVisibilityFor(userId, rows);
+  // #2547 — each row's `access`: who reads it, only to one who may read it.
+  return rows.map((row) =>
+    sees(row)
+      ? { ...publicDocumentRow(row), access: documentAccessOf(row, true) }
+      : { ...restrictedDocumentRow(publicDocumentRow(row)), access: documentAccessOf(row, false) },
+  );
+}
+
+/** One row (or none) as `userId` may see it: see {@link readableDocumentRows}. */
+async function readableDocumentRow<
+  T extends { aclSubjects: string; filename: string; errorMessage: string | null },
+>(userId: string, row: T | null) {
+  return row ? (await readableDocumentRows(userId, [row]))[0]! : null;
 }
 
 function clampInt(raw: unknown, fallback: number, min: number, max: number): number {

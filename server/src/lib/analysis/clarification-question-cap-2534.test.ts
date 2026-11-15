@@ -91,6 +91,8 @@ function listed(user: string): string[] {
 function documentProvider(
   grade: (key: string, i: number) => Record<string, unknown> = () => ({}),
   extra: unknown[] = [],
+  /** Which listed ambiguities the model writes a question for. */
+  keep: (key: string, i: number) => boolean = () => true,
 ) {
   const prompts: string[] = [];
   const chat = vi.fn(async (messages: ChatMessage[]): Promise<ChatResponse> => {
@@ -102,19 +104,21 @@ function documentProvider(
       } as ChatResponse;
     }
     prompts.push(user);
-    const questions = listed(user).map((key, i) => {
-      const [requirementId, ambiguityField] = key.split(":");
-      return {
-        requirementId,
-        ambiguityField,
-        uncertainty: "ambiguity",
-        divergent: true,
-        impact: "medium",
-        question: `What is meant by ${ambiguityField} in ${requirementId}?`,
-        context: "c",
-        ...grade(key, i),
-      };
-    });
+    const questions = listed(user)
+      .filter(keep)
+      .map((key, i) => {
+        const [requirementId, ambiguityField] = key.split(":");
+        return {
+          requirementId,
+          ambiguityField,
+          uncertainty: "ambiguity",
+          divergent: true,
+          impact: "medium",
+          question: `What is meant by ${ambiguityField} in ${requirementId}?`,
+          context: "c",
+          ...grade(key, i),
+        };
+      });
     return { content: JSON.stringify({ questions: [...questions, ...extra] }) } as ChatResponse;
   });
   const provider = {
@@ -254,5 +258,90 @@ describe("#2534 — a round's question call over a document's hundreds of ambigu
       sourceQuestions: false,
     });
     expect(listed(prompts[0]!)).toHaveLength(61 * FIELDS.length);
+  });
+});
+
+/** A document with exactly `open` open ambiguities, four to a requirement. */
+function documentWith(open: number): StructuredRequirements {
+  const requirements = Array.from({ length: Math.ceil(open / FIELDS.length) }, (_, i) =>
+    requirement(i),
+  );
+  const last = requirements.at(-1)!;
+  last.ambiguities = last.ambiguities.slice(0, open - (requirements.length - 1) * FIELDS.length);
+  return { requirements, totalAmbiguities: open, totalEvidenceNeeds: 0 };
+}
+
+describe("#2543 — a round counts the open ambiguities its question call left out", () => {
+  const cap = QUESTION_CANDIDATES_PER_ROUND;
+  const roundOf = (id: string) => (store.get(id) as ClarificationState).rounds.at(-1)!;
+
+  it("carries the cap's remainder on the round, apart from the questions not asked", async () => {
+    const { provider } = documentProvider();
+    await new ClarificationDialog({ provider }).startOrContinue("a1", DOCUMENT);
+    // Read back through the store, as the route does.
+    const round = roundOf("a1");
+    expect(round.notConsidered).toBe(DOCUMENT.totalAmbiguities - cap);
+    expect(round.notAsked).toBe(cap - MAX_QUESTIONS_PER_ROUND);
+  });
+
+  it("counts a chosen ambiguity the model wrote no question for", async () => {
+    // 4 of the cap's 24 chosen ambiguities get no question: counted, not lost.
+    const { provider } = documentProvider(
+      () => ({}),
+      [],
+      (_key, i) => i >= 4,
+    );
+    await new ClarificationDialog({ provider, sourceQuestions: true }).startOrContinue(
+      "unwritten",
+      DOCUMENT,
+    );
+    expect(roundOf("unwritten").notConsidered).toBe(DOCUMENT.totalAmbiguities - cap + 4);
+  });
+
+  it("leaves none out at the cap, and one just past it", async () => {
+    const { provider } = documentProvider();
+    const dialog = new ClarificationDialog({ provider, sourceQuestions: true });
+    await dialog.startOrContinue("at-cap", documentWith(cap));
+    expect(roundOf("at-cap").notConsidered).toBeUndefined();
+    expect(roundOf("at-cap").notAsked).toBe(cap - MAX_QUESTIONS_PER_ROUND);
+    await dialog.startOrContinue("past-cap", documentWith(cap + 1));
+    expect(roundOf("past-cap").notConsidered).toBe(1);
+    expect(roundOf("past-cap").notAsked).toBe(cap - MAX_QUESTIONS_PER_ROUND);
+  });
+
+  it("counts against what is still open in a later round", async () => {
+    const { provider } = documentProvider();
+    const dialog = new ClarificationDialog({ provider, sourceQuestions: true });
+    let state = await dialog.startOrContinue("a1", DOCUMENT);
+    const answers = state.rounds[0]!.questions.map((q) => ({ questionId: q.id, answer: "yes" }));
+    ({ state } = await dialog.submitAnswers("a1", answers, DOCUMENT));
+    const addressed = addressedAmbiguities(state).size;
+    expect(addressed).toBeGreaterThanOrEqual(MAX_QUESTIONS_PER_ROUND);
+    await dialog.startOrContinue("a1", DOCUMENT);
+    expect(roundOf("a1").round).toBe(2);
+    expect(roundOf("a1").notConsidered).toBe(DOCUMENT.totalAmbiguities - addressed - cap);
+  });
+
+  it("leaves none out of a round that asks the open ambiguities as written", async () => {
+    // Every written question builds the same thing whichever way: set aside,
+    // so nothing is worth asking and the round falls back to what is open —
+    // the one ambiguity the call left out.
+    const { provider } = documentProvider(() => ({ divergent: false }));
+    await new ClarificationDialog({ provider, sourceQuestions: true }).startOrContinue(
+      "a1",
+      documentWith(cap + 1),
+    );
+    const round = roundOf("a1");
+    expect(round.questions).toHaveLength(1);
+    expect(round.notConsidered).toBeUndefined();
+  });
+
+  it("leaves the legacy mode's rounds without the count: it writes every question", async () => {
+    const { provider } = documentProvider();
+    await new ClarificationDialog({ provider, sourceQuestions: false }).startOrContinue(
+      "a1",
+      DOCUMENT,
+    );
+    expect(roundOf("a1").notConsidered).toBeUndefined();
   });
 });

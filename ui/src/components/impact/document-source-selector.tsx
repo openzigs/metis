@@ -15,18 +15,17 @@ export interface SourceDocument {
   id: string;
   filename: string;
   projectName: string;
-  /** #2547 — the document has an access list. */
+  /**
+   * #2547 — the document has an access list the caller is on. (One it leaves
+   * out is not offered at all: the page drops it, #2546.)
+   */
   restricted?: boolean;
-  /** #2547 — the list leaves the caller out: listed, marked, not selectable. */
-  unreadable?: boolean;
 }
 
-/** #2547 — the option's text: a restricted document says so, and why it cannot be picked. */
+/** #2547 — the option's text: a restricted document says so. */
 function optionLabel(doc: SourceDocument): string {
   const base = `${doc.filename} (${doc.projectName})`;
-  if (doc.unreadable) return `${base} — restricted, you cannot read it`;
-  if (doc.restricted) return `${base} — restricted`;
-  return base;
+  return doc.restricted ? `${base} — restricted` : base;
 }
 
 export interface DocumentSourceSelectorProps {
@@ -104,7 +103,7 @@ export function DocumentSourceSelector({
         >
           <option value="">Select a document…</option>
           {documents.map((doc) => (
-            <option key={doc.id} value={doc.id} disabled={doc.unreadable}>
+            <option key={doc.id} value={doc.id}>
               {optionLabel(doc)}
             </option>
           ))}

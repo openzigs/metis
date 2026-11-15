@@ -11,6 +11,7 @@
  * review read, so any error leaves `changeRequests` empty.
  */
 import { changeRequestDetails } from "../analysis/change-request.js";
+import type { SourceReader } from "../analysis/source-redaction.js";
 import { createChildLogger } from "../logger.js";
 import { prisma } from "../prisma.js";
 
@@ -27,6 +28,7 @@ type ReviewLike = { projectId: string; items: Array<{ requirementId: string | nu
 async function changeRequestsByRequirement(
   projectId: string,
   requirementIds: readonly string[],
+  reader: SourceReader | undefined,
 ): Promise<Map<string, ReviewChangeRequest>> {
   const out = new Map<string, ReviewChangeRequest>();
   if (requirementIds.length === 0) return out;
@@ -37,9 +39,10 @@ async function changeRequestsByRequirement(
   });
   const runs = await prisma.analysis.findMany({
     where: { id: { in: [...new Set(rows.map((r) => r.analysisId))] }, projectId, deletedAt: null },
-    select: { id: true, title: true, metadata: true, startedAt: true },
+    select: { id: true, title: true, titleGenerated: true, metadata: true, startedAt: true },
   });
-  const details = await changeRequestDetails(projectId, runs);
+  // #2546 — a title generated from a document the reader cannot see is made without it.
+  const details = await changeRequestDetails(projectId, runs, reader);
   for (const r of rows) {
     const d = details.get(r.analysisId);
     if (d) out.set(r.id, { id: r.analysisId, title: d.title });
@@ -50,6 +53,7 @@ async function changeRequestsByRequirement(
 /** Attach `changeRequests` (distinct, in item order) to each review. */
 export async function attachChangeRequests<T extends ReviewLike>(
   reviews: readonly T[],
+  reader?: SourceReader,
 ): Promise<Array<T & { changeRequests: ReviewChangeRequest[] }>> {
   const idsByProject = new Map<string, Set<string>>();
   for (const review of reviews) {
@@ -60,7 +64,7 @@ export async function attachChangeRequests<T extends ReviewLike>(
   const byProject = new Map<string, Map<string, ReviewChangeRequest>>();
   try {
     for (const [projectId, ids] of idsByProject) {
-      byProject.set(projectId, await changeRequestsByRequirement(projectId, [...ids]));
+      byProject.set(projectId, await changeRequestsByRequirement(projectId, [...ids], reader));
     }
   } catch (err) {
     log.warn("could not read the change requests of a review (non-fatal)", {

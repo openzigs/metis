@@ -66,11 +66,10 @@ vi.mock("../lib/projects/project-service.js", () => ({
 }));
 const quarantine = vi.hoisted(() => ({ approveDocument: vi.fn(), rejectDocument: vi.fn() }));
 vi.mock("../lib/rag/quarantine.js", () => quarantine);
-// #2547 — the list and get routes say whether the caller can read each row.
+// #2546 — the list's visibility check reads the real ACL primitives.
 vi.mock("../lib/rag/acl.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/rag/acl.js")>()),
   saveDocumentAcl: vi.fn(),
-  resolveAclActor: vi.fn(async (userId: string) => ({ userId, role: "coordinator" })),
 }));
 vi.mock("../lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 

@@ -24,6 +24,7 @@ import { Prisma, prisma, resolveDatabaseProvider } from "../prisma.js";
 import { resolveRequirementReviewStatus } from "../analysis/analysis-service.js";
 import { parseRequirementLabels } from "../analysis/requirement-labels.js";
 import { CHECKPOINT_EDITORS_KEY } from "../analysis/checkpoint-authorship.js";
+import { readerChangeRequestTitles } from "../analysis/change-request.js";
 import {
   restrictedIds,
   sharedSourceReader,
@@ -325,7 +326,7 @@ export async function listProjectRequirements(
         labels: true,
         updatedAt: true,
         sourceIds: true,
-        analysis: { select: { id: true, title: true, startedAt: true } },
+        analysis: { select: { id: true, startedAt: true } },
         reviewItems: {
           where: {
             reviewRequest: { projectId, status: { in: [...STANDING_REVIEW_STATUSES] } },
@@ -355,6 +356,13 @@ export async function listProjectRequirements(
     reader,
     rows.map((r) => ({ id: r.id, analysisId: r.analysis.id, sourceIds: r.sourceIds })),
   );
+  // #2546 — each change request named as this reader sees it, never the
+  // stored title as it is: a generated one names its first document.
+  const runTitles = await readerChangeRequestTitles(
+    rows.map((r) => r.analysis.id),
+    [projectId],
+    reader,
+  );
   return {
     items: rows.map((r) => ({
       id: r.id,
@@ -373,7 +381,7 @@ export async function listProjectRequirements(
         // Every run stores a title since #2341; the date is the last resort.
         // The UI's filter names it the same way (`changeRequestName`).
         title:
-          r.analysis.title?.trim() ||
+          runTitles.get(r.analysis.id)?.title ??
           `Analysis of ${r.analysis.startedAt.toISOString().slice(0, 10)}`,
       },
       review: r.reviewItems[0]?.reviewRequest ?? null,

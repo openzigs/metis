@@ -16,7 +16,7 @@
  * A question the model did not classify is asked, as before #2235: METIS is
  * recall-first (#1101), so a missing verdict never hides a question.
  */
-import { ambiguityFieldKeys } from "@metis/shared";
+import { ambiguityFieldKeys, openAmbiguityCount } from "@metis/shared";
 import type {
   ClarifyingQuestion,
   QuestionCitation,
@@ -86,6 +86,25 @@ export function ambiguitiesToQuestion(
     }
   }
   return chosen;
+}
+
+/**
+ * #2543 — how many open ambiguities a round's question call leaves out: the
+ * remainder of {@link ambiguitiesToQuestion}'s cap, plus any ambiguity chosen
+ * for the call that the model wrote no question for (`written`, the
+ * `requirementId:ambiguityField` keys of its questions; omit it to count the
+ * cap's remainder alone). No question exists for them this round, so neither
+ * the round's questions nor its `notAsked` count them; the round carries this
+ * number (`notConsidered`) so the dialog can say what else goes unasked.
+ */
+export function ambiguitiesNotConsidered(
+  requirements: readonly Pick<StructuredRequirement, "id" | "priority" | "ambiguities">[],
+  addressed: ReadonlySet<string>,
+  opts: { cap?: number; askFirst?: ReadonlySet<string>; written?: ReadonlySet<string> } = {},
+): number {
+  const chosen = ambiguitiesToQuestion(requirements, addressed, opts);
+  const unwritten = opts.written ? [...chosen].filter((k) => !opts.written!.has(k)).length : 0;
+  return openAmbiguityCount(requirements, addressed) - chosen.size + unwritten;
 }
 
 /** A generated question, before selection: `divergent` is the model's call, not persisted. */

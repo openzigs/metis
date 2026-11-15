@@ -263,12 +263,21 @@ describe("Documents page — #2272 checking a document's requirements across the
 describe("Documents page — #2547 the document access list", () => {
   const toCoordinators = [{ kind: "role" as const, value: "coordinator" }];
   const restrictedFor = (canRead: boolean) =>
-    doc({
-      id: "d-pay",
-      status: "ready",
-      filename: "payroll.md",
-      access: { restricted: true, canRead, subjects: toCoordinators },
-    });
+    canRead
+      ? doc({
+          id: "d-pay",
+          status: "ready",
+          filename: "payroll.md",
+          access: { restricted: true, canRead: true, subjects: toCoordinators },
+        })
+      : // #2546 — a non-reader's row: placeholder name, no subjects.
+        doc({
+          id: "d-pay",
+          status: "ready",
+          filename: "Restricted",
+          restricted: true,
+          access: { restricted: true, canRead: false },
+        });
   const open = doc({
     id: "d-open",
     status: "ready",
@@ -278,11 +287,11 @@ describe("Documents page — #2547 the document access list", () => {
   it("badges a restricted document with who can read it, and leaves an open one unbadged", async () => {
     listDocuments.mockResolvedValue(page([restrictedFor(true), open]));
     renderPage();
-    const badge = await screen.findByTestId("document-restricted-d-pay");
+    const badge = await screen.findByTestId("document-restricted-badge-d-pay");
     expect(badge).toHaveTextContent("Restricted");
     expect(badge).toHaveTextContent("Readable by role coordinator and admins");
-    expect(badge).not.toHaveTextContent("you cannot read it");
-    expect(screen.queryByTestId("document-restricted-d-open")).toBeNull();
+    expect(screen.queryByTestId("document-restricted-d-pay")).toBeNull();
+    expect(screen.queryByTestId("document-restricted-badge-d-open")).toBeNull();
   });
 
   it("opens the access editor on a document, seeded with its list, and saves through the API", async () => {
@@ -305,11 +314,12 @@ describe("Documents page — #2547 the document access list", () => {
     await waitFor(() => expect(listDocuments.mock.calls.length).toBeGreaterThan(before));
   });
 
-  it("a member the document is restricted away from sees the badge, and no editor or portfolio check", async () => {
+  it("a member the document is restricted away from sees only Restricted, and no editor or portfolio check", async () => {
     listDocuments.mockResolvedValue(page([restrictedFor(false), open]));
     renderPage();
-    const badge = await screen.findByTestId("document-restricted-d-pay");
-    expect(badge).toHaveTextContent("you cannot read it");
+    const badge = await screen.findByTestId("document-restricted-badge-d-pay");
+    expect(badge).toHaveTextContent(/^Restricted$/);
+    expect(badge).not.toHaveTextContent("coordinator");
     expect(screen.queryByTestId("document-access-toggle-d-pay")).toBeNull();
     // The open document keeps both.
     expect(screen.getByTestId("document-access-toggle-d-open")).toBeInTheDocument();
@@ -334,5 +344,26 @@ describe("Documents page — #2547 the document access list", () => {
     await screen.findByText(/archived; uploads are disabled/i);
     await screen.findByTestId("document-row-d-open");
     expect(screen.queryByTestId("document-access-toggle-d-open")).toBeNull();
+  });
+});
+
+describe("Documents page — #2546 a document restricted from the caller", () => {
+  it("says so, and offers no portfolio check for it", async () => {
+    listDocuments.mockResolvedValue(
+      page([
+        doc({ id: "d-open", status: "ready", filename: "brief.md" }),
+        doc({ id: "d-restricted", status: "ready", filename: "Restricted", restricted: true }),
+      ]),
+    );
+    renderPage();
+    await screen.findByTestId("document-list");
+    expect(screen.getByTestId("document-restricted-d-restricted")).toHaveTextContent(
+      /don't have access to this document/,
+    );
+    expect(screen.queryByTestId("document-restricted-d-open")).toBeNull();
+    const links = screen.getAllByRole("link", { name: "Check requirements across portfolio" });
+    expect(links).toHaveLength(1);
+    const href = new URL(links[0].getAttribute("href")!, "http://x");
+    expect(href.searchParams.get("documentId")).toBe("d-open");
   });
 });

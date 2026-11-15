@@ -2523,7 +2523,12 @@ async function runImpactAnalysis(
         projects: projectOutcomeWrites(outcomes),
       },
     });
-    jobEvents.completed("impact-analysis", id, null, summary);
+    // #2547 — the `job:{id}` room admits on the run's projects alone and is
+    // replayed to late joiners unredacted, while the summary quotes the source
+    // document (its section names, its requirements). A reader reads the
+    // summary from the detail, redacted for them (#2546); the event says only
+    // that the run finished.
+    jobEvents.completed("impact-analysis", id, null, "Impact analysis complete");
   } catch (err) {
     // #1609 — keep what the run settled before it failed, and pin the failure
     // to the project it was working on. Projects it never reached stay

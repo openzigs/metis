@@ -203,7 +203,12 @@ export class TeamsAadIdentityResolver {
     // read and the upsert are not one atomic step: two admins rebinding the same
     // id at the same instant both report the original holder, and the member
     // the first rebind named (who held it only between the two) goes unnamed.
-    // The owner is still told of both binds.
+    // The owner is still told of both binds. That gap is accepted, not
+    // unavoidable (#2175): on a rebind the row exists, so a `SELECT … FOR
+    // UPDATE` on it inside an interactive transaction would serialise the two
+    // and name each holder, leaving two concurrent first binds, where `FOR
+    // UPDATE` has no row to lock and the first holder still goes unnamed. It would be Postgres-only raw SQL for a case
+    // that loses no owner notice, so it is not done.
     const previous = await this.db.teamsUserIdentity.findUnique({
       where: key,
       select: { userId: true },

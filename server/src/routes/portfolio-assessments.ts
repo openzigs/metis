@@ -34,6 +34,7 @@
  * stopped, so a restart never leaves an assessment `running` for ever (#1657).
  */
 import { userSourceReader } from "../lib/analysis/source-redaction.js";
+import { audit } from "../lib/audit/audit-service.js";
 import { Router } from "express";
 import {
   PORTFOLIO_STATEMENT_MAX_CHARS,
@@ -90,6 +91,7 @@ import { assertProductAccessible } from "../lib/products/product-access.js";
 import { prisma } from "../lib/prisma.js";
 import { canAccessProjectDiscussions } from "../lib/discussions/access.js";
 import { getDocumentStorage } from "../lib/documents/storage.js";
+import { canSeeDocument } from "../lib/documents/document-visibility.js";
 import { isDocumentReaderEnabled } from "../lib/document-reader/flag.js";
 import { readDocumentOnce } from "../lib/document-reader/reading-cache.js";
 import { shapeAwareChangeExtractor } from "../lib/impact-analysis/change-request.js";
@@ -113,6 +115,7 @@ import {
   type PortfolioDocumentReader,
 } from "../lib/portfolio/document-requirements.js";
 import {
+  changeRequestStatement,
   renderPortfolioAssessmentMarkdown,
   resolveReaderAccess,
   toListItem,
@@ -184,9 +187,10 @@ function documentReaderOn(provider: AIProvider, signal?: AbortSignal): Portfolio
 /**
  * #2272 — the document a check is started from, or 404: it must be live (not
  * soft-deleted) and in a project the caller can read, like a requirement
- * (`loadReadableSourceRequirement`). Unknown, deleted and unreadable answer
- * alike (no existence oracle). A readable one that is a repository's file, or
- * not yet `ready`, is a 400.
+ * (`loadReadableSourceRequirement`). #2546 — and its access list must let the
+ * caller see it: the check reads its text and shows its requirements. Unknown,
+ * deleted and unreadable answer alike (no existence oracle). A readable one
+ * that is a repository's file, or not yet `ready`, is a 400.
  */
 async function loadReadableSourceDocument(
   user: AuthPayload,
@@ -201,13 +205,26 @@ async function loadReadableSourceDocument(
       filename: true,
       source: true,
       status: true,
+      aclSubjects: true,
     },
   });
+  const notFound = () => new AppError(404, "NOT_FOUND", "Document not found");
   if (
     !doc ||
     !(await canAccessProjectDiscussions({ id: user.userId, role: user.role }, doc.projectId))
   ) {
-    throw new AppError(404, "NOT_FOUND", "Document not found");
+    throw notFound();
+  }
+  if (!(await canSeeDocument(user.userId, doc))) {
+    // #2546 — refused as for an unknown document, and audited: a member probing
+    // restricted document ids leaves a trace.
+    audit({
+      actor: { id: user.userId },
+      action: "portfolio_assessment.document.denied",
+      target: { type: "document", id: documentId },
+      metadata: { reason: "acl-denied", projectId: doc.projectId },
+    });
+    throw notFound();
   }
   // Only after the read check, so neither answer is an existence oracle. The page offers
   // neither; the API refuses them too: a repository's file is code, not requirements, and a
@@ -294,10 +311,7 @@ export async function gapInputFor(
     );
     return {
       input: portfolioGapInputSchema.parse({
-        statement: cutText(
-          `Requirements of change request "${changeRequest.title}"`,
-          PORTFOLIO_STATEMENT_MAX_CHARS,
-        ).text,
+        statement: changeRequestStatement(changeRequest.title),
         criteria: criteria.criteria,
         sourceProjectId: changeRequest.projectId,
         ...scoped,
@@ -680,6 +694,7 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
         const changeRequest = await changeRequestRef(
           view.sourceAnalysisId,
           view.sourceProjectId ? [view.sourceProjectId] : [],
+          userSourceReader(req.user!.userId),
         );
         res.json(ok({ ...view, changeRequest }));
       } catch (err) {

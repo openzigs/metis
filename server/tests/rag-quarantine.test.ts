@@ -278,9 +278,6 @@ import {
 } from "../src/lib/rag/quarantine.js";
 import { INDEXING_EMBEDDER_UNAVAILABLE_MESSAGE } from "../src/lib/rag/indexing-failure-message.js";
 
-/** #2547 — the reviewer reading the queue: a project member the ACL knows as a developer. */
-const MEMBER = { userId: "u-bob", role: "developer" };
-
 const stubVector = {
   ensureTable: vi.fn(async () => undefined),
   deleteByDocument: vi.fn(async () => undefined),
@@ -814,7 +811,7 @@ describe("listQuarantine", () => {
       embeddingModel: "m",
       aclSubjects: [],
     });
-    const rows = await listQuarantine("p1", MEMBER);
+    const rows = await listQuarantine("p1");
     expect(rows).toHaveLength(1);
     expect(rows[0].documentId).toBe("d1");
   });
@@ -827,13 +824,13 @@ describe("listQuarantine", () => {
       errorMessage:
         'embedding failed: returned 500: {"key":"sk-live-4f9a8b7c"} at /srv/metis/server/src/x.ts:1',
     });
-    const rows = await listQuarantine("p1", MEMBER);
+    const rows = await listQuarantine("p1");
     expect(rows).toHaveLength(1);
     expect(rows[0].errorMessage).toBe(INDEXING_EMBEDDER_UNAVAILABLE_MESSAGE);
     expect(JSON.stringify(rows)).not.toMatch(/sk-live|\/srv/);
   });
 
-  it("#2547 — says which rows are restricted, to whom, and whether the reviewer can read them", async () => {
+  it("#2547 — says which rows are restricted and whether the reviewer can read them; to whom, to a reader only", async () => {
     const subjects = [{ kind: "role", value: "coordinator" }];
     seedDocument({
       id: "d1",
@@ -842,11 +839,19 @@ describe("listQuarantine", () => {
       aclSubjects: JSON.stringify(subjects),
     });
     seedDocument({ id: "d2", projectId: "p1", indexState: "quarantined" });
-    const asBob = await listQuarantine("p1", MEMBER);
-    const byId = new Map(asBob.map((r) => [r.documentId, r.access]));
-    expect(byId.get("d1")).toEqual({ restricted: true, canRead: false, subjects });
+    const asBob = await listQuarantine("p1", { userId: "u-bob", role: "developer" });
+    // A row read with a reader carries `access`; the return type also covers the internal read.
+    const accessOf = (r: object) => (r as { access?: unknown }).access;
+    const byId = new Map(asBob.map((r) => [r.documentId, accessOf(r)]));
+    expect(byId.get("d1")).toEqual({ restricted: true, canRead: false });
     expect(byId.get("d2")).toEqual({ restricted: false, canRead: true, subjects: [] });
     const asAlice = await listQuarantine("p1", { userId: "u-alice", role: "coordinator" });
-    expect(asAlice.find((r) => r.documentId === "d1")?.access.canRead).toBe(true);
+    expect(accessOf(asAlice.find((r) => r.documentId === "d1")!)).toEqual({
+      restricted: true,
+      canRead: true,
+      subjects,
+    });
+    // An internal read (no reader) carries no access field at all.
+    expect((await listQuarantine("p1"))[0]).not.toHaveProperty("access");
   });
 });

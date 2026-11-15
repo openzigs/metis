@@ -47,7 +47,7 @@ import {
   searchProjectRequirements,
   visibleRequirementPicks,
 } from "../lib/discussions/requirement-search.js";
-import { userSourceReader } from "../lib/analysis/source-redaction.js";
+import { restrictedIds, userSourceReader } from "../lib/analysis/source-redaction.js";
 import { AI_RESPONSE_MODES, shouldAIRespond } from "../lib/discussions/ai-gate.js";
 import {
   streamAIReply,
@@ -67,7 +67,7 @@ import { audit } from "../lib/audit/audit-service.js";
 import { emitDiscussionChanged } from "../lib/discussions/thread-events.js";
 import { assertWithinBudget, BudgetExceededError } from "../lib/finops/budget-enforcer.js";
 import { buildProvider, loadAIConfig, type AIProvider } from "../lib/ai/index.js";
-import type { RoleKey } from "@metis/shared";
+import { RESTRICTED_SOURCE_TITLE, type RoleKey } from "@metis/shared";
 import { createChildLogger } from "../lib/logger.js";
 
 // ---- AI provider seam (#484) ------------------------------------------------
@@ -271,19 +271,30 @@ export function discussionsRouter(): Router {
             id: true,
             title: true,
             analysisId: true,
+            sourceIds: true,
             deletedAt: true,
             analysis: { select: { deletedAt: true } },
           },
         },
       },
     });
+    // #2546 — a requirement resting on a source the caller cannot see is named
+    // as it is everywhere else for them: the restricted placeholder.
+    const hidden = await restrictedIds(
+      userSourceReader(actor.id),
+      threads.flatMap((t) => (t.requirement ? [t.requirement] : [])),
+    );
     res.json({
       success: true,
       data: threads.map(({ requirement, ...thread }) => ({
         ...thread,
         requirement:
           requirement && !requirement.deletedAt && !requirement.analysis?.deletedAt
-            ? { id: requirement.id, title: requirement.title, analysisId: requirement.analysisId }
+            ? {
+                id: requirement.id,
+                title: hidden.has(requirement.id) ? RESTRICTED_SOURCE_TITLE : requirement.title,
+                analysisId: requirement.analysisId,
+              }
             : null,
       })),
     });

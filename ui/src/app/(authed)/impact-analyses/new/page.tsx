@@ -22,6 +22,7 @@ import {
 } from "@metis/shared";
 import { Card } from "@/components/ui/card";
 import { projectsApi, documentsApi, type Project } from "@/lib/projects-api";
+import { isUnreadableDocument } from "@/lib/document-access";
 import { useCreateImpactAnalysis } from "@/lib/impact-analysis-hooks";
 import { ScopePicker, type ScopeKind } from "@/components/scope/scope-picker";
 import { useValidatedActiveWorkspaceId, workspaceListQuery } from "@/lib/active-workspace";
@@ -140,12 +141,14 @@ export default function NewImpactAnalysisPage() {
       const projectId = selected[idx];
       const project = projects.find((p) => p.id === projectId);
       for (const doc of q.data?.items ?? []) {
+        // #2546 — one the caller cannot read cannot be a run's source (the server refuses it).
+        if (isUnreadableDocument(doc)) continue;
         rows.push({
           id: doc.id,
           filename: doc.filename,
           projectName: project?.name ?? projectId,
+          // #2547 — a readable restricted document is marked as restricted.
           restricted: doc.access?.restricted === true,
-          unreadable: doc.access?.canRead === false,
         });
       }
     });

@@ -43,11 +43,11 @@ function row(over: Partial<QuarantineRow> = {}): QuarantineRow {
   };
 }
 
-function renderPanel() {
+function renderPanel(isArchived?: boolean) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <QuarantinePanel projectId="p1" />
+      <QuarantinePanel projectId="p1" isArchived={isArchived} />
     </QueryClientProvider>,
   );
 }
@@ -75,17 +75,39 @@ describe("QuarantinePanel — #2547 access lists", () => {
     expect(screen.queryByTestId("acl-editor")).toBeNull();
   });
 
-  it("a reviewer the document is restricted away from sees the badge and no editor", async () => {
+  it("a reviewer the document is restricted away from sees only Restricted, and no action on it", async () => {
     viewer = { id: "u-bob", role: "developer" };
     listQuarantine.mockResolvedValue({
-      items: [row({ access: { restricted: true, canRead: false, subjects: toCoordinators } })],
+      items: [
+        row({
+          filename: "Restricted",
+          restricted: true,
+          access: { restricted: true, canRead: false },
+        }),
+      ],
       autoApproveTrustedSources: false,
     });
     renderPanel();
-    expect(await screen.findByTestId("quarantine-restricted-d1")).toHaveTextContent(
-      "you cannot read it",
-    );
+    expect(await screen.findByTestId("quarantine-restricted-d1")).toHaveTextContent(/^Restricted$/);
+    // Owner policy (#2547): one who cannot read it cannot manage it either.
     expect(screen.queryByTestId("quarantine-access-toggle-d1")).toBeNull();
+    expect(screen.queryByTestId("approve-d1")).toBeNull();
+    expect(screen.queryByTestId("reject-d1")).toBeNull();
+    expect(screen.queryByRole("checkbox", { name: "Auto-approve Restricted" })).toBeNull();
+    expect(screen.getByTestId("quarantine-unreadable-d1")).toHaveTextContent(
+      "Only its readers or an admin can review it",
+    );
+  });
+
+  it("offers no access editor on an archived project", async () => {
+    listQuarantine.mockResolvedValue({
+      items: [row({ access: { restricted: true, canRead: true, subjects: toCoordinators } })],
+      autoApproveTrustedSources: false,
+    });
+    renderPanel(true);
+    await screen.findByTestId("quarantine-restricted-d1");
+    expect(screen.queryByTestId("quarantine-access-toggle-d1")).toBeNull();
+    expect(screen.getByTestId("approve-d1")).toBeInTheDocument();
   });
 
   it("offers no editor to a role without document.upload; an open row has no badge", async () => {

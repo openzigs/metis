@@ -91,15 +91,15 @@ export interface ProjectListPage {
 export type { DocumentSource };
 
 /**
- * #2547 — a document's access list as the caller sees it: whether it is
- * restricted, the subjects it is restricted to, and whether the caller is one
- * of them (or an admin). Absent from a row a route does not annotate.
+ * #2547 — a document's access list as the caller sees it. A reader of the
+ * document (named on it, an admin, or anyone when it is empty) is told whether
+ * it is restricted and who it is restricted to; a member it leaves out is told
+ * only that it is restricted (`canRead: false`, no subjects), on a row that is
+ * also `restricted: true` (#2546). Absent from a row a route does not annotate.
  */
-export interface DocumentAccess {
-  restricted: boolean;
-  canRead: boolean;
-  subjects: AclSubject[];
-}
+export type DocumentAccess =
+  | { restricted: boolean; canRead: true; subjects: AclSubject[] }
+  | { restricted: true; canRead: false; subjects?: undefined };
 
 export interface DocumentRow {
   id: string;
@@ -108,7 +108,8 @@ export interface DocumentRow {
   source: DocumentSource;
   /** #474 — a title the source supplied (a Confluence page's); null when none. */
   title?: string | null;
-  mimeType: string;
+  /** Absent on a `restricted` row (#2546): that row carries an allowlist of fields only. */
+  mimeType?: string;
   sizeBytes: number;
   status: "pending" | "queued" | "processing" | "ready" | "failed";
   /**
@@ -120,6 +121,15 @@ export interface DocumentRow {
   chunkCount: number;
   /** Epic #724 — when true this document is a spec for implementation comparison. */
   isSpec?: boolean;
+  /**
+   * #2546 — true when the document's access list does not name the caller:
+   * its name and title are the "Restricted" placeholder, and nothing that
+   * reads its text (an analysis, a portfolio check, an impact analysis) is
+   * offered for it. Absent when they can see it. Such a row carries only the
+   * server's `RESTRICTED_DOCUMENT_FIELDS` (id, project, source, status, index
+   * state, spec flag, size, sections, dates) and never its access list.
+   */
+  restricted?: boolean;
   /** #2547 — see {@link DocumentAccess}. */
   access?: DocumentAccess;
   uploadedAt: string;
@@ -531,6 +541,8 @@ export interface QuarantineRow {
   indexState: "quarantined" | "reconciling";
   autoApproveTrusted: boolean;
   errorMessage?: string | null;
+  /** #2546 — its access list leaves the caller out: `filename` is the placeholder. */
+  restricted?: true;
   /** #2547 — see {@link DocumentAccess}. */
   access?: DocumentAccess;
 }

@@ -276,9 +276,15 @@ is just a Teams-side cache of "this AAD subject is that METIS user".
   their own account is told once). The notice ignores notification
   preferences. **Rebinding (#2107)** an AAD id that is already bound to another
   member moves it: the audit entry adds `replacedUserId`, and that member is
-  told the account no longer acts as them (unless they made the rebind). The
+  told the account no longer acts as them (unless they made the rebind). They
+  are told **even if they have since left the workspace** (#2175): the binding
+  named them, so they get the receipt, and it adds to what they knew only the
+  new holder's display name. A binding to a former member no longer resolved,
+  so the notice is the only sign that it moved. The
   notice quotes the AAD object id and the workspace name with their own quotes
-  and line breaks escaped, and shows at most 40 characters of the id, so the
+  and line breaks escaped, shows bidi controls (U+202A–E, U+2066–9), line and
+  paragraph separators and zero-width or other invisible characters as
+  `\uXXXX` escapes (#2175), and shows at most 40 characters of the id, so the
   admin it exposes cannot word it; the audit entry keeps the full id. A
   workspace admin may still bind any member, the owner included,
   and no MFA sign-in is required: that is the owner's decision, recorded in

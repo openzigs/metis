@@ -312,7 +312,15 @@ describe("PATCH /documents/:id/acl — only a reader of the document may change 
     expect(resolveAclActor).toHaveBeenCalledWith("user-1");
     expect(documentUpdateMany).not.toHaveBeenCalled();
     expect(chunkUpdateMany).not.toHaveBeenCalled();
-    expect(audit).not.toHaveBeenCalled();
+    // The refused attempt is audited, and nothing is recorded as an update.
+    expect(audit).toHaveBeenCalledTimes(1);
+    expect(audit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "document.acl.update.denied",
+        actor: { id: "user-1" },
+        target: { type: "document", id: "doc-9" },
+      }),
+    );
   });
 
   it("lets a reader the list names change it", async () => {

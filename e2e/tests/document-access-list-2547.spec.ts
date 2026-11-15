@@ -79,21 +79,22 @@ test.describe("Document access list — restrict from the UI, as non-admins (#25
       const badge = docs.restrictedBadge(documentId);
       await expect(badge).toContainText("Restricted", { timeout: 15_000 });
       await expect(badge).toContainText("Readable by role coordinator");
-      await expect(badge).not.toContainText("you cannot read it");
       // Alice is on the list, so she keeps the editor.
       await expect(docs.accessToggle(documentId)).toBeVisible();
       await page.context().close();
     });
 
-    await test.step("Bob sees the badge, and no access editor or portfolio check on it", async () => {
+    await test.step("Bob sees only Restricted, and no access editor or portfolio check on it", async () => {
       const page = await signedIn(browser, BOB);
       const docs = new ProjectDocumentsPage(page);
       await docs.goto(projectId);
       await docs.expectLoaded();
       const badge = docs.restrictedBadge(documentId);
-      await expect(badge).toContainText("Readable by role coordinator", { timeout: 15_000 });
-      await expect(badge).toContainText("you cannot read it");
+      await expect(badge).toHaveText("Restricted", { timeout: 15_000 });
+      // #2546 — a non-reader is told neither its name nor who reads it.
       const row = docs.documentRow(documentId);
+      await expect(row).not.toContainText(filename);
+      await expect(row).not.toContainText("coordinator");
       await expect(docs.accessToggle(documentId)).toHaveCount(0);
       await expect(
         row.getByRole("link", { name: "Check requirements across portfolio" }),
@@ -102,8 +103,9 @@ test.describe("Document access list — restrict from the UI, as non-admins (#25
       await test.step("and cannot pick it for a new change request", async () => {
         const analysis = new AnalysisPage(page);
         await analysis.goto(projectId);
-        const pick = analysis.docRow(filename);
+        const pick = page.getByTestId(`add-documents-row-${documentId}`);
         await expect(pick).toContainText("Restricted");
+        await expect(pick).not.toContainText(filename);
         await expect(pick.getByRole("checkbox")).toBeDisabled();
       });
 
@@ -114,6 +116,11 @@ test.describe("Document access list — restrict from the UI, as non-admins (#25
           data: { aclSubjects: [{ kind: "role", value: "developer" }] },
         });
         expect(res.status(), await res.text()).toBe(403);
+        // Owner policy — nor may he manage it otherwise (the spec toggle here).
+        const spec = await api.patch(`/api/projects/${projectId}/documents/${documentId}/spec`, {
+          data: { isSpec: true },
+        });
+        expect(spec.status(), await spec.text()).toBe(403);
         await api.dispose();
       });
       await page.context().close();

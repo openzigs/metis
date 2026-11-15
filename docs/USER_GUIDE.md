@@ -1302,7 +1302,7 @@ This process is automatic and happens in the background. The document's status c
 
 A document is readable by every member of the project until you give it an access list (#2547). On the project's **Documents** page, choose **Access** on the document's row (the same button is on each row of the **Quarantine** list in Project settings, so you can restrict a document before approving it). Add a **role** (such as `coordinator`) or a **user** by their id, then **Save access list**. Only the people the list names, and admins, can then read the document; everyone else's searches, chat and change requests leave it out. An empty list removes the restriction.
 
-A restricted document carries a **Restricted** badge saying who can read it, on the Documents page, in the Quarantine list, and in the document pickers of a new change request and a new impact analysis. A member who is not on the list sees *you cannot read it*: they cannot select it for a change request or an impact analysis, start a portfolio check from it, or change its access list (only someone who can read the document, or an admin, can). If a list you are about to save leaves you off, the editor warns you first, because once it is saved you lose access too. **Access** is offered to roles that can upload documents (`coordinator` and `developer` by default), and not on an archived project.
+A restricted document carries a **Restricted** badge on the Documents page, in the Quarantine list, and in the document pickers of a new change request and a new impact analysis. If you can read it, the badge says who else can (a `group` entry left over from an older list matches no one, so it is not named as a reader). A member who is not on the list sees only **Restricted**, never who can read it, and the document's name is hidden from them. They cannot select it for a change request or an impact analysis, start a portfolio check from it, approve or reject it in the Quarantine list, change its spec or trust setting, or change its access list: only someone who can read the document, or an admin, can manage it, and a refused attempt is recorded in the audit log. If a list you are about to save leaves you off, the editor warns you first, because once it is saved you lose access too (the warning uses your role from when you signed in). **Access** is offered to roles that can upload documents (`coordinator` and `developer` by default), and not on an archived project, whose access lists cannot be changed. A generated document is restricted to the person who generated it, so only they, or an admin, can approve it.
 
 ---
 
@@ -2293,8 +2293,17 @@ You can also start a check from three other places. Every **approved** requireme
 project's **Requirements** tab has a **Check across portfolio** button, which checks that
 requirement, including its acceptance criteria. A product's page has a **Check across
 portfolio** button too, which starts with that product chosen. And every ready document on
-a project's **Documents** page has a **Check requirements across portfolio** button, which
-checks each requirement the document holds (see *Checking a document* below). [#2272]
+a project's **Documents** page that you can read has a **Check requirements across
+portfolio** button, which checks each requirement the document holds (see *Checking a
+document* below). [#2272]
+
+A document whose access list leaves you out is shown as **Restricted**, with the note
+"You don't have access to this document": you see that it is there and how large it is, but
+not its name or who may read it, and it offers no check, cannot be ticked for an analysis and
+is not a source for an impact analysis. Its row in the quarantine list is shown the same way.
+A change request Metis named after such a document is named by its date for you instead, on
+every page that shows it, including the statement of a portfolio check started from it.
+[#2546]
 
 To check several requirements at once, tick them on a project's **Requirements** tab and
 click **Check N selected across portfolio**. Each requirement you ticked is checked on its

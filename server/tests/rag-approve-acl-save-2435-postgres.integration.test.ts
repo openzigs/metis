@@ -51,6 +51,9 @@ const { approveDocument, writeQuarantine } = await import("../src/lib/rag/quaran
 const { BM25Index } = await import("../src/lib/rag/bm25-index.js");
 const { LocalVectorStore } = await import("../src/lib/rag/vector-store.js");
 
+/** #2547 — `saveDocumentAcl` requires its caller; a test writer is an admin, which reads every list. */
+const ACL_ADMIN = { userId: "acl-test-admin", role: "admin" };
+
 const SUFFIX = randomUUID().slice(0, 8);
 const USER = `u-2435pg-${SUFFIX}`;
 const WORKSPACE = `ws-2435pg-${SUFFIX}`;
@@ -217,6 +220,7 @@ describe.skipIf(!enabled)("#2435 — an ACL save racing approval (Postgres)", ()
     await gate.holding;
     let saved = false;
     const save = saveDocumentAcl({
+      actor: ACL_ADMIN,
       documentId: DOC,
       projectId: PROJECT,
       aclSubjects: RESTRICTED,

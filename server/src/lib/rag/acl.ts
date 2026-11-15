@@ -141,10 +141,11 @@ export const ACL_SAVE_ATTEMPTS = 3;
  * so a group another editor just removed is never written back as "already
  * held". The document and its chunks change in one transaction.
  *
- * #2547 — with an `actor`, the write is refused ({@link AclEditForbiddenError},
- * nothing written) when that actor cannot read the document under the ACL it
- * replaces; the compare-and-set means a restriction saved in between is the
- * one checked.
+ * #2547 — the write is refused ({@link AclEditForbiddenError}, nothing
+ * written) when `actor` cannot read the document under the ACL it replaces;
+ * the compare-and-set means a restriction saved in between is the one checked.
+ * `actor` is required so no caller can skip that check by omission: a trusted
+ * server-side writer passes an admin actor, a visible choice.
  *
  * Returns the chunk count, or `null` when the document is not live in the
  * project. Throws {@link AclGroupUnsupportedError} (nothing written) or, past
@@ -153,7 +154,7 @@ export const ACL_SAVE_ATTEMPTS = 3;
  * `afterRead` is a test seam: it runs between the read and the write.
  */
 export async function saveDocumentAcl(
-  input: { documentId: string; projectId: string; aclSubjects: AclSubject[]; actor?: AclActor },
+  input: { documentId: string; projectId: string; aclSubjects: AclSubject[]; actor: AclActor },
   deps: { afterRead?: () => Promise<void> } = {},
 ): Promise<{ chunkCount: number } | null> {
   const serialized = serializeAclSubjects(input.aclSubjects);
@@ -162,7 +163,7 @@ export async function saveDocumentAcl(
     const doc = await prisma.document.findFirst({ where, select: { aclSubjects: true } });
     if (!doc) return null;
     const current = parseAclSubjects(doc.aclSubjects);
-    if (input.actor && !isVisibleTo({ subjects: current }, input.actor)) {
+    if (!isVisibleTo({ subjects: current }, input.actor)) {
       throw new AclEditForbiddenError();
     }
     const groups = newGroupSubjects(current, input.aclSubjects);
@@ -267,27 +268,6 @@ export function isVisibleTo(acl: ChunkAcl, actor: AclActor): boolean {
   if (actor.role === "admin") return true;
   if (acl.subjects.length === 0) return true;
   return namesActor(acl, actor);
-}
-
-/**
- * #2547 — what a document list row says about the document's access list, for
- * the caller: whether it is restricted, the subjects it is restricted to (so
- * the UI can say who reads it), and whether the caller is one of them.
- */
-export interface DocumentAccess {
-  restricted: boolean;
-  canRead: boolean;
-  subjects: AclSubject[];
-}
-
-/** #2547 — {@link DocumentAccess} for a document's stored `aclSubjects`, as `actor` sees it. */
-export function documentAccess(rawAcl: unknown, actor: AclActor): DocumentAccess {
-  const subjects = parseAclSubjects(rawAcl);
-  return {
-    restricted: subjects.length > 0,
-    canRead: isVisibleTo({ subjects }, actor),
-    subjects,
-  };
 }
 
 /**

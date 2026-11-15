@@ -40,6 +40,9 @@ const { BM25Index } = await import("../src/lib/rag/bm25-index.js");
 const { LocalVectorStore } = await import("../src/lib/rag/vector-store.js");
 const { saveDocumentAcl } = await import("../src/lib/rag/acl.js");
 const { approveDocument, writeQuarantine } = await import("../src/lib/rag/quarantine.js");
+
+/** #2547 — `saveDocumentAcl` requires its caller; a test writer is an admin, which reads every list. */
+const ACL_ADMIN = { userId: "acl-test-admin", role: "admin" };
 type Embedder = import("../src/lib/rag/embedder.js").Embedder;
 type StorageBackend = import("../src/lib/documents/storage-backend.js").StorageBackend;
 type SymbolEmbeddingsPort =
@@ -156,7 +159,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     }
 
     const restrict = (documentId: string, aclSubjects: AclSubject[]) => async () => {
-      await saveDocumentAcl({ documentId, projectId: PROJECT, aclSubjects });
+      await saveDocumentAcl({ actor: ACL_ADMIN, documentId, projectId: PROJECT, aclSubjects });
     };
     const documentAcl = async (id: string) =>
       (await db.document.findUniqueOrThrow({ where: { id } })).aclSubjects;
@@ -235,7 +238,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       for (const q of parked) expect(metaAcl(q.metadata)).toEqual(RESTRICTED);
 
       // Edited again while it waits for review: approval indexes under that list.
-      await saveDocumentAcl({ documentId: "doc-review", projectId: PROJECT, aclSubjects: LATER });
+      await saveDocumentAcl({
+        actor: ACL_ADMIN,
+        documentId: "doc-review",
+        projectId: PROJECT,
+        aclSubjects: LATER,
+      });
       await approveDocument("doc-review", { id: USER }, { vectorStore: store, bm25 });
 
       const chunks = await db.knowledgeChunk.findMany({ where: { documentId: "doc-review" } });
@@ -260,6 +268,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           if (!raced) {
             raced = true;
             await saveDocumentAcl({
+              actor: ACL_ADMIN,
               documentId: "doc-race",
               projectId: PROJECT,
               aclSubjects: RESTRICTED,

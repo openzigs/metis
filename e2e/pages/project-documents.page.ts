@@ -59,7 +59,7 @@ export class ProjectDocumentsPage {
 
   /** #2547 — the "Restricted" badge on a document's row. */
   restrictedBadge(documentId: string): Locator {
-    return this.page.getByTestId(`document-restricted-${documentId}`);
+    return this.page.getByTestId(`document-restricted-badge-${documentId}`);
   }
 
   /** #2547 — the row action that opens the document's access-list editor. */
