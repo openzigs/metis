@@ -433,7 +433,7 @@ export default function SpecKitPage() {
   const socket = useSocket();
   const socketRef = useRef(socket);
   socketRef.current = socket;
-  const followJob = (jobId: string, onEvent: () => void): (() => void) => {
+  const followJob = (jobId: string, onEvent: () => void): ((settled: boolean) => void) => {
     const live = socketRef.current;
     if (!live) return () => undefined;
     // #1583 — the page announces this job's outcome itself (its callbacks, in
@@ -442,17 +442,20 @@ export default function SpecKitPage() {
     // command toasted twice, and a refused one (a phase gate) added the
     // generic "The Spec Kit operation failed. Please try again." Claimed
     // before joining, so a replayed terminal event finds it claimed. Given
-    // back when the page is left mid-job: the page then announces nothing.
+    // back whenever the watch ends without the job's outcome — the page left
+    // mid-job, or the job no longer readable (#2186) — since the page then
+    // announces nothing. An outcome the watch did read is announced by the
+    // page's callbacks, on the page or not, so the claim is kept.
     const claimed = claimTerminalToast(jobId);
     const leave = joinJobRoom(live, jobId);
     const onLifecycle = (event: JobLifecycleEvent): void => {
       if (event.jobId === jobId) onEvent();
     };
     live.on("job:lifecycle" as never, onLifecycle as never);
-    return () => {
+    return (settled) => {
       leave();
       live.off("job:lifecycle" as never, onLifecycle as never);
-      if (claimed && hasLeftPage()) releaseTerminalToast(jobId);
+      if (claimed && !settled) releaseTerminalToast(jobId);
     };
   };
 

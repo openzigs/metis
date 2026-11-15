@@ -85,6 +85,40 @@ describe("findNotVisibleClaims", () => {
     }
   });
 
+  it("#2186 — classifies a claim by its subject: the file, or the file's source", async () => {
+    const CTX = "internal/http/request/context.go";
+    const named = { files: [...FILES, CTX], excerpts: [{ filePath: QB, text: QB_SOURCE }] };
+    // The FILE is said to be absent, in any of the words the check accepts: false.
+    for (const absent of [
+      "`internal/http/request/context.go` is not present in the retrieved context.",
+      "`internal/http/request/context.go` is not included in the provided context.",
+      "`internal/http/request/context.go` is not available in the given context.",
+      "`internal/http/request/context.go` is not in the retrieved context, so its source is unknown.",
+    ]) {
+      expect(await findNotVisibleClaims(absent, named, lookup), absent).toEqual([
+        { named: CTX, file: CTX },
+      ]);
+    }
+    // Its SOURCE is said not to be shown, and it was not: honest, whatever the verb.
+    for (const notShown of [
+      "The source of `internal/http/request/context.go` is not in the retrieved context.",
+      "The body of `internal/http/request/context.go` is not present in the retrieved context.",
+      "`internal/http/request/context.go`'s source is not in the given context.",
+      "I could not find the implementation of `internal/http/request/context.go` in the retrieved context.",
+    ]) {
+      expect(await findNotVisibleClaims(notShown, named, lookup), notShown).toEqual([]);
+    }
+    // …and false once its source was shown.
+    const shown = { ...named, excerpts: [{ filePath: CTX, text: "package request" }] };
+    expect(
+      await findNotVisibleClaims(
+        "The source of `internal/http/request/context.go` is not in the retrieved context.",
+        shown,
+        lookup,
+      ),
+    ).toEqual([{ named: CTX, file: CTX }]);
+  });
+
   it("says nothing of a file truly absent, a sentence with no such claim, or an empty context", async () => {
     const lookupSpy = vi.fn(lookup);
     expect(

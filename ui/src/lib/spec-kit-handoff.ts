@@ -163,12 +163,36 @@ export function buildHandoffInstructions(
   // title, and the run's Summary listed NR-1 as "Spec Kit handoff: evaluate…".
   // So each requirement is headed by its own label and first sentence, which
   // name it instead, and keep the list scannable by name (#1583 review).
+  // #2186 — the names cost budget, so a spec that fits only with shorter ones
+  // gets shorter ones, and one that fits only with none gets bare labels: a
+  // requirement is never left out to make room for the names of the others.
   const header = `# Spec Kit handoff: evaluate these requirements from spec.md against the current implementation. Only spec.md's requirements are sent.${note}`;
+  const bare = packRequirements(header, requirements, 0);
+  const packed =
+    HEADING_NAME_WIDTHS.map((width) => packRequirements(header, requirements, width)).find(
+      (p) => p.sent.length === bare.sent.length,
+    ) ?? bare;
+  return {
+    text: packed.text,
+    truncated: packed.omitted.length > 0,
+    sent: packed.sent,
+    omitted: capOmitted(packed.omitted),
+    omittedCount: packed.omitted.length,
+  };
+}
+
+/** Every requirement that fits after `header`, in order, each under a heading `width` names it by. */
+function packRequirements(
+  header: string,
+  requirements: readonly SpecRequirement[],
+  width: number,
+): { text: string; sent: string[]; omitted: string[] } {
   let text = header;
   const sent: string[] = [];
   const omitted: string[] = [];
   for (const r of requirements) {
-    const block = `\n\n### ${r.label}: ${headingName(r.text)}\n${r.label}: ${r.text}`;
+    const name = headingName(r.text, width);
+    const block = `\n\n### ${r.label}${name ? `: ${name}` : ""}\n${r.label}: ${r.text}`;
     if (text.length + block.length < MAX_EXTRA_INSTRUCTIONS) {
       text += block;
       sent.push(r.label);
@@ -176,23 +200,21 @@ export function buildHandoffInstructions(
       omitted.push(r.label);
     }
   }
-  return {
-    text,
-    truncated: omitted.length > 0,
-    sent,
-    omitted: capOmitted(omitted),
-    omittedCount: omitted.length,
-  };
+  return { text, sent, omitted };
 }
 
-/** A requirement's heading name: its first sentence, clipped (the analysis titles a block by its heading). */
-const HEADING_NAME_MAX = 80;
-function headingName(text: string): string {
+/**
+ * The heading name widths tried, widest first; the bare label (width 0) is the
+ * last resort. The analysis titles a block by its heading.
+ */
+const HEADING_NAME_WIDTHS = [80, 40] as const;
+
+/** A requirement's heading name: its first sentence, clipped to `max` ("" for 0). */
+function headingName(text: string, max: number): string {
+  if (max === 0) return "";
   const end = text.search(/[.!?](?:\s|$)/);
   const first = (end === -1 ? text : text.slice(0, end + 1)).replace(/\s+/g, " ").trim();
-  return first.length > HEADING_NAME_MAX
-    ? `${first.slice(0, HEADING_NAME_MAX - 1).trimEnd()}…`
-    : first;
+  return first.length > max ? `${first.slice(0, max - 1).trimEnd()}…` : first;
 }
 
 /** The pre-#994 shape for a spec without acceptance criteria, cut between paragraphs. */

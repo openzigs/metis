@@ -331,6 +331,49 @@ describe("Spec Kit page — a command as a background job (#1059)", () => {
       expect(globalLayerHears("completed")).toBe(true);
       expect(toastSuccess).toHaveBeenCalledWith("Generated tasks.md (v1).");
     });
+
+    it("#2186 — announces an end it read just as the page was left, and keeps the claim", async () => {
+      const page = open();
+      await run("/speckit.tasks");
+      await waitFor(() => expect(progress()).toBeInTheDocument());
+      // The page's next read of the job is held in flight…
+      let answer!: () => void;
+      const held = new Promise<void>((resolve) => {
+        answer = resolve;
+      });
+      const pending = vi.fn();
+      m.getJob!.mockImplementation(async (_projectId: string, id: string) => {
+        pending();
+        await held;
+        return { job: server.jobs.get(id)! };
+      });
+      await waitFor(() => expect(pending).toHaveBeenCalled());
+      // …while the job ends and its terminal event passes the claimed global layer…
+      patch("job-1", { status: "succeeded", result: { message: "Generated tasks.md (v1)." } });
+      expect(globalLayerHears("completed")).toBe(false);
+      // …and the page is left before the read answers.
+      page.unmount();
+      answer();
+      await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Generated tasks.md (v1)."));
+      expect(toastSuccess).toHaveBeenCalledTimes(1);
+      // Announced by the page: a re-delivered event stays quiet.
+      expect(globalLayerHears("completed")).toBe(false);
+    });
+
+    it("#2186 — gives the claim back when the job can no longer be read", async () => {
+      open();
+      await run("/speckit.tasks");
+      await waitFor(() => expect(progress()).toBeInTheDocument());
+      m.getJob!.mockRejectedValue(new ApiError(503, "Service unavailable"));
+      await waitFor(() =>
+        expect(screen.getByTestId("spec-kit-error")).toHaveTextContent(
+          "Lost contact with the server",
+        ),
+      );
+      // The job carries on on the server; its end is the global layer's to announce.
+      expect(globalLayerHears("completed")).toBe(true);
+      expect(toastSuccess).toHaveBeenCalledWith("Generated tasks.md (v1).");
+    });
   });
 
   describe("re-attaching", () => {
