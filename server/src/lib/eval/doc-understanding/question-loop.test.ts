@@ -306,9 +306,16 @@ describe("#2271 — askFirstRound", () => {
         statement(i + 1, "requirement", `The portal shall do thing ${i + 1}.`),
       ),
     };
+    // Each requirement's fields are its own (`a1`, ..., `d61`): the same field
+    // with the same words on two requirements reads as one gap to a batched
+    // extraction's cross-batch dedupe (#2530).
     const bigExtraction = {
       requirements: BIG.statements.map((_, i) =>
-        req(`Thing ${i + 1}`, [`REQ-${String(i + 1).padStart(3, "0")}`], FIELDS),
+        req(
+          `Thing ${i + 1}`,
+          [`REQ-${String(i + 1).padStart(3, "0")}`],
+          FIELDS.map((f) => `${f}${i + 1}`),
+        ),
       ),
     };
     const questionCalls = (calls: Call[]) =>
