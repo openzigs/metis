@@ -210,6 +210,24 @@ describe("parseJudgeVerdict", () => {
     });
   });
 
+  // #2533 panel — pins the issue's "prefer the last fenced block" as a decision:
+  // a full-shape example in prose after a fenced verdict does not replace it.
+  it("keeps the fenced verdict over a full-shape object in prose after it", () => {
+    const example = { behaviour: "abstain", facts: {}, spans: {} };
+    const reply = `\`\`\`json\n${JSON.stringify(good)}\n\`\`\`\nAn abstention would read ${JSON.stringify(example)}.`;
+    expect(parseJudgeVerdict(reply, q, spans)?.behaviour).toBe("answer");
+  });
+
+  it("does not end a string at an escaped quote, or start one at a quote in prose", () => {
+    const quoted = { ...good, note: 'the reply says "}" here' };
+    expect(parseJudgeVerdict(`Verdict: ${JSON.stringify(quoted)}`, q, spans)?.behaviour).toBe(
+      "answer",
+    );
+    expect(parseJudgeVerdict(`A 5" gap: ${JSON.stringify(good)}`, q, spans)?.behaviour).toBe(
+      "answer",
+    );
+  });
+
   it("finds the verdict after a stray quote inside an unclosed brace in prose", () => {
     const reply = `The reply's map { has a 5" gap\n${JSON.stringify(good)}`;
     expect(parseJudgeVerdict(reply, q, spans)?.behaviour).toBe("answer");
