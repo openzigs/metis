@@ -164,7 +164,7 @@ batches (3, 4, 5 and 9), the merge and those re-prompts, so no section was asked
 After #2407, R's precision was 0.92 on 01 and 0.88 on 02, against B's 1.00. **#2255's rule now
 holds on all three documents B reads, under a key that gained six requirements.** Under the
 old key it would still fail on 01 and 02. `ANALYSIS_DOCUMENT_READER` stays off: #2321 is still
-open, and a person has not yet confirmed the six labels.
+open. A person (the owner) reviewed the six labels on 2026-11-15: five stand and one, R62, was removed (below).
 
 **Each false requirement on 01 and 02 was decided on its own.** There were 13 different ones
 across #2361's and #2407's four runs of each document. A **label gap** is a sentence that
@@ -189,13 +189,22 @@ labelled sentence already says in full.
 | 02 | 5.2 "Special terms may set different periods…" | 3 | over-extraction: R6 already reads the claimant's own terms |
 | 02 | 9.1 "Subcontract agreements allow Northgate to recover from a haulier…" | 1 | over-extraction: the contract position R37 and R38 set out. This one is a close call: it resembles 7.1, but its content is in the requirements after it. |
 
-The six additions are recorded in every `labels.json`'s `labelStatus` as added by an AI and
-not yet confirmed by a person. A reviewer who disagrees removes the `[[R…]]` marker in
-`frd.src.md` and rebuilds. R58 on 01 and R62 and R63 on 02 replaced an ambiguity's marker, so
-for those three the reviewer also restores the `[[A…]]` marker it replaced (01's A4 on R58,
-02's A4 on R62 and A1 on R63) and removes the id from that ambiguity's `@R` list
-(`A4 [conflict] @R24,R58`, `A4 [vague-term] @R31,R62`, `A1 [conflict] @R7,R63`). Now 01 has
-59 requirements and 02 has 63.
+The six additions were reviewed and decided by a person (the owner) on 2026-11-15, and
+`labelStatus` says so. **R57, R58, R59, R61 and R63 are confirmed as requirements.**
+**R62 is not a requirement:** "Approvers are expected to deal with approvals promptly so that
+settlement times can be met." is a vague term ("promptly", no target time), so it is back to
+being A4's span (`[[A4 …]]` replaces `[[R62 …]]` in `frd.src.md`) and A4's `@R` list is
+`@R31` only. R63 was checked against the document for an earlier label of the same 14-day
+notice-of-damage rule: there is none. R7 sets a *different* period (7 days) and the two are
+the conflict A1 asks about, so R63 is not a repeat of R7 and stays one side of A1. No
+summary-table row is labelled as an alias of an earlier requirement (the other rows in 15 are
+unlabelled), so no duplicate mechanism exists to use. Now 01 has 59 requirements (unchanged)
+and 02 has 62.
+
+**Scores not re-run.** Scoring needs the judge (a model call), so the committed readings were
+not re-scored. The expected effect, for the next measured run: 02's key loses R62, so a reader
+statement matching it is now a false requirement (precision falls on 02) and 02's recall
+denominator is 62; 01 is unchanged.
 
 **What changed in the reader:**
 
