@@ -375,6 +375,53 @@ and B's.
 Spend: $3.45 metered ($2.83 Sonnet, nothing reached its judge; $0.62 DeepSeek, of which $0.01
 judge), within the $20 pre-approval.
 
+### The source-mode extraction, a batch at a time (#2530)
+
+#2271 found that with the reader on, the extraction that turns the reader's statements into
+structured requirements failed on every Sonnet 5.5 document. It wrote every requirement in one
+reply, and that reply stopped at the 16,000-token output cap. It now reads at most 20 statements
+a call (`SOURCE_EXTRACTION_BATCH_STATEMENTS`), four calls at a time, and concatenates the
+requirements (`requirements-extractor.ts`).
+
+Reading `reader-sonnet-5-5-2530` (arm R, claude-sonnet-5-5, output cap 16,384, one run per
+document, each its own invocation, combined with `--combine`). Arm R's question round is #2271's,
+which was not yet merged when these runs were made, so they ran on a local merge of this
+branch with #2529's 3076d555f. One line was changed: 3076d555f passed the eval's label
+`anthropic/claude-sonnet-5-5` to the extraction as a model id, and Anthropic answers that with a
+404, failing every extraction. #2530 makes the same change in `arms.ts`, so the extraction runs at
+the provider's model, as an analysis's does. That change is the `(uncommitted changes)` the
+reading records. Document 04 was measured apart, as explained below.
+
+| Document | Statements to the extraction | Batches | Extraction | Requirements, open ambiguities | Question round |
+|---|---|---|---|---|---|
+| 01 clinic booking | 61 | 4 | **read**, 70 s | 61, 243 | failed: cap reached twice |
+| 02 freight claims | 65 | 4 | **read**, 66 s | 65, 239 | failed: cap reached twice |
+| 03 community grants | 118 | 6 | **read**, 157 s | 118, 433 | failed: cap reached twice |
+| 04 library lending | 227 | 12 | **read**, 248 s, every statement cited | 239, 914 | not run |
+
+**The extraction read every document; no reading failed at it.** The reader's recall and
+precision held (0.99 and 0.97 over 01 to 03).
+
+**The analyst still gets no question.** The dialog's first round now fails the same way, one
+step later. It writes one question per open ambiguity in one reply at the round-1 model, and
+hundreds of ambiguities do not fit: on 01 to 03, both attempts stopped at the cap (58,586
+characters written on 01's first). Filed as **#2534**. Only 8 questions are asked a round, so
+the reply was never going to be used whole. The Questions table therefore reads `failed` on
+every document. The extraction's counts above come from its log line, because a failed round
+records none.
+
+**04 was measured without the eval CLI.** Its reading would run for about 12 minutes (reader
+3.5, extraction 4, the failing question round 4.5), past what one sitting allows. A script read
+it with `readDocument`, took the statements arm R takes (`sourceStatementsOf`) and ran the
+extraction over them: 370 statements, 227 to the extraction, 239 requirements, 914 open
+ambiguities, all 227 statements cited by a requirement. Reader $0.5929, extraction $1.4656. It is
+not in the reading's tables.
+
+Spend: $6.06 metered. The reading cost $2.9967 (judge $0.1527), and 04's read and extraction cost
+$2.0585. A first run of 01 with the batches one at a time cost $0.7774, and showed a batch took
+70 to 90 seconds, which is why four now run at once. A run of 01 before the one-line change cost
+$0.2316. The total is within the $20 pre-approval.
+
 ## The Phase 0 answer (#2229)
 
 When an analyst gives METIS a Word FRD today, Requirements Analysis finds **about a quarter

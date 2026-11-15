@@ -406,7 +406,11 @@ export type PromotionStatus = "allowed" | "blocked";
  * message itself and never renders `reason`'s detail.
  */
 export interface StructuredExtractionFailure {
-  reason: NoVerdictReason;
+  /**
+   * #2530 review — `invalid-input`: the extractor refused its input before
+   * any model call (`SourceExtractionInputError`, a caller bug).
+   */
+  reason: NoVerdictReason | "invalid-input";
   at: string;
 }
 

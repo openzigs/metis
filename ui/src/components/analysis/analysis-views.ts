@@ -503,7 +503,9 @@ export function approvalsNoneMessage(
       ? "the request to the AI model failed and no requirements came back"
       : failure.reason === "empty-response"
         ? "the AI model returned an empty answer"
-        : "METIS could not read the requirements out of the AI model’s answer";
+        : failure.reason === "invalid-input"
+          ? "METIS built the request wrongly and never sent it to the AI model"
+          : "METIS could not read the requirements out of the AI model’s answer";
   const cause = `No approval checkpoints were created for this run: ${why}, so nothing was put up for approval.`;
   // While the run is still going, "run it again" is premature advice and no
   // requirement has been saved yet.

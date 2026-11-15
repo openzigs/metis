@@ -1284,7 +1284,13 @@ export interface EnhancementMetadata {
    * Not the same as an empty `structuredRequirements`.
    */
   structuredExtractionFailure?: {
-    reason: "unparseable" | "schema-invalid" | "empty-response" | "provider-error";
+    reason:
+      | "unparseable"
+      | "schema-invalid"
+      | "empty-response"
+      | "provider-error"
+      /** #2530 review — refused before any model call: a METIS bug. */
+      | "invalid-input";
     at: string;
   };
   webResearch?: WebResearchResultPayload;

@@ -518,7 +518,7 @@ export function createArmR(model: string, opts: ArmROptions = {}): DocArm {
         : "read again every run, then saved (reread)",
       requirements: "statements labelled requirement, constraint or business-rule",
       extraction:
-        "RequirementsExtractor in source mode over those statements, at the arm's model (GtWR R7/R8/R9 and TBD rules on their paragraphs); a failure fails the question round, not the reading",
+        "RequirementsExtractor in source mode over those statements, at the provider's model as in an analysis (GtWR R7/R8/R9 and TBD rules on their paragraphs); a failure fails the question round, not the reading",
       questions: `the dialog's first round: generateClarifyingQuestions in source mode, then selectQuestionsToAsk (unanswerable and same-outcome set aside, ranked, at most ${MAX_QUESTIONS_PER_ROUND} asked); the open ambiguities as written when none is worth asking`,
       questionModel:
         "the provider's Haiku tier where it serves one, else its model (tierModelFor, as the dialog's round 1)",
@@ -547,12 +547,10 @@ export function createArmR(model: string, opts: ArmROptions = {}): DocArm {
       let round: FirstRound | undefined;
       let questionError: string | undefined;
       try {
-        round = await askFirstRound(
-          provider,
-          reading,
-          { documentId, filename: "source.docx" },
-          { model },
-        );
+        // #2530 — no model id: `model` is the eval's label ("anthropic/claude-sonnet-5-5"),
+        // which a provider answers with a 404. The extraction runs at the provider's
+        // model, as an analysis's does (the routes pass no `model`).
+        round = await askFirstRound(provider, reading, { documentId, filename: "source.docx" });
       } catch (err) {
         questionError = `questions: ${(err instanceof Error ? err.message : String(err))
           .replace(/\s+/g, " ")

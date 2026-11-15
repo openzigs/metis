@@ -187,6 +187,115 @@ export function buildSourceExtractionInput(
 }
 
 /**
+ * #2530 — the most statements one source-mode extraction call is given. One
+ * reply writes a requirement per statement with its `sourceIds`, ambiguities
+ * and evidence needs. #2271 measured the whole list in one reply (62 to 345
+ * statements) stopping at the 16,000-token output cap on all four corpus
+ * documents on Sonnet 5.5; 62 statements wrote over 43,000 characters, about
+ * 260 tokens a statement before the cut. 20 statements leave the reply about
+ * a third of that cap.
+ */
+export const SOURCE_EXTRACTION_BATCH_STATEMENTS = 20;
+
+/**
+ * #2530 — the most batch calls in flight at once. One batch took 70 to 90
+ * seconds on Sonnet 5.5, and the 61 KB corpus document (04) is 227 statements
+ * on Sonnet 5.5, so 12 batches: one at a time, that is about 17 minutes before
+ * the analyst sees a question. (DeepSeek's 345 statements for it in #2271
+ * would be 18 batches.)
+ */
+export const SOURCE_EXTRACTION_CONCURRENCY = 4;
+
+/**
+ * `fn` over `items`, at most `limit` in flight, results in input order. Once
+ * one call rejects, no new item starts and `onFailure` runs (so the caller can
+ * abort the calls still in flight: their spend would be for nothing); the
+ * first rejection is the result, never a later one the abort caused.
+ *
+ * Not `portfolio/gap-engine.ts`'s pool, which importing would bring Prisma into
+ * this module, and which differs in one way: it also stops starting items after
+ * a rejection, but it has no `onFailure`, so the calls already in flight run to
+ * completion and are billed for a result that is thrown away.
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+  onFailure: () => void,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  let failure: { err: unknown } | undefined;
+  const worker = async (): Promise<void> => {
+    while (!failure && next < items.length) {
+      const i = next++;
+      try {
+        out[i] = await fn(items[i]!);
+      } catch (err) {
+        if (failure) return;
+        failure = { err };
+        onFailure();
+        return;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  if (failure) throw failure.err;
+  return out;
+}
+
+/**
+ * #2530 — `statements` in document order, split into the fewest batches of at
+ * most `size`, as even as they come (21 are 11 and 10, not 20 and 1), so no
+ * batch is a lone statement read without its neighbours.
+ */
+export function batchSourceStatements(
+  statements: readonly SourceStatement[],
+  size: number = SOURCE_EXTRACTION_BATCH_STATEMENTS,
+): SourceStatement[][] {
+  const count = Math.ceil(statements.length / size);
+  const batches: SourceStatement[][] = [];
+  let at = 0;
+  for (let i = 0; i < count; i++) {
+    const take = Math.ceil((statements.length - at) / (count - i));
+    batches.push(statements.slice(at, at + take));
+    at += take;
+  }
+  return batches;
+}
+
+/**
+ * #2530 review — a source-mode extraction was handed an input that is not
+ * {@link buildSourceExtractionInput} over its own statements. A programming
+ * error in the caller, raised before any model call: distinct from
+ * {@link RequirementsExtractionError} so the failure marker does not read as a
+ * failed provider call.
+ */
+export class SourceExtractionInputError extends Error {
+  constructor(detail: string) {
+    super(detail);
+    this.name = "SourceExtractionInputError";
+  }
+}
+
+/**
+ * #2530 — the text `rawInput` carries before the statements: the
+ * `extraInstructions` {@link buildSourceExtractionInput} was given. Every batch
+ * call repeats it ahead of its own statements. Any other input would be repeated
+ * whole, statements and all, in every batch, so it is refused.
+ */
+function sourceExtractionLead(rawInput: string, sources: readonly SourceStatement[]): string {
+  const blocks = buildSourceExtractionInput(sources);
+  if (!rawInput.endsWith(blocks)) {
+    throw new SourceExtractionInputError(
+      "A source-mode extraction's input must be buildSourceExtractionInput(sources, …) " +
+        "over the same statements",
+    );
+  }
+  return rawInput.slice(0, rawInput.length - blocks.length);
+}
+
+/**
  * The most source paragraphs one requirement keeps that the GtWR rules flag
  * nothing in, however many flagged ones it also cites. #2296 — a flagged
  * paragraph is kept past it: it is what the flag's question cites.
@@ -365,6 +474,87 @@ export function attachUncitedQualityFlags(
   return added;
 }
 
+/** How much wording two batches' gaps on the same field must share to be one gap. */
+export const BATCH_GAP_DUPLICATE_THRESHOLD = 0.8;
+
+/** Lower-case, whitespace-collapsed: the form two gap fields are compared in. */
+const normalisedField = (field: string): string => field.toLowerCase().replace(/\s+/g, " ").trim();
+
+/** Jaccard overlap of two word sets; 0 when both are empty. */
+function overlap(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
+  if (a.size === 0 && b.size === 0) return 0;
+  let shared = 0;
+  for (const w of a) if (b.has(w)) shared++;
+  return shared / (a.size + b.size - shared);
+}
+
+/**
+ * #2530 review — the set-level checks (ISO/IEC/IEEE 29148 §5.2.6, and gaps
+ * where the document is SILENT) are model-written, inside each batch's reply,
+ * over that batch's statements only. Once the batches are joined, this pass
+ * runs over the whole set, with no model call, and removes the two artefacts
+ * of asking per batch:
+ *
+ * - a gap a later batch raised again: same field (case and spacing aside) and
+ *   at least {@link BATCH_GAP_DUPLICATE_THRESHOLD} of its wording shared with
+ *   one an earlier batch kept. The earlier batch's copy stays.
+ * - a gap another batch's statements answer: every content word of its field
+ *   (two at least, so "actor" alone never matches) appears in one statement
+ *   of a different batch. Lexical and deliberately narrow: a gap whose answer
+ *   is worded differently is still asked, which costs a question; a looser
+ *   match would drop questions the document does not answer.
+ *
+ * Only model-written gaps are touched: a GtWR rule hit (`rule` set) is about
+ * its requirement's own source paragraph. Gaps within one batch are left as
+ * the model wrote them, since that call saw all of its statements. Returns how
+ * many gaps were removed, by cause.
+ */
+export function reconcileBatchGaps(
+  perBatch: readonly StructuredRequirement[][],
+  batches: readonly (readonly SourceStatement[])[],
+): { duplicates: number; answeredElsewhere: number } {
+  const statementWords = batches.map((batch) =>
+    batch.map((s) => contentWords(`${s.statement} ${s.quote}`)),
+  );
+  const kept: { batch: number; field: string; words: Set<string> }[] = [];
+  let duplicates = 0;
+  let answeredElsewhere = 0;
+  perBatch.forEach((requirements, b) => {
+    for (const requirement of requirements) {
+      requirement.ambiguities = requirement.ambiguities.filter((gap) => {
+        if (gap.rule) return true;
+        const field = normalisedField(gap.field);
+        const words = contentWords(`${gap.description} ${gap.suggestedQuestion}`);
+        if (
+          kept.some(
+            (k) =>
+              k.batch !== b &&
+              k.field === field &&
+              overlap(k.words, words) >= BATCH_GAP_DUPLICATE_THRESHOLD,
+          )
+        ) {
+          duplicates++;
+          return false;
+        }
+        const fieldWords = [...contentWords(gap.field)];
+        if (
+          fieldWords.length >= 2 &&
+          statementWords.some(
+            (statements, other) =>
+              other !== b && statements.some((sw) => fieldWords.every((w) => sw.has(w))),
+          )
+        ) {
+          answeredElsewhere++;
+          return false;
+        }
+        kept.push({ batch: b, field, words });
+        return true;
+      });
+    }
+  });
+  return { duplicates, answeredElsewhere };
+}
+
 /**
  * #1058 — structured extraction produced nothing usable. Distinct from an empty
  * result: the model was asked and its answer could not be read (or the call
@@ -401,7 +591,18 @@ export class RequirementsExtractor {
    * #2235 — with `sources` (the document reader's verified statements), each
    * requirement is asked for the statements it rests on, carries their
    * paragraphs as `sources`, and has the GtWR rules' hits on those
-   * paragraphs added to its ambiguities.
+   * paragraphs added to its ambiguities. `rawInput` is then
+   * {@link buildSourceExtractionInput} over `sources`.
+   *
+   * #2530 — past {@link SOURCE_EXTRACTION_BATCH_STATEMENTS} statements, one
+   * call per batch ({@link batchSourceStatements}), each with `rawInput`'s
+   * instructions and its own statements, {@link SOURCE_EXTRACTION_CONCURRENCY}
+   * at a time; the requirements are concatenated in document order. A
+   * requirement's `sourceIds` resolve against the statements its call was
+   * given, and the uncited scan runs once, over every statement. A batch whose
+   * reply cannot be read fails the extraction, as one call did, and no further
+   * batch is started: a list missing a batch's requirements would pass for a
+   * complete one.
    */
   async extract(
     rawInput: string,
@@ -411,8 +612,59 @@ export class RequirementsExtractor {
     if (!rawInput.trim()) {
       return { requirements: [], totalAmbiguities: 0, totalEvidenceNeeds: 0 };
     }
-    const sourceMode = sources !== undefined && sources.length > 0;
+    if (sources === undefined || sources.length === 0) {
+      const rawReqs = await this.request(rawInput, false, signal);
+      return this.summarise(this.toStructured(rawReqs, rawInput));
+    }
 
+    const batches = batchSourceStatements(sources);
+    const lead = batches.length > 1 ? sourceExtractionLead(rawInput, sources) : "";
+    // #2296 — what the requirements cite, including paragraphs past the ceiling.
+    const citedRefs = new Set<string>();
+    // #2530 review — one batch failing aborts the others in flight (and their
+    // re-prompts): the extraction is lost, so their replies would be billed for
+    // nothing. The caller's own cancellation still reaches every call.
+    const lost = new AbortController();
+    const batchSignal = signal ? AbortSignal.any([signal, lost.signal]) : lost.signal;
+    const perBatch = await mapWithConcurrency(
+      [...batches.entries()],
+      SOURCE_EXTRACTION_CONCURRENCY,
+      async ([i, batch]) => {
+        const input = batches.length > 1 ? buildSourceExtractionInput(batch, lead) : rawInput;
+        if (batches.length > 1) {
+          log.info("Extracting a batch of source statements", {
+            batch: i + 1,
+            of: batches.length,
+            statements: batch.length,
+          });
+        }
+        const rawReqs = await this.request(input, true, batchSignal);
+        return this.toStructured(rawReqs, input, new Map(batch.map((s) => [s.ref, s])), citedRefs);
+      },
+      () => lost.abort(),
+    );
+    if (batches.length > 1) {
+      const removed = reconcileBatchGaps(perBatch, batches);
+      if (removed.duplicates + removed.answeredElsewhere > 0) {
+        log.info("Set-level gaps reconciled across batches", removed);
+      }
+    }
+    const requirements = perBatch.flat();
+    // #2275 — the GtWR rules scan EVERY statement, not only the cited ones: a
+    // statement no requirement cites (the model left it out, or cited the wrong
+    // one) would otherwise get no rule hits at all. #2530 — across every batch:
+    // a statement one batch left uncited may be what another batch's
+    // requirement restates.
+    attachUncitedQualityFlags(requirements, new Map(sources.map((s) => [s.ref, s])), citedRefs);
+    return this.summarise(requirements);
+  }
+
+  /** One extraction call over `input`; the reply's requirements, unread. */
+  private async request(
+    input: string,
+    sourceMode: boolean,
+    signal: AbortSignal | undefined,
+  ): Promise<unknown[]> {
     const messages: ChatMessage[] = [
       {
         role: "system",
@@ -420,10 +672,10 @@ export class RequirementsExtractor {
           ? EXTRACTION_SYSTEM_PROMPT + SOURCE_EXTRACTION_SUFFIX
           : EXTRACTION_SYSTEM_PROMPT,
       },
-      { role: "user", content: rawInput },
+      { role: "user", content: input },
     ];
 
-    log.info("Extracting structured requirements from input", { chars: rawInput.length });
+    log.info("Extracting structured requirements from input", { chars: input.length });
 
     const outcome = await requestStructuredVerdict(this.provider, {
       label: "requirements-extraction",
@@ -441,32 +693,36 @@ export class RequirementsExtractor {
     if (!hasVerdict(outcome)) {
       throw new RequirementsExtractionError(outcome.reason, outcome.detail);
     }
+    return outcome.verdict.requirements;
+  }
 
-    const parsed = this.toStructured(
-      outcome.verdict.requirements,
-      rawInput,
-      sourceMode ? new Map(sources.map((s) => [s.ref, s])) : undefined,
-    );
-
+  /** The extraction's result: `requirements` with their totals, logged. */
+  private summarise(requirements: StructuredRequirement[]): StructuredRequirements {
+    const parsed: StructuredRequirements = {
+      requirements,
+      totalAmbiguities: requirements.reduce((n, r) => n + r.ambiguities.length, 0),
+      totalEvidenceNeeds: requirements.reduce((n, r) => n + r.evidenceNeeds.length, 0),
+    };
     log.info("Extracted structured requirements", {
       requirements: parsed.requirements.length,
       ambiguities: parsed.totalAmbiguities,
       evidenceNeeds: parsed.totalEvidenceNeeds,
     });
-
     return parsed;
   }
 
+  /**
+   * One reply's requirements. In source mode, each cites from `sourcesByRef`
+   * (the statements its call was given) and every statement it names, kept or
+   * not, is added to `citedRefs`.
+   */
   private toStructured(
     rawReqs: unknown[],
     rawSource: string,
     sourcesByRef?: ReadonlyMap<string, SourceStatement>,
-  ): StructuredRequirements {
+    citedRefs: Set<string> = new Set(),
+  ): StructuredRequirement[] {
     const requirements: StructuredRequirement[] = [];
-    let totalAmbiguities = 0;
-    let totalEvidenceNeeds = 0;
-    // #2296 — what the requirements cite, including paragraphs past the ceiling.
-    const citedRefs = new Set<string>();
 
     for (const raw of rawReqs) {
       if (!raw || typeof raw !== "object") continue;
@@ -504,9 +760,6 @@ export class RequirementsExtractor {
         ambiguities.push(flagged);
       }
 
-      totalAmbiguities += ambiguities.length;
-      totalEvidenceNeeds += evidenceNeeds.length;
-
       requirements.push({
         id: randomUUID(),
         title,
@@ -521,14 +774,7 @@ export class RequirementsExtractor {
       });
     }
 
-    // #2275 — the GtWR rules scan EVERY statement, not only the cited ones: a
-    // statement no requirement cites (the model left it out, or cited the wrong
-    // one) would otherwise get no rule hits at all.
-    if (sourcesByRef) {
-      totalAmbiguities += attachUncitedQualityFlags(requirements, sourcesByRef, citedRefs);
-    }
-
-    return { requirements, totalAmbiguities, totalEvidenceNeeds };
+    return requirements;
   }
 
   private parseAmbiguities(raw: unknown): Ambiguity[] {

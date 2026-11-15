@@ -270,6 +270,7 @@ import { redactLiveCapability } from "./source-redaction.js";
 import {
   RequirementsExtractionError,
   RequirementsExtractor,
+  SourceExtractionInputError,
   buildSourceExtractionInput,
   type SourceStatement,
 } from "./requirements-extractor.js";
@@ -3460,7 +3461,14 @@ export class AnalysisOrchestrator {
       if (!input.signal.aborted) {
         // Only the extractor's own error carries a reason from the union; any
         // other throw (transport, a bug) is recorded as a provider failure.
-        const reason = err instanceof RequirementsExtractionError ? err.reason : "provider-error";
+        // #2530 review — except an input the extractor refused before any
+        // model call, which no provider was asked about.
+        const reason =
+          err instanceof RequirementsExtractionError
+            ? err.reason
+            : err instanceof SourceExtractionInputError
+              ? "invalid-input"
+              : "provider-error";
         try {
           await persistAnalysisEnhancement(input.analysisId, {
             structuredExtractionFailure: { reason, at: new Date().toISOString() },

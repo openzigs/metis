@@ -611,12 +611,15 @@ describe("helpers", () => {
       expect(out.diagnostics.questionsFailed).toBe(0);
     });
 
-    it("extracts at the arm's model, as production passes the analysis's model", async () => {
+    // #2530 — the arm's model is the eval's label ("anthropic/claude-sonnet-5-5"):
+    // sent as a model id, Anthropic answered 404 and every extraction failed.
+    it("extracts at the provider's model, never sending the arm's label as a model id", async () => {
       const { provider, calls } = routedProvider([...BASE, ...LOOP_ROUTES]);
-      const arm = createArmR("the-arm-model", { store: createEvalReadingStore() });
+      const arm = createArmR("anthropic/claude-sonnet-5-5", { store: createEvalReadingStore() });
       await arm.read(ITEM, { provider, concurrency: 1 });
       const extraction = calls.find((c) => c.system.includes("Extract structured requirements"));
-      expect(extraction!.opts?.model).toBe("the-arm-model");
+      expect(extraction).toBeDefined();
+      expect(extraction!.opts?.model).toBeUndefined();
     });
   });
 
