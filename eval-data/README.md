@@ -25,7 +25,11 @@ eval-data/
 Not every corpus carries every file. The synthetic `brd-*`/`prd-*` items carry
 `source.md` + `expected.json`; the `docretrieval-*` items carry `queries.json`
 over a frozen `docs/` snapshot, and `docretrieval-01-metis-docs` additionally
-carries `reference.json`.
+carries `reference.json`. `docretrieval-03-analyst-docs` (#2527) has no `docs/`
+snapshot: its `sources.json` names each document's committed source elsewhere in
+`eval-data/corpus/` (`.md` read verbatim, `.docx` through the production Word
+conversion) and pins the text by sha256, and its `PREREGISTRATION.md` records the
+design committed before any query was written.
 
 ### `docs/` is committed — and gitignored
 

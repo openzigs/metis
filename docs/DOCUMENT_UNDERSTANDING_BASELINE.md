@@ -7,7 +7,7 @@
   commit a reading records is on its pull request's branch, which was squash-merged:
   `8a0601902` landed on `main` as `1c93df96e` (#2247), `658a61dc2` as `afde69a5f` (#2362),
   `362294ae3` as `b6c1799b3` (#2415) and `2d78fb104` as `815b914ee` (#2444).
-- **Readings:** `eval-data/readings/doc-understanding/`; #2407 re-measured arm R on 2026-11-12 at commit `362294ae3` (`reader-sonnet-5-5-2407`); #2374 measured arms R and B on 2026-11-13 at commit `2d78fb104` (`reader-sonnet-5-5-2374`, `reader-sonnet-5-5-2374-B-cap21333`); #2319 measured arm R's saved readings on 2026-11-14 at commit `6b9a67824` (`reader-sonnet-5-5-2319`)
+- **Readings:** `eval-data/readings/doc-understanding/`; #2407 re-measured arm R on 2026-11-12 at commit `362294ae3` (`reader-sonnet-5-5-2407`); #2374 measured arms R and B on 2026-11-13 at commit `2d78fb104` (`reader-sonnet-5-5-2374`, `reader-sonnet-5-5-2374-B-cap21333`); #2319 measured arm R's saved readings on 2026-11-14 at commit `6b9a67824` (`reader-sonnet-5-5-2319`); #2271 measured arm R's questions on 2026-11-14 at commit `a7ad8202f` (`reader-sonnet-5-5-2271`, `reader-deepseek-flash-2271`)
 - **Harness:** `pnpm --filter server eval:doc-understanding` (`server/src/lib/eval/doc-understanding/`)
 
 ## The reader, measured (#2255)
@@ -287,6 +287,94 @@ the #2407 and #2374 readings. The quality columns count every reading.
 
 Spend: $1.79 metered ($1.22 reader, $0.57 judge), within the $20 pre-approval.
 
+### The question loop, measured (#2271)
+
+**With the reader on, the analysis asked no clarifying question on seven of eight readings.**
+#2235 writes the questions from the source paragraphs. Arm R now asks the first round an
+analysis asks about its reading (`eval/doc-understanding/question-loop.ts`). The reader's
+requirement, constraint and business-rule statements go to the extraction in source mode
+(`RequirementsExtractor` with the statements, which applies the GtWR R7/R8/R9 and TBD rules to
+their paragraphs). The requirements with an ambiguity go to `generateClarifyingQuestions` in
+source mode, at the dialog's round-1 model. Then `selectQuestionsToAsk` sets aside the
+unanswerable and the same-outcome questions, ranks the rest and asks at most 8. R's
+requirements are still the reader's statements, so recall and precision measure the reader
+as above, **but not on the readings below**: they were made at `a7ad8202f`, where a failed
+extraction failed the whole reading, so the seven failed readings have no recall or
+precision either (n/a in the reading files). From the review fix on, a failed extraction or
+question call fails the question round alone, as an analysis treats the enhancement as
+best-effort: the reading is still judged on its requirements, the Questions table reads
+`failed` (or counts the failed rounds), and its question metrics are left unmeasured. R's
+`$ / doc` now includes the extraction and question calls, so it is not comparable with the
+R readings above, which metered the reader alone.
+
+The **extraction** is what fails. It is one call that writes every requirement with its
+`sourceIds`, ambiguities and evidence needs. It sets no output cap, so on the Anthropic
+adapter it inherits 16,000 tokens. On every Sonnet document, and on DeepSeek's 02 to 04, both
+attempts stopped at that cap with truncated JSON (`finishReason: max_tokens`), and the reading
+failed with `RequirementsExtractionError (unparseable)`. In an analysis that means no
+structured requirements, no questions and no approval checkpoints. Filed as **#2530**. The
+reader read every document; its part of each failed reading's cost is real.
+
+Readings `reader-sonnet-5-5-2271` (claude-sonnet-5-5, output cap 16,384) and
+`reader-deepseek-flash-2271` (deepseek-flash, `ANALYSIS_FINAL_ANSWER_MAX_OUTPUT_TOKENS=21333`):
+arm R, one run per document, each document its own invocation, combined with `--combine`, at
+commit `a7ad8202f`.
+
+| Document | Sonnet 5.5 | $ | DeepSeek | $ |
+|---|---|---|---|---|
+| 01 clinic booking | failed: extraction cap reached twice (43,376 and 39,726 characters) | $0.5640 | **8 asked**, 2 of 12 labelled ambiguities found, 6 of 8 worth asking | $0.1366 |
+| 02 freight claims | failed: extraction cap reached twice | $0.5801 | failed: extraction cap reached twice | $0.1274 |
+| 03 community grants | failed: extraction cap reached twice | $0.6800 | failed: extraction cap reached twice | $0.1455 |
+| 04 library lending | failed: extraction cap reached twice | $1.0069 | failed: extraction cap reached twice | $0.2042 |
+
+**The one reading that asked: DeepSeek, document 01.** DeepSeek's first extraction attempt
+also hit the cap; the re-prompt fit.
+
+| Step | Count |
+|---|---|
+| Reader statements, of which requirement, constraint or business rule | 159, 62 |
+| Requirements extracted, ambiguities on them (GtWR hits included) | 62, 30 |
+| Questions generated (one per open ambiguity) | 30 |
+| Set aside: unanswerable / same outcome | 0 / 0 |
+| Asked (the cap) / over the cap, left for round 2 | 8 / 22 |
+| Labelled ambiguities found by the 8 | 2 of 12 (A5 "near real time", A12 the second factor) |
+| Judged worth asking | 6 of 8 (question precision 0.75) |
+
+The same document's other readings, for comparison. Labels for B are the current key. A was
+read before #2374, against 11 ambiguities.
+
+| Reading | Questions asked | Labelled ambiguities found | Worth asking |
+|---|---|---|---|
+| R, this PR (DeepSeek) | 8 | 2 of 12 | 0.75 |
+| B, `reader-deepseek-flash-cap21333` (#2255) | 12 | 10 of 12 | 1.00 |
+| A, `baseline-deepseek-flash-A` (#2229, today's path) | 34 | 4 of 11 | 0.47 |
+
+Three things show in that one reading. None of them is a result on its own: it is one document
+on the iteration model.
+
+1. **The cap decides what is asked.** The model set nothing aside: it called all 30 questions
+   answerable, with readings that build different things. The ranking then took the first 8.
+   All 8 are about sections 1 to 5.2, three of them the background sections (1, 1.3 and 1.4).
+   Questions on the later sections were left for a round that only comes after the analyst
+   answers these.
+2. **The questions are mostly not the labelled ones.** Of the 10 labelled ambiguities missed,
+   several are conflicts and TBDs the document states outright (A3 the waiting-list expiry, A4
+   the 48 or 24 hour reminder, A6 the inactivity timeout). A likely reason, not yet tested:
+   the loop asks one question per ambiguity of each requirement, not one per gap in the
+   document, so with a cap of 8 the questions are spread thinly.
+3. **A failed extraction is paid in full.** Each failed Sonnet reading wrote 32,000 output
+   tokens in its two extraction attempts, out of 47,972 (01) to 72,679 (04) for the whole
+   reading. DeepSeek's reading of 01 cost $0.1366 with the extraction and questions, against
+   $0.0968 for the reader alone at #2255, at another commit.
+
+**What follows for #2255.** `ANALYSIS_DOCUMENT_READER` cannot go on by default on this
+evidence. With it on, the analysis asks nothing about 7 of 8 readings. #2530 makes the
+extraction complete. The next step is to re-run `--arms R` on Sonnet 5.5 against this table
+and B's.
+
+Spend: $3.45 metered ($2.83 Sonnet, nothing reached its judge; $0.62 DeepSeek, of which $0.01
+judge), within the $20 pre-approval.
+
 ### The source-mode extraction, a batch at a time (#2530)
 
 #2271 found that with the reader on, the extraction that turns the reader's statements into
@@ -296,12 +384,13 @@ a call (`SOURCE_EXTRACTION_BATCH_STATEMENTS`), four calls at a time, and concate
 requirements (`requirements-extractor.ts`).
 
 Reading `reader-sonnet-5-5-2530` (arm R, claude-sonnet-5-5, output cap 16,384, one run per
-document, each its own invocation, combined with `--combine`). Arm R's question round is #2271's
-(PR #2529, not yet merged), so the runs were made on a local merge of this branch with #2529's
-3076d555f, with one line changed: 3076d555f passes the eval's label `anthropic/claude-sonnet-5-5`
-to the extraction as a model id. Anthropic answers that with a 404, so the extraction there runs
-at the provider's model, as production's does (reported on #2529). That is the `(uncommitted
-changes)` the reading records. Document 04 was measured apart, as explained below.
+document, each its own invocation, combined with `--combine`). Arm R's question round is #2271's,
+which was not yet merged when these runs were made, so they ran on a local merge of this
+branch with #2529's 3076d555f. One line was changed: 3076d555f passed the eval's label
+`anthropic/claude-sonnet-5-5` to the extraction as a model id, and Anthropic answers that with a
+404, failing every extraction. #2530 makes the same change in `arms.ts`, so the extraction runs at
+the provider's model, as an analysis's does. That change is the `(uncommitted changes)` the
+reading records. Document 04 was measured apart, as explained below.
 
 | Document | Statements to the extraction | Batches | Extraction | Requirements, open ambiguities | Question round |
 |---|---|---|---|---|---|
@@ -561,6 +650,8 @@ documents 02 and 03 once its reduce had failed on the smallest one.
 | `reader-deepseek-flash-cap21333` (B, R × 4 documents) (#2255) | deepseek-flash | $0.7376 | $0.0905 | **$0.8281** |
 | **#2255 metered total** | | | | **$5.0732** (Sonnet $4.2451, DeepSeek $0.8281) |
 | `reader-sonnet-5-5-2407` (R × 4 documents × 2 runs) (#2407) | claude-sonnet-5-5 | $2.7935 | $0.5721 | **$3.3656** |
+| `reader-sonnet-5-5-2271` (R with questions × 4 documents) (#2271) | claude-sonnet-5-5 | $2.8310 | $0.0000 | **$2.8310** |
+| `reader-deepseek-flash-2271` (R with questions × 4 documents) (#2271) | deepseek-flash | $0.6136 | $0.0090 | **$0.6226** |
 
 Not in the readings: a first smoke run on DeepSeek before the harness was committed, stopped
 by its time limit during arm C (A and B logged $0.0806 with their judges; C's partial spend
@@ -574,6 +665,7 @@ pnpm --filter server eval:doc-understanding --corpus docunderstanding-01-clinic-
 pnpm --filter server eval:doc-understanding --arms A,B --runs 3 --budget 5
 pnpm --filter server eval:doc-understanding --arms B,R --corpus docunderstanding-04-library-lending --budget 8   # #2255, one document per process
 pnpm --filter server eval:doc-understanding --arms R --runs 2 --saved-readings   # #2319, run 2 reuses run 1's readings
+pnpm --filter server eval:doc-understanding --arms R --corpus docunderstanding-01-clinic-booking --budget 3   # #2271, R with its questions, one document per process
 pnpm --filter server eval:doc-understanding --combine a.json,b.json,c.json --reading <name>   # no model call
 pnpm --filter server eval:doc-understanding:build    # after editing a document's frd.src.md
 ```

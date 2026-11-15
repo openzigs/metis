@@ -205,6 +205,11 @@ export function pushSchema(databaseUrl: string, run: ExecRunner = execFileSync):
 /** Options {@link runChunkSweep} needs; spread into every arm, so arm injectables too. */
 export interface ChunkSweepOptions extends Partial<Omit<ArmDeps, "storagePaths" | "docIds">> {
   corpusId?: string;
+  /**
+   * #2527 — size arms run after {@link CHUNK_SIZE_ARMS} and compared against the same
+   * control, e.g. `parseExtraSizes("4096")`. Absent, the sweep is the standard four.
+   */
+  extraSizeArms?: readonly ChunkArmSpec[];
   /** The production embedder, constructed by the CLI so weights load once. */
   embedder: Embedder;
   /** Temp root the harness owns; the SQLite file and vector store live under it. */
@@ -786,6 +791,7 @@ export async function profileArmsAgainstRerankBudget(
   corpus: DocRetrievalCorpus,
   log: (m: string) => void,
   loadCounter: () => Promise<TokenCounter> = loadRerankTokenCounter,
+  arms: readonly ChunkArmSpec[] = CHUNK_SIZE_ARMS,
 ): Promise<RerankBudgetProfile[]> {
   assertTokenCounterInjectedUnderTest(loadCounter);
   let countTokens: TokenCounter;
@@ -807,7 +813,7 @@ export async function profileArmsAgainstRerankBudget(
   }
 
   const profiles: RerankBudgetProfile[] = [];
-  for (const spec of CHUNK_SIZE_ARMS) {
+  for (const spec of arms) {
     const texts = corpus.docs.flatMap((d) =>
       chunkMarkdown(d.text, { chunkSize: spec.chunkSize, overlap: spec.overlap }).map(
         (c) => c.text,
@@ -835,7 +841,7 @@ export function pickWinningArm(results: readonly ChunkArmResult[]): ChunkArmResu
   );
 }
 
-/** Run the whole sweep: four sizes, then the overlap ladder at the CONTROL size. */
+/** Run the whole sweep: four sizes (plus any `extraSizeArms`), then the overlap ladder at the CONTROL size. */
 export async function runChunkSweep(opts: ChunkSweepOptions): Promise<ChunkSweepReport> {
   const log = opts.log ?? ((): void => {});
   const corpus = await loadDocRetrievalCorpus(opts.corpusId);
@@ -851,19 +857,22 @@ export async function runChunkSweep(opts: ChunkSweepOptions): Promise<ChunkSweep
   const controlSpec = CHUNK_SIZE_ARMS.find((a) => a.control);
   if (!controlSpec) throw new Error("CHUNK_SIZE_ARMS declares no control arm");
 
+  const sizeArms = [...CHUNK_SIZE_ARMS, ...(opts.extraSizeArms ?? [])];
   const results = new Map<string, ChunkArmResult>();
-  for (const spec of CHUNK_SIZE_ARMS) {
+  for (const spec of sizeArms) {
     results.set(spec.id, await runChunkArm(corpus, spec, shared));
   }
   const control = results.get(controlSpec.id);
   if (!control) throw new Error("control arm did not run");
 
-  const comparisons = CHUNK_SIZE_ARMS.filter((s) => !s.control).map((spec) => {
-    const arm = results.get(spec.id);
-    if (!arm) throw new Error(`arm ${spec.id} did not run`);
-    arm.sensitiveQueryIds = armSensitiveQueryIds(corpus, controlSpec, spec);
-    return compareChunkArm(control, arm, opts);
-  });
+  const comparisons = sizeArms
+    .filter((s) => !s.control)
+    .map((spec) => {
+      const arm = results.get(spec.id);
+      if (!arm) throw new Error(`arm ${spec.id} did not run`);
+      arm.sensitiveQueryIds = armSensitiveQueryIds(corpus, controlSpec, spec);
+      return compareChunkArm(control, arm, opts);
+    });
 
   // Reported for the size question, and deliberately NOT where the overlap arms run.
   const best = pickWinningArm([...results.values()]);
@@ -882,7 +891,12 @@ export async function runChunkSweep(opts: ChunkSweepOptions): Promise<ChunkSweep
     overlapComparisons.push(compareChunkArm(control, arm, opts));
   }
 
-  const rerankBudget = await profileArmsAgainstRerankBudget(corpus, log, opts.loadTokenCounter);
+  const rerankBudget = await profileArmsAgainstRerankBudget(
+    corpus,
+    log,
+    opts.loadTokenCounter,
+    sizeArms,
+  );
 
   return {
     corpusId: corpus.id,

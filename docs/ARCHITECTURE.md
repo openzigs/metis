@@ -2329,6 +2329,49 @@ power-preserving filter, and the harness now prints that disagreement as a findi
 why #1160's headline, which was read off `arm-sensitive ∧ coverage-clean`, was leaning on a
 weaker test than it appeared to be.
 
+**#2527 re-asked the question on analyst documents, and 2048 holds there too, as a resolved
+null.** Both corpora above are METIS's own engineering docs; a business analyst uploads BRDs,
+PRDs, FRDs and policies. `eval-data/corpus/docretrieval-03-analyst-docs` is fourteen synthetic
+analyst documents already in the repo (`brd-01`…`06`, `prd-01`/`02`, the four
+`docunderstanding` FRDs read from `source.docx` through the production Word conversion, and
+`policy-v2.md` of `governing-01`/`02`; 158,140 characters) with **226 span-anchored queries**
+(109 `lexical`, 117 `paraphrase`). The corpus has no `docs/` snapshot: `sources.json` lists
+each document's committed source and pins the text it yields by sha256. The query count, the
++0.04 floor, the arms, the embedder and the decision rule were committed in its
+`PREREGISTRATION.md` before any query was written. Run with
+`pnpm eval:doc-retrieval --corpus docretrieval-03-analyst-docs --extra-sizes 4096` on
+`Alibaba-NLP/gte-modernbert-base` (the default; recorded in the artefact), `RAG_RERANK` unset
+and contextual chunks off. Every arm keeps span coverage at 1.000 with no span dropped or
+straddled. Content coverage, read as the pre-registered union of aligned chunks over every
+corpus character, is 99.71% at every arm, short of the 99.8% written in `PREREGISTRATION.md`.
+The gap is whitespace `chunkMarkdown` trims at chunk edges: 100% of non-whitespace characters
+are covered at every arm, so nothing substantive is lost and the arms are not confounded.
+`analyst-corpus.test.ts` pins that, and the copy-discipline audits of the corpus (the
+`PREREGISTRATION.md` names `corpus.test.ts`; they live there). The committed corpus holds 226
+queries against the registered 220 (`docunderstanding-01` 34 for 30, `docunderstanding-02` 34
+for 32), inside the 200 to 250 band, so the decision is unaffected.
+
+| arm | chunks | nDCG@10 | Δ vs 2048 | 95% paired CI | sign p | w/l/t | verdict | n for ±0.04 |
+|---|---:|---:|---:|---|---:|---|---|---:|
+| `size-2048` (control) | 242 | **0.846** | — | — | — | — | — | — |
+| `size-1024` | 304 | 0.830 | −0.015 | [−0.036, +0.005] | 0.312 | 20/28/178 | NOT-ESTABLISHED | 60 |
+| `size-768` (overlap clamped to 192) | 365 | 0.797 | −0.049 | [−0.076, −0.022] | 0.000 | 22/54/150 | DIRECTION-ESTABLISHED-MAGNITUDE-NOT | 106 |
+| `size-3072` | 240 | 0.845 | −0.001 | [−0.003, +0.002] | 0.375 | 1/4/221 | NOT-ESTABLISHED | 1 |
+| `size-4096` | 240 | 0.845 | −0.001 | [−0.003, +0.002] | 0.375 | 1/4/221 | NOT-ESTABLISHED | 1 |
+
+Nothing clears +0.04 upward, and every size arm needs at most 106 queries to resolve the floor
+against the 226 run, so **"no chunk size beats 2048 by the floor on analyst documents" is a
+measured claim**. 768 is established worse in direction, though its interval does not reach
+past −0.04. The larger arms barely differ from the control: analyst documents are short
+sections under headings, and `chunkMarkdown` splits on headings first, so 3072 and 4096 cut
+only two fewer chunks than 2048. The overlap ladder at 2048 is a null again (largest effect
++0.002). On the embedder question #2527 raised: #1184's own artefact is not in this
+repository, but the #1183 run it extended, a day earlier on the same harness, is
+(`server/src/lib/eval/provenance/doc-retrieval-chunk-sweep-2026-07-31T20-37-55-374Z.json`), and
+it records `Alibaba-NLP/gte-modernbert-base`, the default since #783. So the METIS-docs
+evidence was measured on today's default too. The default does not change, so no project
+needs re-ingesting.
+
 Cost of ever moving this constant, for the record: it is a **re-ingest, not a reindex** (#1182) —
 `reindex` re-embeds existing chunks and never re-cuts boundaries — and since
 [ADR 0006](decisions/0006-chunker-drift-serve-degraded-but-observable.md) a mixed-generation
@@ -5144,7 +5187,12 @@ ledger-priced with the judge's metered apart (`runner.ts`). The first readings
 (`eval-data/readings/doc-understanding/`) and what follows from them are in
 [DOCUMENT_UNDERSTANDING_BASELINE.md](DOCUMENT_UNDERSTANDING_BASELINE.md): A finds 0.26 of
 the requirements on Sonnet 5.5, B finds all of them. Arm **R** (`--arms R`) runs the
-production document reader below, so its re-measurement is one command.
+production document reader below, so its re-measurement is one command. #2271 — R also asks
+the first round of clarifying questions an analysis would ask about that reading
+(`question-loop.ts`): the source-mode extraction over its statements, then
+`generateClarifyingQuestions` and `selectQuestionsToAsk` (#2235). The report's Questions table
+gives, per arm, the questions asked, the labelled ambiguities found, the questions set aside
+by reason and those over the round's cap. A failed extraction or question call fails the round alone, not the reading, which is still judged on its requirements.
 
 #### Document reader (#2230, epic #2227) — the model reads a whole document
 
@@ -7169,6 +7217,7 @@ Recovery is at-least-once.
 |--------|------|---------|------------|
 | `POST` | `/generate` | Trigger documentation generation (async, returns 202) | 5 req/15min per user |
 | `GET` | `/` | List generated documents for a project, including separate indexing state from the synthetic `Document` row | — |
+| `GET` | `/cost-estimate?repoConnectorId=&pathPrefixes=` | A business-requirements document's estimated cost, as a USD range, before it is generated (#2189) | — |
 | `GET` | `/:docId` | Get a single document: its content once, plus summary metadata, the five latest version summaries (`id`, `version`, `revisionId`, `diffSummary`, `createdAt`) and separate indexing state | — |
 | `GET` | `/:docId/versions/:versionId` | One version's markdown body (#190) | — |
 | `GET` | `/:docId/versions/:versionId/provenance` | One version's full provenance manifest (#190); the UI fetches it only for **Download full manifest** (#196) | — |
@@ -7198,6 +7247,31 @@ selecting every latest version's manifest. Responses are compressed by `compress
 otherwise; on the 611,592-character document the detail body is 151 KB gzip and 144 KB
 Brotli, so no stronger Brotli setting is used (quality 11 saves another 29 KB for ~0.5 s
 of CPU per response).
+
+#2189 — `GET /cost-estimate` answers the Generate form before a business-requirements run.
+`server/src/lib/docs-gen/cost-estimate.ts` builds the plan the generator would run, without a
+model call: the scope's modules grouped by `groupSymbolsIntoModules` with the Phase-1 test
+policy and path scope applied, each module's indexed source lines, which modules already have
+facts in `docs_gen_fact_cache` under the Phase-1 model and `PHASE1_PROMPT_VERSION`, the section
+count from `sectionGroupsFor`, and `DOCS_GEN_DOCUMENT_MAX_CHARS`. A cache row names its module's
+directory but not its repository, so a directory two of the project's repositories share is
+never counted cached. The project's grouped modules are held in memory for up to 60 s, keyed
+on the project, the test policy and each code graph's `updatedAt` and symbol count, so the
+form's repeated estimates (open, repository change, each debounced path edit) read the
+symbols once; the fact cache is read every time. It lays out the run's calls
+(one per Phase-1 chunk, a write and a judge per section, extra batch pairs once the facts
+outgrow one facts cap, claim-extraction calls) and prices them through `RunUsage` →
+`estimateRunCost`, the same path as the after-run tally, so a prompt-length tier is applied per
+call. The models come from `resolveDocsGenCostInputs` (holistic-synthesizer.ts), resolved as a
+run resolves them. `status` is `priced` (`lowUsd`–`highUsd`: the point estimate × 0.7 to × 1.5),
+`unpriced` (naming each model with no price — never a $0 total), `free` (self-hosted or
+zero-priced models only) or `no-code`. The call model's constants are fitted to 16 measured runs
+(#1749's fixture BRD on Sonnet 5.5, a Miniflux BRD on Haiku 5.5, seven first-run and seven
+re-run Miniflux BRDs on DeepSeek Flash); `cost-estimate.calibration.test.ts` pins each run's
+error (−12% to +30%) and requires the range to hold all of them. Not counted: SQL-only
+directories found on disk at run time, web-research grounding, hybrid per-section routing and
+prompt-cache discounts. The route sits behind the router's `requireProjectAccess` and
+`project.read`; every query is project-scoped.
 
 ### UI Components
 

@@ -401,7 +401,7 @@ describe("combineReports and rendering", () => {
     rec.diagnostics = { calls: 0, reused: 1, identicalToSaved: 1 };
     rec.costUsd = 0;
     expect(toMarkdownReport(report)).toContain(
-      "Reused the saved reading: 0 reader calls, $0.0000; identical to the reading saved: yes.",
+      "Reused the saved reading: 0 reader calls, $0.0000 in all (the extraction and questions); identical to the reading saved: yes.",
     );
     rec.diagnostics = { calls: 0, reused: 1, identicalToSaved: 0 };
     expect(toMarkdownReport(report)).toContain("identical to the reading saved: no.");
@@ -437,6 +437,128 @@ describe("combineReports and rendering", () => {
     report.arms[0]!.records = [real, again];
     report.arms[0]!.summary = s;
     expect(toMarkdownReport(report)).toMatch(/1 of 2 readings of A were reused.*not counted/);
+  });
+
+  it("#2271 — tallies each arm's questions: asked, ambiguities found, set aside by reason, over the cap", async () => {
+    const report = await run(["d1", "d2"], [fakeArm("A"), fakeArm("B")]);
+    // Arm B stands in for a selecting arm (R): its readings record the selection.
+    const [r1, r2] = report.arms[1]!.records;
+    r1!.diagnostics = { setAsideUnanswerable: 2, setAsideSameOutcome: 1, overCap: 0 };
+    r2!.diagnostics = { setAsideUnanswerable: 0, setAsideSameOutcome: 3, overCap: 4 };
+    // On d2 the question asked matched no labelled ambiguity.
+    r2!.score = { ...r2!.score!, ambiguitiesRaised: 0 };
+    report.arms[1]!.summary = summariseRecords(report.arms[1]!.records);
+    report.arms[1]!.byItem = ["d1", "d2"].map((itemId) => ({
+      itemId,
+      summary: summariseRecords(report.arms[1]!.records.filter((r) => r.itemId === itemId)),
+    }));
+    expect(report.arms[1]!.summary.questionTally).toEqual({
+      rounds: 2,
+      failedRounds: 0,
+      asked: 2,
+      ambiguitiesFound: 1,
+      ambiguitiesLabelled: 2,
+      setAsideUnanswerable: 2,
+      setAsideSameOutcome: 4,
+      overCap: 4,
+    });
+    // An arm that asks everything it raises records no selection.
+    expect(report.arms[0]!.summary.questionTally).toMatchObject({
+      asked: 2,
+      setAsideUnanswerable: null,
+      overCap: null,
+    });
+    const md = toMarkdownReport(report);
+    expect(md).toContain("## Questions");
+    expect(md).toContain("| A | 2 | 2 of 2 | n/a | n/a | n/a |");
+    expect(md).toContain("| B | 2 | 1 of 2 | 2 | 4 | 4 |");
+    // Per document too.
+    expect(md).toContain("| B | 1 | 1 of 1 | 2 | 1 | 0 |");
+    expect(md).toContain("| B | 1 | 0 of 1 | 0 | 3 | 4 |");
+    // A reading that did not record the selection makes the total unknown, not smaller.
+    delete r2!.diagnostics.overCap;
+    expect(summariseRecords([r1!, r2!]).questionTally.overCap).toBeNull();
+    // A failed reading counts toward nothing: it asked nothing anyone saw.
+    const failed = { ...r1!, score: null, error: "reader: x" };
+    expect(summariseRecords([failed]).questionTally).toEqual({
+      rounds: 0,
+      failedRounds: 1,
+      asked: 0,
+      ambiguitiesFound: 0,
+      ambiguitiesLabelled: 0,
+      setAsideUnanswerable: null,
+      setAsideSameOutcome: null,
+      overCap: null,
+    });
+  });
+
+  describe("#2271 — a failed question round", () => {
+    /** Arm R's shape when its extraction fails: the reader's requirements, no questions. */
+    const roundFails = (id: "A" | "B" | "C"): DocArm => ({
+      ...fakeArm(id),
+      async read(_item, { provider }) {
+        await provider.chat([{ role: "user", content: "read" }], {});
+        return {
+          requirements: [{ text: "lock after five", quote: "The portal shall lock an account" }],
+          questions: [],
+          questionError: "questions: RequirementsExtractionError (unparseable)",
+          diagnostics: { calls: 1, questionsFailed: 1 },
+        };
+      },
+    });
+
+    it("still scores the reader's requirements, and leaves the question metrics unmeasured", async () => {
+      const logs: string[] = [];
+      const report = await runDocUnderstandingEval([item("d1")], {
+        arms: [roundFails("C")],
+        runs: 1,
+        budget: new EvalBudget(100),
+        provider: judgeProvider().provider,
+        log: (l) => logs.push(l),
+      });
+      const [rec] = report.arms[0]!.records;
+      expect(rec!.error).toBeUndefined();
+      expect(rec!.questionError).toBe("questions: RequirementsExtractionError (unparseable)");
+      expect(rec!.score!.requirementRecall).toBe(0.5);
+      const s = report.arms[0]!.summary;
+      expect(s.failures).toBe(0);
+      expect(s.metrics.requirementRecall.n).toBe(1);
+      // Asking nothing because the round failed is not asking nothing.
+      expect(s.metrics.questionPrecision.n).toBe(0);
+      expect(s.metrics.ambiguityRecall.n).toBe(0);
+      expect(s.questionsPerDocument).toBeNull();
+      expect(s.questionTally).toMatchObject({ asked: 0, rounds: 0, failedRounds: 1 });
+      expect(logs.join("\n")).toMatch(/\[C\] d1 run 1 question round failed: questions: /);
+      const md = toMarkdownReport(report);
+      expect(md).toContain("| C | failed | | | | |");
+      expect(md).not.toContain("| C | 0 | 0 of");
+      expect(md).toContain(
+        "- C run 1: question round **failed** — questions: RequirementsExtractionError (unparseable)",
+      );
+    });
+
+    it("an arm whose readings all failed reads failed in the Questions table, not 0 asked", async () => {
+      const report = await run(["d1"], [fakeArm("A", true)]);
+      expect(report.arms[0]!.summary.questionTally).toMatchObject({ rounds: 0, failedRounds: 1 });
+      expect(toMarkdownReport(report)).toContain("| A | failed | | | | |");
+    });
+
+    it("counts only the rounds that ran, and says how many failed", async () => {
+      const ok = await run(["d1"], [fakeArm("C")]);
+      const bad = await run(["d2"], [roundFails("C")]);
+      const c = combineReports([ok, bad]);
+      expect(c.arms[0]!.summary.questionTally).toMatchObject({
+        asked: 1,
+        rounds: 1,
+        failedRounds: 1,
+      });
+      expect(toMarkdownReport(c)).toContain("| C | 1 (1 of 2 rounds failed) | 1 of 1 |");
+    });
+
+    it("says arm R's cost includes its extraction and question calls", async () => {
+      const md = toMarkdownReport(await run(["d1"], [fakeArm("A")]));
+      expect(md).toMatch(/Arm R's also includes the extraction and the question call/);
+    });
   });
 
   it("says when a run stopped early", async () => {

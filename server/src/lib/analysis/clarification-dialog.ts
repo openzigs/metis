@@ -942,60 +942,14 @@ export class ClarificationDialog {
     sourceQuestions: boolean,
     signal?: AbortSignal,
   ): Promise<GeneratedQuestion[]> {
-    const messages = buildQuestionMessages(
+    return generateClarifyingQuestions(this.provider, {
       requirements,
-      state.currentRound,
-      [...addressed],
+      round: state.currentRound,
+      addressed,
       sourceQuestions,
-    );
-    const model = this.getModel(state);
-
-    // #1081 — one re-prompt, then an ERROR the analyst sees. This used to read an
-    // unparseable answer as zero questions and persist an empty round, which the
-    // panel showed as "nothing to clarify".
-    const outcome = await requestStructuredVerdict(this.provider, {
-      label: "clarification-questions",
-      schema: questionsEnvelopeSchema,
-      schemaName: "clarifying questions",
-      // #2296 — the re-prompt asks for the shape its own prompt asked for.
-      expectedShape: sourceQuestions ? QUESTIONS_SHAPE : LEGACY_QUESTIONS_SHAPE,
-      messages,
-      model,
+      model: this.getModel(state),
+      analysisId: state.analysisId,
       signal,
-      disableTools: true,
-      responseFormat: jsonObjectWhereDeclared(this.provider, model),
-    });
-    if (!hasVerdict(outcome)) {
-      // A transport failure keeps its own error (and its HTTP mapping), as before.
-      if (outcome.reason === "provider-error") throw outcome.cause ?? new Error(outcome.detail);
-      log.warn("Clarifying questions could not be read — no round started", {
-        reason: outcome.reason,
-        attempts: outcome.attempts,
-      });
-      throw new AppError(
-        502,
-        "MODEL_REPLY_UNREADABLE",
-        "METIS could not read the clarifying questions in the model's answer, so no round was " +
-          "started. This does not mean there is nothing to clarify — try again.",
-      );
-    }
-    // #2451 — each question filed under the open ambiguity it asks about, one
-    // per ambiguity, so its answer closes that ambiguity and no other.
-    const generated = toQuestions(outcome.verdict.questions, requirements);
-    const matched = matchQuestionsToAmbiguities(generated, requirements, addressed);
-    if (matched.length < generated.length) {
-      log.info("Clarifying questions with no open ambiguity of their own were not asked", {
-        analysisId: state.analysisId,
-        round: state.currentRound,
-        generated: generated.length,
-        asked: matched.length,
-      });
-    }
-    const byId = new Map(requirements.map((r) => [r.id, r]));
-    return matched.map((q) => {
-      const { citation: _was, ...rest } = q;
-      const citation = citationFor(byId.get(q.requirementId), q.ambiguityField);
-      return citation ? { ...rest, citation } : rest;
     });
   }
 
@@ -1217,6 +1171,86 @@ const QUESTIONS_SHAPE =
 const LEGACY_QUESTIONS_SHAPE =
   '{ "questions": [ { "requirementId": string, "ambiguityField": string, ' +
   '"question": string, "context": string } ] }';
+
+/**
+ * One round's clarifying questions for `requirements`' open ambiguities: one
+ * model call (and one re-prompt on an unreadable reply), each question filed
+ * under the open ambiguity it asks about and cited to its requirement's
+ * verified source. Nothing is selected here; that is `selectQuestionsToAsk`'s.
+ * #2271 — a function of its own, so the document-understanding eval's arm R
+ * generates exactly the questions an analysis's dialog does.
+ */
+export async function generateClarifyingQuestions(
+  provider: AIProvider,
+  input: {
+    requirements: StructuredRequirement[];
+    round: number;
+    /** The ambiguity keys not to raise again (#1117). */
+    addressed: Set<string>;
+    /** #2275 — #2235's classifying prompt; otherwise the pre-#2235 one. */
+    sourceQuestions: boolean;
+    model?: string;
+    /** Named in the log line only. */
+    analysisId?: string;
+    signal?: AbortSignal;
+  },
+): Promise<GeneratedQuestion[]> {
+  const { requirements, addressed, sourceQuestions, model, signal } = input;
+  const messages = buildQuestionMessages(
+    requirements,
+    input.round,
+    [...addressed],
+    sourceQuestions,
+  );
+
+  // #1081 — one re-prompt, then an ERROR the analyst sees. This used to read an
+  // unparseable answer as zero questions and persist an empty round, which the
+  // panel showed as "nothing to clarify".
+  const outcome = await requestStructuredVerdict(provider, {
+    label: "clarification-questions",
+    schema: questionsEnvelopeSchema,
+    schemaName: "clarifying questions",
+    // #2296 — the re-prompt asks for the shape its own prompt asked for.
+    expectedShape: sourceQuestions ? QUESTIONS_SHAPE : LEGACY_QUESTIONS_SHAPE,
+    messages,
+    model,
+    signal,
+    disableTools: true,
+    responseFormat: jsonObjectWhereDeclared(provider, model),
+  });
+  if (!hasVerdict(outcome)) {
+    // A transport failure keeps its own error (and its HTTP mapping), as before.
+    if (outcome.reason === "provider-error") throw outcome.cause ?? new Error(outcome.detail);
+    log.warn("Clarifying questions could not be read — no round started", {
+      reason: outcome.reason,
+      attempts: outcome.attempts,
+    });
+    throw new AppError(
+      502,
+      "MODEL_REPLY_UNREADABLE",
+      "METIS could not read the clarifying questions in the model's answer, so no round was " +
+        "started. This does not mean there is nothing to clarify — try again.",
+    );
+  }
+  // #2451 — each question filed under the open ambiguity it asks about, one
+  // per ambiguity, so its answer closes that ambiguity and no other.
+  const generated = toQuestions(outcome.verdict.questions, requirements);
+  const matched = matchQuestionsToAmbiguities(generated, requirements, addressed);
+  if (matched.length < generated.length) {
+    log.info("Clarifying questions with no open ambiguity of their own were not asked", {
+      analysisId: input.analysisId,
+      round: input.round,
+      generated: generated.length,
+      asked: matched.length,
+    });
+  }
+  const byId = new Map(requirements.map((r) => [r.id, r]));
+  return matched.map((q) => {
+    const { citation: _was, ...rest } = q;
+    const citation = citationFor(byId.get(q.requirementId), q.ambiguityField);
+    return citation ? { ...rest, citation } : rest;
+  });
+}
 
 /** #2235 — the most readings a question offers, and the longest one kept. */
 const MAX_OPTIONS = 4;
