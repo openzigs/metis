@@ -5362,6 +5362,20 @@ lexical rules over each source quote: R7 vague terms, R8 escape clauses, R9 open
 plus TBD/TBC placeholders (29148 "complete"). Each hit becomes an ambiguity (`field` `R7:fast`,
 with `rule` and `term`), so it is asked, credited and counted like any other.
 
+#2530 — the extraction reads the statements a batch at a time. One reply used to write a
+requirement for every statement and stopped at the 16,000-token output cap on every corpus
+document on Sonnet 5.5 (#2271). Past `SOURCE_EXTRACTION_BATCH_STATEMENTS` (20) statements,
+`batchSourceStatements` splits them into even batches in document order. Each batch is one call
+with the analyst's instructions and its own statements, `SOURCE_EXTRACTION_CONCURRENCY` (4) in
+flight, and the requirements are concatenated in document order. A requirement's `sourceIds`
+resolve only against its own batch. The uncited GtWR scan runs once, over every statement, with
+every batch's citations. A batch whose reply cannot be read fails the whole extraction, as the
+single call did: no further batch is started, and the calls still in flight are aborted. The
+model writes the set-level gaps (§5.2.6, and where the document is silent) per batch, so
+`reconcileBatchGaps` then runs once over the joined set with no model call: it keeps one copy of
+a gap later batches raised again (same field, near-identical wording), and drops a gap whose
+field another batch's statement names word for word. Rule hits (R7/R8/R9/TBD) are untouched.
+
 The question prompt (`QUESTION_SYSTEM_PROMPT`) shows each requirement's paragraphs and asks the
 model, per question, for `uncertainty` (`missing-knowledge` | `ambiguity` | `silence` |
 `unanswerable`), `options` (two to four readings), `divergent` (whether the readings build

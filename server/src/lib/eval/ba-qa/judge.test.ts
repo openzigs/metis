@@ -116,8 +116,127 @@ describe("parseJudgeVerdict", () => {
     expect(parseJudgeVerdict(JSON.stringify({ ...good, spans: {} }), q, spans)).toBeNull();
   });
 
+  // #2521 — the two shapes #2488's runs left unscored. The runs' raw judge
+  // replies were not kept (`eval-results/` is gitignored and these runs were not
+  // pushed to the `eval-results` branch), so each is rebuilt from the issue's
+  // account of it.
+  it("reads the fenced verdict after prose that has braces in it (#2488 S5, off1)", () => {
+    const reply = [
+      "The reply says the client calls `{base_url}/v1{path}` and the cited span builds that",
+      "URL, so span 1 supports it. It gives the 60-minute default but says the cleanup runs",
+      "weekly, which contradicts the 24-hour fact.",
+      "",
+      "```json",
+      JSON.stringify(good, null, 2),
+      "```",
+    ].join("\n");
+    expect(parseJudgeVerdict(reply, q, spans)).toEqual({
+      behaviour: "answer",
+      facts: { "S1.a": "stated", "S1.b": "contradicted" },
+      spans: { 1: true },
+    });
+  });
+
+  it("reads the corrected verdict when the judge gives a second one (#2488 S3, off3)", () => {
+    const first = { ...good, facts: { "S1.a": "stated", "S1.b": "missing" } };
+    const reply = [
+      JSON.stringify(first, null, 2),
+      "",
+      "Wait — the reply does say the cleanup runs weekly, which contradicts S1.b.",
+      "Correcting the JSON for that:",
+      "",
+      JSON.stringify(good, null, 2),
+    ].join("\n");
+    expect(parseJudgeVerdict(reply, q, spans)?.facts).toEqual({
+      "S1.a": "stated",
+      "S1.b": "contradicted",
+    });
+  });
+
+  it("prefers the last fenced block, and falls back to the objects when it is not a verdict", () => {
+    const missing = { ...good, facts: { "S1.a": "missing", "S1.b": "missing" } };
+    const fencedLast = `\`\`\`json\n${JSON.stringify(good)}\n\`\`\`\nFor example {"behaviour": "abstain"}.`;
+    expect(parseJudgeVerdict(fencedLast, q, spans)?.behaviour).toBe("answer");
+    const twoFences = [
+      `\`\`\`json\n${JSON.stringify(missing)}\n\`\`\``,
+      `\`\`\`json\n${JSON.stringify(good)}\n\`\`\``,
+    ].join("\nCorrected:\n");
+    expect(parseJudgeVerdict(twoFences, q, spans)?.facts["S1.b"]).toBe("contradicted");
+    const badFence = `${JSON.stringify(good)}\n\`\`\`json\n{ not: json }\n\`\`\``;
+    expect(parseJudgeVerdict(badFence, q, spans)?.behaviour).toBe("answer");
+  });
+
+  it("skips an unclosed brace in prose and a non-verdict object after the verdict", () => {
+    const reply = `The map opens with { and I grade:\n${JSON.stringify(good)}\nwhere {"n": 1} is a span.`;
+    expect(parseJudgeVerdict(reply, q, spans)?.behaviour).toBe("answer");
+    // A brace inside a string value does not end the object early.
+    const braced = { ...good, note: "a } and a { inside" };
+    expect(parseJudgeVerdict(`Verdict: ${JSON.stringify(braced)}`, q, spans)?.behaviour).toBe(
+      "answer",
+    );
+  });
+
+  it("is still null when no object in the reply is a valid verdict", () => {
+    const reply = 'Endpoint `{base_url}/v1{path}`.\n```json\n{"behaviour": "maybe"}\n```\n{"x": 1}';
+    expect(parseJudgeVerdict(reply, q, spans)).toBeNull();
+    expect(parseJudgeVerdict("{ unclosed", q, spans)).toBeNull();
+  });
+
   it("needs only a behaviour for a question with no facts and no spans", () => {
     const v = parseJudgeVerdict('{"behaviour": "abstain"}', { ...q, facts: undefined }, []);
     expect(v).toEqual({ behaviour: "abstain", facts: {}, spans: {} });
+    // The same object fenced and so seen twice is still one verdict.
+    const fenced = '```json\n{"behaviour": "abstain"}\n```';
+    expect(parseJudgeVerdict(fenced, { ...q, facts: undefined }, [])?.behaviour).toBe("abstain");
+  });
+
+  // #2533 review — a behaviour-only aside in prose AFTER the verdict.
+  describe("a behaviour-only object in prose after the verdict", () => {
+    const note = '\nNote: an abstention would be {"behaviour": "abstain"}.';
+    const bare = { ...q, facts: undefined };
+
+    it("does not replace a verdict that has its facts and spans", () => {
+      expect(parseJudgeVerdict(`${JSON.stringify(good)}${note}`, q, spans)).toEqual({
+        behaviour: "answer",
+        facts: { "S1.a": "stated", "S1.b": "contradicted" },
+        spans: { 1: true },
+      });
+      const full = JSON.stringify({ behaviour: "answer", facts: {}, spans: {} });
+      expect(parseJudgeVerdict(`${full}${note}`, bare, [])?.behaviour).toBe("answer");
+    });
+
+    it("leaves the question unscored when two behaviour-only objects disagree", () => {
+      expect(parseJudgeVerdict(`{"behaviour": "answer"}${note}`, bare, [])).toBeNull();
+    });
+  });
+
+  // #2533 panel — pins the issue's "prefer the last fenced block" as a decision:
+  // a full-shape example in prose after a fenced verdict does not replace it.
+  it("keeps the fenced verdict over a full-shape object in prose after it", () => {
+    const example = { behaviour: "abstain", facts: {}, spans: {} };
+    const reply = `\`\`\`json\n${JSON.stringify(good)}\n\`\`\`\nAn abstention would read ${JSON.stringify(example)}.`;
+    expect(parseJudgeVerdict(reply, q, spans)?.behaviour).toBe("answer");
+  });
+
+  it("does not end a string at an escaped quote, or start one at a quote in prose", () => {
+    const quoted = { ...good, note: 'the reply says "}" here' };
+    expect(parseJudgeVerdict(`Verdict: ${JSON.stringify(quoted)}`, q, spans)?.behaviour).toBe(
+      "answer",
+    );
+    expect(parseJudgeVerdict(`A 5" gap: ${JSON.stringify(good)}`, q, spans)?.behaviour).toBe(
+      "answer",
+    );
+  });
+
+  it("finds the verdict after a stray quote inside an unclosed brace in prose", () => {
+    const reply = `The reply's map { has a 5" gap\n${JSON.stringify(good)}`;
+    expect(parseJudgeVerdict(reply, q, spans)?.behaviour).toBe("answer");
+  });
+
+  it("matches braces in one pass: many unclosed braces stay fast", () => {
+    const reply = `${"{".repeat(50_000)}\n${JSON.stringify(good)}`;
+    const started = performance.now();
+    expect(parseJudgeVerdict(reply, q, spans)?.behaviour).toBe("answer");
+    expect(performance.now() - started).toBeLessThan(1_000);
   });
 });
