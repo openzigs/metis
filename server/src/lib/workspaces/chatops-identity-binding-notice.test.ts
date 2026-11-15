@@ -156,24 +156,24 @@ describe("recordChatIdentityBinding — invisible and reordering characters are 
   // JSON.stringify leaves every one of these raw: it escapes only quotes,
   // backslashes, C0 controls and lone surrogates.
   it.each([
-    ["a right-to-left override", "‮", "\\u202E"],
-    ["a left-to-right embedding", "‪", "\\u202A"],
-    ["a pop directional formatting", "‬", "\\u202C"],
-    ["a first-strong isolate", "⁨", "\\u2068"],
-    ["a pop directional isolate", "⁩", "\\u2069"],
-    ["a right-to-left mark", "‏", "\\u200F"],
-    ["an Arabic letter mark", "؜", "\\u061C"],
-    ["a line separator", " ", "\\u2028"],
-    ["a paragraph separator", " ", "\\u2029"],
-    ["a zero-width space", "​", "\\u200B"],
-    ["a zero-width joiner", "‍", "\\u200D"],
-    ["a word joiner", "⁠", "\\u2060"],
-    ["a byte-order mark", "﻿", "\\uFEFF"],
-    ["a soft hyphen", "­", "\\u00AD"],
+    ["a right-to-left override", "\u202E", "\\u202E"],
+    ["a left-to-right embedding", "\u202A", "\\u202A"],
+    ["a pop directional formatting", "\u202C", "\\u202C"],
+    ["a first-strong isolate", "\u2068", "\\u2068"],
+    ["a pop directional isolate", "\u2069", "\\u2069"],
+    ["a right-to-left mark", "\u200F", "\\u200F"],
+    ["an Arabic letter mark", "\u061C", "\\u061C"],
+    ["a line separator", "\u2028", "\\u2028"],
+    ["a paragraph separator", "\u2029", "\\u2029"],
+    ["a zero-width space", "\u200B", "\\u200B"],
+    ["a zero-width joiner", "\u200D", "\\u200D"],
+    ["a word joiner", "\u2060", "\\u2060"],
+    ["a byte-order mark", "\uFEFF", "\\uFEFF"],
+    ["a soft hyphen", "\u00AD", "\\u00AD"],
     // Format, but outside the default-ignorable set: only `\p{Cf}` catches it.
-    ["an interlinear annotation anchor", "￹", "\\uFFF9"],
+    ["an interlinear annotation anchor", "\uFFF9", "\\uFFF9"],
     ["a C1 control (next line)", "\u0085", "\\u0085"],
-    ["a Hangul filler", "ㅤ", "\\u3164"],
+    ["a Hangul filler", "\u3164", "\\u3164"],
     ["a tag character", "\u{E0041}", "\\uDB40\\uDC41"],
   ])("an external id holding %s shows it as an escape", async (_label, raw, escaped) => {
     db.workspace.findUnique.mockResolvedValue({ name: "Acme" });
@@ -188,17 +188,17 @@ describe("recordChatIdentityBinding — invisible and reordering characters are 
   it("a workspace name cannot reverse the sentence after it", async () => {
     // U+202E renders the rest of the line right to left, so the text after the
     // name could read as something the notice never said.
-    db.workspace.findUnique.mockResolvedValue({ name: "Acme‮⁦ yltnenamrep" });
+    db.workspace.findUnique.mockResolvedValue({ name: "Acme\u202E\u2066 yltnenamrep" });
     await bind("aad-1");
     const message: string = toOwner()?.message;
     expect(message).toContain('in the workspace "Acme\\u202E\\u2066 yltnenamrep".');
-    expect(message).not.toMatch(/[‪-‮⁦-⁩]/u);
+    expect(message).not.toMatch(/[\u202A-\u202E\u2066-\u2069]/u);
   });
 
   it("counts the cut on the characters given, not on their escapes", async () => {
     db.workspace.findUnique.mockResolvedValue(null);
     // 40 characters, every one invisible: shown whole, as 40 escapes.
-    await bind("​".repeat(40));
+    await bind("\u200B".repeat(40));
     expect(toOwner()?.message).toContain(`account "${"\\u200B".repeat(40)}" to Adam`);
   });
 
