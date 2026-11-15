@@ -45,8 +45,28 @@
  * and asks only for the rest. One over the size cap is tagged `model-oversize`, which
  * counts as current: no re-ingest can change it.
  *
- * Repository source files are left alone in every mode: a code file has no heading
- * path and no lead sentence, and its path is already a boosted BM25 field.
+ * Repository source files get no contextual prefix in any mode: a code file has no
+ * heading path and no lead sentence. #2193 — each of their chunks is EMBEDDED behind
+ * one line naming the file instead (`File: internal/model/feed.go`,
+ * {@link embeddingInputOf}), in every mode, `off` included. Only a file's first chunk
+ * carries its `# <path>` header, so before this a chunk from the middle of a file
+ * reached the embedder with nothing saying which file it was. On the #706
+ * walkthrough's Miniflux v2.3.3 project (gte-modernbert-base) the ground-truth chunk
+ * for "how often are feeds refreshed" moved from 6th to 5th.
+ *
+ * BM25 does not get the line. It already indexes the path, extension stripped, as
+ * its boosted `path` field (#717); the line would add `file` and the extension (`go`,
+ * `ts`, `md`) to every chunk's text and count each path word twice. Measured with
+ * `scripts/eval-repo-chunk-prefix.ts`: the line in BM25 as well bought nothing over
+ * the embedder alone, and leaving the first chunk (which opens with its own
+ * `# <path>` header) without a second copy was the only arm no worse than before on
+ * every guard-set measure. Numbers:
+ * docs/EMBEDDINGS_BACKENDS.md > "Repository chunks and their path line".
+ *
+ * The line is derived from the filename at every embed and never persisted, so it
+ * does not depend on the mode and does not enter the chunker identity: a repository
+ * file still matches every mode ({@link import("./chunker.js").CHUNK_CONTEXT_NONE}).
+ * A vector stored before #2193 lacks it until the project's next reindex.
  */
 import { createHash, randomBytes } from "node:crypto";
 
@@ -113,6 +133,16 @@ export function resolveContextualChunksMode(
 /** Whether a document gets contextual prefixes at all: never a repository file. */
 export function isContextualDocument(filename: string): boolean {
   return repoDocumentPath(filename) === undefined;
+}
+
+/**
+ * #2193 — the prefix every chunk of a repository file is indexed behind, in every
+ * mode: `File: <repository path>`, whitespace collapsed and clipped like a summary
+ * line. `""` for any other document.
+ */
+export function repoFilePrefix(filename: string): string {
+  const repoPath = repoDocumentPath(filename);
+  return repoPath === undefined ? "" : clip(`File: ${repoPath}`, SUMMARY_LINE_MAX_CHARS);
 }
 
 /** Collapse whitespace and cut at a word boundary, marking the cut with an ellipsis. */
@@ -333,12 +363,30 @@ export function contextPrefixOf(
   return typeof prefix === "string" ? prefix : "";
 }
 
-/** The indexed text of a stored chunk: its display text behind its persisted prefix. */
+/**
+ * The indexed text of a stored chunk: its display text behind its persisted prefix.
+ * What BM25 indexes; the embedder is given {@link embeddingInputOf} this.
+ */
 export function indexedTextOf(
   text: string,
   metadata: string | Record<string, unknown> | null | undefined,
 ): string {
   return prefixedText(text, contextPrefixOf(metadata));
+}
+
+/**
+ * #2193 — what the embedder is given for a chunk whose indexed text is
+ * `indexedText`: that text, and for a repository file {@link repoFilePrefix} in
+ * front, fitted like any prefix. Derived from the filename at every embed (ingest,
+ * reindex and its cutover catch-up), never persisted, so a row stored before #2193
+ * is the same row a current ingest stores. A file's first chunk already opens with
+ * its `# <path>` header ({@link import("../connectors/connector-ingest.js").sourceUnitBody})
+ * and gets no second copy.
+ */
+export function embeddingInputOf(indexedText: string, filename: string): string {
+  const repoPath = repoDocumentPath(filename);
+  if (repoPath === undefined || indexedText.startsWith(`# ${repoPath}\n`)) return indexedText;
+  return prefixedText(indexedText, fittingPrefix(indexedText, repoFilePrefix(filename)));
 }
 
 /** A model-written chunk context and the key it is saved under for reuse (#2268). */
@@ -767,7 +815,9 @@ export interface ContextualChunk {
  * The context prefix for every chunk of one document under `mode`, each already
  * fitted to the embedder's input ({@link fittingPrefix}), with the model context it
  * carries so the caller can save it for reuse (#2268). Every prefix is `""` when the
- * mode is off or the document is a repository file.
+ * mode is off or the document is a repository file, which never gets a model call.
+ * (#2193 — a repository file's path line is added for the embedder alone, by
+ * {@link embeddingInputOf}, and is not a context prefix.)
  */
 export async function contextPrefixesFor(input: {
   mode: ContextualChunksMode;

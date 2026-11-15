@@ -21,6 +21,7 @@ import {
   contextSystemPrompt,
   contextUserPrompt,
   documentSummaryLine,
+  embeddingInputOf,
   estimateEmbedTokens,
   FENCE_NONCE_MAX_ATTEMPTS,
   fenceNonce,
@@ -32,6 +33,7 @@ import {
   MODEL_CONTEXT_MAX_TOKENS,
   modelChunkContextGenerator,
   prefixedText,
+  repoFilePrefix,
   resolveContextualChunksMode,
   savedChunkContexts,
 } from "./contextual-chunks.js";
@@ -206,10 +208,51 @@ describe("contextPrefixOf / indexedTextOf", () => {
   });
 });
 
+describe("embeddingInputOf (#2193)", () => {
+  const repo = "connector:repo:r1:src/internal/model/feed.go";
+  it("puts a repository file's path line in front of the indexed text", () => {
+    expect(embeddingInputOf("func f() {}", repo)).toBe(
+      "File: internal/model/feed.go\n\nfunc f() {}",
+    );
+  });
+  it("leaves any other document's indexed text as it is", () => {
+    expect(embeddingInputOf("body", "frd.md")).toBe("body");
+    expect(embeddingInputOf("P\n\nbody", "walkthrough-note.md")).toBe("P\n\nbody");
+  });
+  it("adds no second path to a file's first chunk, which already opens with it", () => {
+    const first = "# internal/model/feed.go\n\n```go\npackage model";
+    expect(embeddingInputOf(first, repo)).toBe(first);
+    // Another file's header is not this file's path.
+    const other = "# internal/model/feed_test.go\n\nx";
+    expect(embeddingInputOf(other, repo)).toBe(`File: internal/model/feed.go\n\n${other}`);
+  });
+  it("is fitted like any prefix: none behind a chunk it does not fit", () => {
+    expect(embeddingInputOf("漢".repeat(680), repo)).toBe("漢".repeat(680));
+  });
+});
+
 describe("isContextualDocument", () => {
   it("excludes repository source files only", () => {
     expect(isContextualDocument("frd.docx")).toBe(true);
     expect(isContextualDocument("connector:repo:r1:src/a/b.go")).toBe(false);
+  });
+});
+
+describe("repoFilePrefix (#2193)", () => {
+  it("names the repository path of a repository file", () => {
+    expect(repoFilePrefix("connector:repo:r1:src/internal/model/feed.go")).toBe(
+      "File: internal/model/feed.go",
+    );
+  });
+  it("is empty for any other document", () => {
+    expect(repoFilePrefix("frd.docx")).toBe("");
+    expect(repoFilePrefix("walkthrough-note.md")).toBe("");
+  });
+  it("collapses whitespace and clips a long path", () => {
+    expect(repoFilePrefix("connector:repo:r1:src/a  b\tc.go")).toBe("File: a b c.go");
+    const long = repoFilePrefix(`connector:repo:r1:src/${"segment/".repeat(60)}x.go`);
+    expect(long.length).toBeLessThanOrEqual(200);
+    expect(long.startsWith("File: segment/")).toBe(true);
   });
 });
 
@@ -235,15 +278,24 @@ describe("contextPrefixesFor", () => {
     ]);
     expect(generator).not.toHaveBeenCalled();
   });
-  it("is all empty for a repository file", async () => {
-    expect(
-      await prefixes({
-        ...base,
-        mode: "headings",
-        filename: "connector:repo:r:src/x",
-      }),
-    ).toEqual(["", ""]);
-  });
+  it.each(["off", "headings", "model"] as const)(
+    "%s: a repository file gets no prefix and no generator call (#2193: its path is embedder-only)",
+    async (mode) => {
+      const generator = vi.fn();
+      expect(
+        await contextPrefixesFor({
+          ...base,
+          mode,
+          generator,
+          filename: "connector:repo:r:src/internal/model/feed.go",
+        }),
+      ).toEqual([
+        { prefix: "", context: null },
+        { prefix: "", context: null },
+      ]);
+      expect(generator).not.toHaveBeenCalled();
+    },
+  );
   it("headings: summary and heading path, no generator call", async () => {
     const generator = vi.fn();
     expect(await prefixes({ ...base, mode: "headings", generator })).toEqual([

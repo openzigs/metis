@@ -40,7 +40,7 @@ const { BM25Index } = await import("../src/lib/rag/bm25-index.js");
 const { LocalVectorStore } = await import("../src/lib/rag/vector-store.js");
 const { chunkMarkdown } = await import("../src/lib/rag/chunker.js");
 const { modelChunkContextGenerator } = await import("../src/lib/rag/contextual-chunks.js");
-const { rejectDocument } = await import("../src/lib/rag/quarantine.js");
+const { approveDocument, rejectDocument } = await import("../src/lib/rag/quarantine.js");
 type AIProvider = import("../src/lib/ai/types.js").AIProvider;
 type ChatResponse = import("../src/lib/ai/types.js").ChatResponse;
 type Embedder = import("../src/lib/rag/embedder.js").Embedder;
@@ -302,11 +302,106 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(embedder.seen[tailIndex]).toBe(`${meta[tailIndex]}\n\n${expected[tailIndex].text}`);
     });
 
-    it("a repository source file is never prefixed, in any mode", async () => {
-      await seedDocument("doc-repo", "connector:repo:r1:src/docs/leave-policy.md");
-      const { knowledge, embedder } = service("headings");
-      await knowledge.ingestDocument("doc-repo");
-      expect(embedder.seen).toEqual(expected.map((c) => c.text));
+    it.each(["off", "headings"] as const)(
+      "#2193 %s: a repository file is embedded behind its path; BM25 and the stored row are not",
+      async (mode) => {
+        await seedDocument("doc-repo", "connector:repo:r1:src/docs/leave-policy.md");
+        const { knowledge, embedder, bm25 } = service(mode);
+        await knowledge.ingestDocument("doc-repo");
+        const line = "File: docs/leave-policy.md";
+        expect(embedder.seen).toEqual(expected.map((c) => `${line}\n\n${c.text}`));
+        const rows = await storedChunks("doc-repo");
+        expect(rows.length).toBe(expected.length);
+        for (const r of rows) expect(JSON.parse(r.metadata ?? "{}").contextPrefix).toBeUndefined();
+
+        // "file" is in no chunk's text or path, so only the line could put it in the
+        // BM25 index: neither the warm index ingest wrote nor a FRESH one rebuilt from
+        // the stored rows has it. The path is BM25's boosted `path` field already (#717).
+        expect(await bm25.search(PROJECT, "file", 20)).toEqual([]);
+        expect(await new BM25Index().search(PROJECT, "file", 20)).toEqual([]);
+        expect((await new BM25Index().search(PROJECT, "leave policy", 20)).length).toBe(
+          rows.length,
+        );
+        // A consumer is handed the display text, never the line.
+        const found = await knowledge.search(PROJECT, "payroll reconciliation mismatch", {
+          k: 20,
+        });
+        expect(found.hits.length).toBeGreaterThan(0);
+        for (const hit of found.hits) expect(hit.text).not.toContain(line);
+      },
+    );
+
+    it("#2193 a reindex embeds every repository row behind its path, rows from before #2193 included", async () => {
+      // A pre-#2193 ingest stored the same row a current one does (no prefix), so a
+      // reindex is what gives an existing project's vectors the line.
+      await seedDocument("doc-repo-old", "connector:repo:r1:src/docs/leave-policy.md");
+      await service("off").knowledge.ingestDocument("doc-repo-old");
+      const rows = await storedChunks("doc-repo-old");
+      const line = "File: docs/leave-policy.md";
+
+      const { knowledge, embedder } = service("off", recordingEmbedder("bow-2193-v2"));
+      const reindexed = await knowledge.reindexProject(PROJECT);
+      expect(reindexed.embeddedChunks).toBe(rows.length);
+      expect(new Set(embedder.seen)).toEqual(new Set(rows.map((r) => `${line}\n\n${r.text}`)));
+    });
+
+    it("#2193 the reindex cutover catch-up embeds a repository row behind its path", async () => {
+      await seedDocument("doc-plain", "leave-policy.md");
+      await service("off").knowledge.ingestDocument("doc-plain");
+      await seedDocument("doc-repo-late", "connector:repo:r1:src/internal/model/feed.go", "x");
+      const lateText = "func (f *Feed) ScheduleNextCheck() {}";
+      const embedder = recordingEmbedder("bow-2193-v3");
+      const embed = embedder.embed;
+      let inserted = false;
+      embedder.embed = async (texts: string[]) => {
+        // A row indexed after the reindex listed the project: the main loop never
+        // sees it, so only the cutover's catch-up can embed it.
+        if (!inserted) {
+          inserted = true;
+          await db.knowledgeChunk.create({
+            data: {
+              id: "late-repo-chunk",
+              projectId: PROJECT,
+              documentId: "doc-repo-late",
+              position: 0,
+              text: lateText,
+              md5: "late",
+              embeddingModel: "bow-2234",
+            },
+          });
+        }
+        return embed(texts);
+      };
+      const { knowledge } = service("off", embedder);
+      await knowledge.reindexProject(PROJECT);
+      expect(embedder.seen).toContain(`File: internal/model/feed.go\n\n${lateText}`);
+      expect(embedder.seen).not.toContain(lateText);
+    });
+
+    it("#2193 approving a parked repository file keeps the path out of BM25", async () => {
+      await seedDocument(
+        "doc-repo-parked",
+        "connector:repo:r1:src/docs/leave-policy.md",
+        DOC,
+        false,
+      );
+      const s = service("off");
+      await s.knowledge.ingestDocument("doc-repo-parked");
+      expect(await storedChunks("doc-repo-parked")).toEqual([]);
+      expect(s.embedder.seen).toEqual(
+        expected.map((c) => `File: docs/leave-policy.md\n\n${c.text}`),
+      );
+
+      await approveDocument(
+        "doc-repo-parked",
+        { id: USER },
+        { vectorStore: s.store, bm25: s.bm25 },
+      );
+      const rows = await storedChunks("doc-repo-parked");
+      expect(rows.length).toBe(expected.length);
+      // The warm index the approval wrote, not a fresh one rebuilt from the rows.
+      expect(await s.bm25.search(PROJECT, "file", 20)).toEqual([]);
+      expect((await s.bm25.search(PROJECT, "leave policy", 20)).length).toBe(rows.length);
     });
 
     /**

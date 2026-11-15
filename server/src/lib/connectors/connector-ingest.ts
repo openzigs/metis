@@ -443,8 +443,11 @@ async function removeSupersededBlob(
  * with no secret yields the same bytes and is skipped, correctly — nothing in
  * its chunks needs removing. The same holds for any later change to the
  * pattern set: no fingerprint to bump by hand.
+ *
+ * Exported for `scripts/eval-repo-chunk-prefix.ts` (#2193), which rebuilds these
+ * documents without a database.
  */
-function sourceUnitBody(relPath: string, ext: string, redactedContent: string): string {
+export function sourceUnitBody(relPath: string, ext: string, redactedContent: string): string {
   return `# ${relPath}\n\n\`\`\`${ext.slice(1)}\n${redactedContent}\n\`\`\`\n`;
 }
 
@@ -760,8 +763,11 @@ export function selectSourceFiles(
   };
 }
 
-/** Walk the tree and size every eligible file. Only paths and sizes are held, never content. */
-async function collectSourceCandidates(
+/**
+ * Walk the tree and size every eligible file. Only paths and sizes are held, never content.
+ * Exported for `scripts/eval-repo-chunk-prefix.ts` (#2193).
+ */
+export async function collectSourceCandidates(
   root: string,
   boundary: string | undefined,
 ): Promise<{ candidates: SourceCandidate[]; unreadable: string[] }> {
