@@ -159,6 +159,11 @@ export function citationValid(repo: string, span: CitedSpan, files: RepoFileInde
  * Uncited `implemented` claims in one outcome: each repository holding an
  * `implemented` criterion with no citation, plus one when the portfolio verdict
  * claims coverage (`implemented` or `partial`) that no citation backs.
+ *
+ * Repository-level, not per criterion: the engine's result carries one
+ * deduplicated citation list per repository (`gap-engine.ts`), so a repository
+ * with one cited and one uncited `implemented` criterion passes. The engine's own
+ * gate (`gateFindingVerdict`) is what holds each criterion to its evidence.
  */
 export function uncitedImplemented(outcome: GapItemOutcome): number {
   const repos = outcome.repos.filter(
@@ -298,7 +303,7 @@ export interface ArmSummary {
   model: string;
   /** Outcomes scored (items × runs). */
   outcomes: number;
-  /** Runs with an outcome for every item. */
+  /** Runs with an outcome for every item (every selected item, on an `--items` slice). */
   completeRuns: number;
   accuracy: Rate | null;
   productAccuracy: Rate | null;
@@ -334,13 +339,16 @@ export function summarizeArm(
   truths: readonly GapTruth[],
   outcomes: readonly GapItemOutcome[],
   files: RepoFileIndex,
+  /** The items a run must cover to count as complete; every truth when absent (an `--items` slice passes its own). */
+  selectedItemIds?: readonly string[],
 ): ArmSummary {
   const truth = truthFor(truths);
   const scored = scoreArm(arm, model, truths, outcomes, files);
   const runs = new Map<number, Set<string>>();
   for (const s of scored) runs.set(s.run, (runs.get(s.run) ?? new Set()).add(s.itemId));
+  const required = selectedItemIds ?? truths.map((t) => t.id);
   const completeRuns = [...runs.values()].filter((ids) =>
-    truths.every((t) => ids.has(t.id)),
+    required.every((id) => ids.has(id)),
   ).length;
   const accuracyByStratum: Record<string, Rate> = {};
   for (const stratum of [...new Set(truths.map(stratumOf))].sort()) {

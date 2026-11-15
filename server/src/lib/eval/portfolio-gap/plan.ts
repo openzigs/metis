@@ -100,9 +100,35 @@ export function pendingWork(input: {
   return out;
 }
 
-/** Parse the record file: one outcome per line; a malformed line throws, naming it. */
-export function parseRecords(text: string): GapItemOutcome[] {
-  const out: GapItemOutcome[] = [];
+/**
+ * Spend that has no measured outcome: an item stopped by an unpriced call. Its
+ * priced calls were real spend, so the record file keeps them, and the `--budget`
+ * cap counts them on a resumed slice; the item itself stays pending.
+ */
+export interface GapSpendRecord {
+  kind: "spend";
+  itemId: string;
+  arm: string;
+  run: number;
+  model: string;
+  /** The priced part of the item's spend; the unpriced calls add an unknown amount. */
+  costUsd: number;
+  reason: string;
+}
+
+/** What the record file holds: measured outcomes, and spend no outcome carries. */
+export interface GapRecordFile {
+  outcomes: GapItemOutcome[];
+  spends: GapSpendRecord[];
+}
+
+/**
+ * Parse the record file: one outcome, or one `kind: "spend"` record, per line; a
+ * malformed line throws, naming it.
+ */
+export function parseRecordFile(text: string): GapRecordFile {
+  const outcomes: GapItemOutcome[] = [];
+  const spends: GapSpendRecord[] = [];
   text.split("\n").forEach((line, i) => {
     if (line.trim() === "") return;
     let parsed: unknown;
@@ -111,26 +137,46 @@ export function parseRecords(text: string): GapItemOutcome[] {
     } catch {
       throw new Error(`record line ${i + 1} is not JSON`);
     }
-    const o = (parsed ?? {}) as Partial<GapItemOutcome>;
-    if (
-      typeof o.itemId !== "string" ||
-      typeof o.arm !== "string" ||
-      typeof o.model !== "string" ||
-      !Number.isInteger(o.run) ||
-      typeof o.verdict !== "string" ||
-      !Array.isArray(o.repos) ||
-      typeof o.costUsd !== "number"
-    ) {
+    const o = (parsed ?? {}) as Partial<GapItemOutcome> & { kind?: unknown; reason?: unknown };
+    const keyed =
+      typeof o.itemId === "string" &&
+      typeof o.arm === "string" &&
+      typeof o.model === "string" &&
+      Number.isInteger(o.run) &&
+      typeof o.costUsd === "number";
+    if (o.kind === "spend") {
+      if (!keyed || typeof o.reason !== "string") {
+        throw new Error(`record line ${i + 1} is not a spend record`);
+      }
+      spends.push(o as unknown as GapSpendRecord);
+      return;
+    }
+    if (!keyed || typeof o.verdict !== "string" || !Array.isArray(o.repos)) {
       throw new Error(`record line ${i + 1} is not an outcome`);
     }
-    out.push(o as GapItemOutcome);
+    outcomes.push(o as GapItemOutcome);
   });
-  return out;
+  return { outcomes, spends };
+}
+
+/** The outcomes of the record file (spend records are skipped). */
+export function parseRecords(text: string): GapItemOutcome[] {
+  return parseRecordFile(text).outcomes;
 }
 
 /** One record line. */
-export function recordLine(outcome: GapItemOutcome): string {
-  return `${JSON.stringify(outcome)}\n`;
+export function recordLine(record: GapItemOutcome | GapSpendRecord): string {
+  return `${JSON.stringify(record)}\n`;
+}
+
+/**
+ * Everything the record file says was spent on `model`: its outcomes and its
+ * spend-only records. What `--budget` counts across resumed slices.
+ */
+export function recordedSpendUsd(file: GapRecordFile, model: string): number {
+  return [...file.outcomes, ...file.spends]
+    .filter((r) => r.model === model)
+    .reduce((a, r) => a + r.costUsd, 0);
 }
 
 /**

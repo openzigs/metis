@@ -5,7 +5,7 @@
  *
  *   pnpm eval:materialize localization-02-fixture-portfolio     # once: clones, projects, code graph
  *   pnpm eval:portfolio-gap --budget 10                          # P0 and P0′, 3 runs each
- *   pnpm eval:portfolio-gap --budget 10 --max-items 8            # a slice; re-run to resume
+ *   pnpm eval:portfolio-gap --budget 10 --max-outcomes 8         # a slice; re-run to resume
  *   pnpm eval:portfolio-gap --budget 10 --baseline               # rewrite the committed baseline
  *
  * Set-up. The corpus's three repositories (orders, billing, notify), each in its
@@ -27,7 +27,15 @@
  * is metered at the usage ledger's price (`LedgerCostMeter`). `--budget` (USD) caps
  * the spend of every outcome recorded for that model, across resumed invocations:
  * the run stops before an item once the costliest item so far would cross it,
- * and on any unpriced call.
+ * and on any unpriced call. An item stopped by an unpriced call records no
+ * outcome (it stays pending) but a `kind: "spend"` line with its priced spend,
+ * so a resumed slice still counts that money against the cap.
+ *
+ * `--max-outcomes N` caps the work units run this invocation: one unit is one
+ * item x arm x run, so `--max-outcomes 8` may be eight items of P0's run 1 and
+ * nothing of P0R (work is run-major). `--items FX-01,FX-02` restricts the items;
+ * `--report-only` re-renders the report from the record file with no model call,
+ * so it needs no provider key.
  *
  * Records. Each outcome is appended to `eval-results/portfolio-gap/records.jsonl`
  * (`--records`) as it ends, so a run cut short resumes where it stopped. The
@@ -60,8 +68,9 @@ import {
   budgetStop,
   parseGapArms,
   parsePositiveInt,
-  parseRecords,
+  parseRecordFile,
   pendingWork,
+  recordedSpendUsd,
   recordLine,
 } from "../src/lib/eval/portfolio-gap/plan.js";
 import {
@@ -91,7 +100,7 @@ async function main(): Promise<void> {
       arms: { type: "string" },
       runs: { type: "string" },
       budget: { type: "string" },
-      "max-items": { type: "string" },
+      "max-outcomes": { type: "string" },
       items: { type: "string" },
       records: { type: "string" },
       baseline: { type: "boolean" },
@@ -104,11 +113,19 @@ async function main(): Promise<void> {
   if (!values.budget || !Number.isFinite(budget) || budget <= 0) {
     throw new Error("--budget <usd> is required: the run's spend cap");
   }
-  const maxItems = parsePositiveInt(values["max-items"], "--max-items", Number.MAX_SAFE_INTEGER);
+  const maxOutcomes = parsePositiveInt(
+    values["max-outcomes"],
+    "--max-outcomes",
+    Number.MAX_SAFE_INTEGER,
+  );
 
   const corpus = await loadLocalizationCorpus(CORPUS);
-  const items = values.items
-    ? corpus.manifest.items.filter((i) => values.items!.split(",").includes(i.id))
+  const wanted = values.items
+    ?.split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const items = wanted
+    ? corpus.manifest.items.filter((i) => wanted.includes(i.id))
     : corpus.manifest.items;
   if (items.length === 0) throw new Error("no items selected");
   const truths = gapTruths(corpus.manifest.items);
@@ -141,15 +158,17 @@ async function main(): Promise<void> {
   const outDir = path.join(REPO_ROOT, "eval-results", "portfolio-gap");
   await fs.mkdir(outDir, { recursive: true });
   const recordsPath = path.resolve(values.records ?? path.join(outDir, "records.jsonl"));
-  const recorded = existsSync(recordsPath)
-    ? parseRecords(await fs.readFile(recordsPath, "utf8"))
-    : [];
+  const recordFile = existsSync(recordsPath)
+    ? parseRecordFile(await fs.readFile(recordsPath, "utf8"))
+    : { outcomes: [], spends: [] };
+  const recorded = recordFile.outcomes;
 
   const { prisma, boundDatabaseUrl } = await import("../src/lib/prisma.js");
   assertEvalDatabase(boundDatabaseUrl, layout);
   const { buildProvider, loadAIConfig } = await import("../src/lib/ai/index.js");
   const base = buildProvider({ config: loadAIConfig() });
-  if (base.offline) {
+  // --report-only makes no model call: it needs only the model's name, to select records.
+  if (base.offline && !values["report-only"]) {
     throw new Error(
       "the gap engine needs a live provider (AI_PROVIDER and its key), not the offline stub",
     );
@@ -232,8 +251,8 @@ async function main(): Promise<void> {
 
     const meter = new LedgerCostMeter();
     const provider = meterProvider(base, meter);
-    const priorUsd = recorded.filter((o) => o.model === model).reduce((a, o) => a + o.costUsd, 0);
-    let costliest = recorded
+    const priorUsd = recordedSpendUsd(recordFile, model);
+    let costliest = [...recorded, ...recordFile.spends]
       .filter((o) => o.model === model)
       .reduce((a, o) => Math.max(a, o.costUsd), 0);
     const work = pendingWork({
@@ -242,7 +261,7 @@ async function main(): Promise<void> {
       runs,
       model,
       done: recorded,
-    }).slice(0, maxItems);
+    }).slice(0, maxOutcomes);
     console.log(
       `${work.length} outcome(s) to run; $${priorUsd.toFixed(4)} already recorded for ${model}`,
     );
@@ -285,8 +304,15 @@ async function main(): Promise<void> {
         nameOf,
       );
       if (meter.unpricedCalls() > 0) {
-        // Its spend is unknown: never recorded as a measured outcome.
-        console.log(`stopping: ${item.id} made an unpriced call`);
+        // Its spend is unknown: never recorded as a measured outcome, but its
+        // priced calls were real spend, which a resumed slice's cap must count.
+        const reason = `${meter.unpricedCalls()} unpriced model call(s)`;
+        const spend = { kind: "spend" as const, itemId: item.id, arm: arm.id, run: w.run };
+        await fs.appendFile(recordsPath, recordLine({ ...spend, model, costUsd, reason }), "utf8");
+        console.log(
+          `stopping: ${item.id} made an unpriced call; its priced $${costUsd.toFixed(4)} is ` +
+            "recorded as spend, with no outcome",
+        );
         break;
       }
       await fs.appendFile(recordsPath, recordLine(outcome), "utf8");
@@ -304,7 +330,14 @@ async function main(): Promise<void> {
       arm,
       model,
       configuration: { ...configurationOf(arm.perRepoSearch), model },
-      summary: summarizeArm(arm.id, model, truths, recorded, files),
+      summary: summarizeArm(
+        arm.id,
+        model,
+        truths,
+        recorded,
+        files,
+        wanted ? items.map((i) => i.id) : undefined,
+      ),
       scored: scoreArm(arm.id, model, truths, recorded, files),
     }))
     .filter((a) => a.summary.outcomes > 0);

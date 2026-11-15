@@ -196,6 +196,21 @@ describe("uncitedImplemented", () => {
     expect(uncitedImplemented(outcome({ verdict: "implemented", repos: [] }))).toBe(1);
   });
 
+  it("reads the criteria, not the repo verdict: a partial repo's implemented criterion counts", () => {
+    // A partial repo holding one implemented, uncited criterion is an uncited claim; the
+    // portfolio has no citation either, so its partial verdict adds one more.
+    const partialRepo = repo("orders", {
+      verdict: "partial",
+      criteria: ["implemented", "gap-confirmed"],
+      citations: [],
+    });
+    expect(uncitedImplemented(outcome({ verdict: "partial", repos: [partialRepo] }))).toBe(2);
+    // The reverse: an implemented repo verdict with no implemented criterion claims nothing
+    // at repo level, so only the uncited portfolio verdict counts.
+    const verdictOnly = repo("orders", { verdict: "implemented", criteria: ["gap-confirmed"] });
+    expect(uncitedImplemented(outcome({ verdict: "implemented", repos: [verdictOnly] }))).toBe(1);
+  });
+
   it("does not count a gap or could-not-verify with no citation", () => {
     expect(uncitedImplemented(outcome({ verdict: "gap-confirmed" }))).toBe(0);
     expect(uncitedImplemented(outcome({ verdict: "could-not-verify" }))).toBe(0);
@@ -263,6 +278,33 @@ describe("scoreOutcome", () => {
     );
     expect(s.answerRepoPredicted).toBeNull();
     expect(s.expectedRepoRecall).toBe(0.5);
+  });
+
+  it("finds an answer repo by its implemented criterion, not its repo verdict", () => {
+    const partialRepo = repo("orders", {
+      verdict: "partial",
+      criteria: ["implemented", "gap-confirmed"],
+      citations: [cite("src/routes/orders.ts")],
+    });
+    expect(
+      scoreOutcome(
+        truth({ expectedVerdict: "partial" }),
+        outcome({ verdict: "partial", repos: [partialRepo] }),
+        files,
+      ).expectedRepoRecall,
+    ).toBe(1);
+    const verdictOnly = repo("orders", {
+      verdict: "implemented",
+      criteria: ["gap-confirmed"],
+      citations: [cite("src/routes/orders.ts")],
+    });
+    expect(
+      scoreOutcome(
+        truth({ expectedVerdict: "implemented" }),
+        outcome({ verdict: "implemented", repos: [verdictOnly] }),
+        files,
+      ).expectedRepoRecall,
+    ).toBe(0);
   });
 
   it("has no recall when nothing is expected", () => {
@@ -340,6 +382,10 @@ describe("summarizeArm", () => {
     const s = summarizeArm("P0", "anthropic/m", truths, outcomes, files);
     expect(s.outcomes).toBe(3);
     expect(s.completeRuns).toBe(1);
+    // Measured against an --items slice, run 2 (FX-01 only) is complete too.
+    expect(summarizeArm("P0", "anthropic/m", truths, outcomes, files, ["FX-01"]).completeRuns).toBe(
+      2,
+    );
     expect(s.accuracy?.value).toBeCloseTo(0.75);
     expect(s.accuracy?.n).toBe(2);
     expect(s.accuracy?.ci[0]).toBeLessThanOrEqual(0.75);

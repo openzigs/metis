@@ -4,9 +4,12 @@ import {
   GAP_ARMS,
   parseGapArms,
   parsePositiveInt,
+  parseRecordFile,
   parseRecords,
   pendingWork,
+  recordedSpendUsd,
   recordLine,
+  type GapSpendRecord,
 } from "./plan.js";
 import type { GapItemOutcome } from "./scorer.js";
 
@@ -117,6 +120,58 @@ describe("parseRecords / recordLine", () => {
     const { costUsd: _drop, ...noCost } = outcome();
     for (const bad of [noCost, { ...outcome(), run: 1.5 }, { ...outcome(), repos: null }, null]) {
       expect(() => parseRecords(`${JSON.stringify(bad)}\n`)).toThrow(/line 1 is not an outcome/);
+    }
+  });
+});
+
+describe("spend records", () => {
+  const spend = (over: Partial<GapSpendRecord> = {}): GapSpendRecord => ({
+    kind: "spend",
+    itemId: "FX-03",
+    arm: "P0",
+    run: 1,
+    model: "anthropic/m",
+    costUsd: 0.25,
+    reason: "unpriced call",
+    ...over,
+  });
+
+  it("keeps an item's priced spend apart from the outcomes, so the item stays pending", () => {
+    const text = `${recordLine(outcome())}${recordLine(spend())}`;
+    const file = parseRecordFile(text);
+    expect(file.outcomes).toEqual([outcome()]);
+    expect(file.spends).toEqual([spend()]);
+    expect(parseRecords(text)).toEqual([outcome()]);
+    expect(
+      pendingWork({
+        itemIds: ["FX-01", "FX-03"],
+        arms: ["P0"],
+        runs: 1,
+        model: "anthropic/m",
+        done: file.outcomes,
+      }),
+    ).toEqual([{ arm: "P0", run: 1, itemId: "FX-03" }]);
+  });
+
+  it("counts spend records toward the model's recorded spend, and no other model's", () => {
+    const file = parseRecordFile(
+      [
+        recordLine(outcome({ costUsd: 0.5 })),
+        recordLine(spend({ costUsd: 0.25 })),
+        recordLine(spend({ model: "other/m", costUsd: 9 })),
+        recordLine(outcome({ model: "other/m", costUsd: 9 })),
+      ].join(""),
+    );
+    expect(recordedSpendUsd(file, "anthropic/m")).toBeCloseTo(0.75);
+    expect(recordedSpendUsd({ outcomes: [], spends: [] }, "anthropic/m")).toBe(0);
+  });
+
+  it("names a malformed spend record", () => {
+    const { reason: _drop, ...noReason } = spend();
+    for (const bad of [noReason, { ...spend(), costUsd: "1" }, { ...spend(), run: 0.5 }]) {
+      expect(() => parseRecordFile(`${JSON.stringify(bad)}\n`)).toThrow(
+        /line 1 is not a spend record/,
+      );
     }
   });
 });

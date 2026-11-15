@@ -764,7 +764,7 @@ lineage writer: the read-path rule of #1135 (`writesData`) is inert on them.
 ```bash
 pnpm eval:materialize localization-02-fixture-portfolio          # once
 cd server && TRANSFORMERS_CACHE=~/.cache/metis-transformers HF_HUB_OFFLINE=1 \
-  pnpm exec tsx --env-file=<your .env> scripts/eval-portfolio-gap.ts --budget 10 --max-items 30
+  pnpm exec tsx --env-file=<your .env> scripts/eval-portfolio-gap.ts --budget 10 --max-outcomes 30
 # re-run the same command to resume; add --baseline on the last slice
 ```
 
@@ -779,12 +779,20 @@ cd server && TRANSFORMERS_CACHE=~/.cache/metis-transformers HF_HUB_OFFLINE=1 \
   `server/src/lib/eval/portfolio-gap/plan.ts` when it lands.
 - **Model and cap.** The configured provider is used (`AI_PROVIDER`, `AI_MODEL`). Every call
   is priced at the usage ledger's rate. `--budget` caps everything recorded for that
-  model, across resumed slices. An unpriced call stops the run.
+  model, across resumed slices. An unpriced call stops the run; the stopped item records no
+  outcome, but its priced spend is kept as a `kind: "spend"` line, so a resumed slice still
+  counts it against the cap.
+- **Slices.** `--max-outcomes N` caps the work units of one invocation: a unit is one
+  item × arm × run, worked run-major. `--items FX-01,FX-02` restricts the items, and a run
+  counts as complete when it covers those. `--report-only` re-renders the report from the
+  record file without a model call or a provider key.
 - **Metrics.**
   - Verdict accuracy, overall, by answer repository and by expected verdict.
   - The answer repository's own verdict, on items whose answer is one repository.
   - A confusion matrix.
-  - The uncited `implemented` count. Any uncited claim fails the run with exit code 1.
+  - The uncited `implemented` count. Any uncited claim fails the run with exit code 1. The
+    check is per repository, not per criterion: the engine exposes one citation list per
+    repository, so a repository with a cited and an uncited `implemented` criterion passes.
   - Citation validity: the file exists in that repository at the pinned commit, and the
     lines fall inside it.
   - Expected-repository recall.

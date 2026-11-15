@@ -1659,7 +1659,7 @@ product in scope and persists the result as a `PortfolioAssessment`:
    that repo's project. The one search returns `PORTFOLIO_GAP_HITS_PER_PRODUCT` (24)
    excerpts, so a repo whose sibling dominates the ranking can get none and read
    `no-evidence-retrieved`. With `PORTFOLIO_GAP_PER_REPO_SEARCH` on (#1763, off by default:
-   #1766 measured no gain, below), the engine instead searches each of the product's projects on
+   #1766 measured no gain on a corpus without same-project crowd-out, below), the engine instead searches each of the product's projects on
    its own (four at once), and each repo keeps at most its share (`perRepoHitQuota`): the
    24 split evenly across the product's repos, at most `PORTFOLIO_GAP_HITS_PER_REPO` (12)
    and never less than one. A project's search asks for twice its repos' shares, because
@@ -1802,8 +1802,11 @@ repositories sit in one product, and each requirement is checked as the app chec
   `not-covered` only when every repository confirms the gap, so the sibling's answer made
   the product `not-checked`. These verdicts came from the model, not from retrieval
   (`reason` is null).
-- Every arm reported zero uncited `implemented` verdicts. All 171 citations name a file of
-  their repository at the pinned commit. Every citation is file-level (line 1) until
+- Every arm reported zero uncited `implemented` verdicts. The check is repository-level:
+  the engine's result has one deduplicated citation list per repository and no citation per
+  criterion, so a repository with one cited and one uncited `implemented` criterion passes it;
+  the engine's own gate (`gateFindingVerdict`) holds each criterion to its evidence. All 171
+  citations name a file of their repository at the pinned commit. Every citation is file-level (line 1) until
   #1765.
 - #1764's agentic pass (P1) is scored by the same runner when it lands. No `deepseek-flash`
   arm ran: this machine has no DeepSeek key.
