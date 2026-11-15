@@ -1,0 +1,1589 @@
+{
+  "corpusId": "docretrieval-03-analyst-docs",
+  "snapshotCommit": "3227e6bf2bdf7876a8e86a237c7686f6292db074",
+  "description": "#2527 — fourteen synthetic analyst documents (six BRDs, two PRDs, four FRDs read through the production Word conversion, two policies) with hand-authored, span-anchored queries. Documents are read from the sources pinned in sources.json.",
+  "queries": [
+    {
+      "id": "aq-b1-01",
+      "question": "If a customer switches subscription plan partway through a billing period, how is the charge adjusted?",
+      "doc": "brd-01-billing.md",
+      "quote": "Billing is critical and must prorate mid-cycle plan changes to the day.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-b1-02",
+      "question": "What happens to old invoices: can they be archived, and after how long?",
+      "doc": "brd-01-billing.md",
+      "quote": "Invoices older than seven years may be archived to cold storage.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-b2-01",
+      "question": "How quickly must we delete someone's personal information after they ask us to?",
+      "doc": "brd-02-compliance.md",
+      "quote": "The platform must erase personal data within thirty days of a verified erasure request.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-b2-02",
+      "question": "Is regional data residency required for customer data?",
+      "doc": "brd-02-compliance.md",
+      "quote": "Customer data must be stored in the region selected by the customer.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-b3-01",
+      "question": "Can a new seller put products up for sale before we have checked who they are?",
+      "doc": "brd-03-onboarding.md",
+      "quote": "New merchants must complete identity verification before they can list products.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-b3-02",
+      "question": "What must a merchant link before receiving payouts?",
+      "doc": "brd-03-onboarding.md",
+      "quote": "Merchants must link a verified payout account before they can receive funds.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-b4-01",
+      "question": "Do support agents need separate tools for email, chat and phone tickets?",
+      "doc": "brd-04-support.md",
+      "quote": "Agents must be able to work tickets from email, chat, and phone in one unified inbox.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-b4-02",
+      "question": "What happens to a ticket that has missed its service-level deadline?",
+      "doc": "brd-04-support.md",
+      "quote": "Breached tickets must be escalated to a senior queue automatically.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-b5-01",
+      "question": "Is there a known oversell bug on the last unit in stock that has to be fixed?",
+      "doc": "brd-05-inventory.md",
+      "quote": "The service must fix the concurrency race that oversells the last available unit.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-b5-02",
+      "question": "When should stock planners be warned that an item is running out?",
+      "doc": "brd-05-inventory.md",
+      "quote": "Planners should receive low-stock alerts when quantity falls below a configured threshold.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-b6-01",
+      "question": "How is a customer paid back once their return is approved?",
+      "doc": "brd-06-returns.md",
+      "quote": "Approved returns must trigger an automated refund to the original payment method.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-b6-02",
+      "question": "Do approved returns come with a prepaid shipping label?",
+      "doc": "brd-06-returns.md",
+      "quote": "The system should generate a prepaid return label for each approved return.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-p1-01",
+      "question": "Is multi-factor authentication mandatory when customers log in to the portal?",
+      "doc": "prd-01-auth-portal.md",
+      "quote": "Sign-in is critical and must require a one-time passcode as a second authentication factor.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-p1-02",
+      "question": "How do customers recover a forgotten password?",
+      "doc": "prd-01-auth-portal.md",
+      "quote": "The system must let customers reset a forgotten password through an emailed reset link.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-p2-01",
+      "question": "Can shoppers buy without signing up for an account?",
+      "doc": "prd-02-checkout.md",
+      "quote": "The checkout must allow shoppers to complete a purchase without creating an account.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-p2-02",
+      "question": "What ways to pay will shoppers have when they buy?",
+      "doc": "prd-02-checkout.md",
+      "quote": "Checkout must support card, wallet, and bank-transfer payment methods.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-gv1-01",
+      "question": "How long is a customer locked out after repeated wrong passwords?",
+      "doc": "governing-01-sample-policy.md",
+      "quote": "**AC-06** Customer-facing sign-in locks the account for fifteen minutes after five consecutive failed password attempts.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-gv1-02",
+      "question": "How often must system owners review who has access to their system?",
+      "doc": "governing-01-sample-policy.md",
+      "quote": "**AC-05** System owners review the list of people with access to their system every month",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-gv1-03",
+      "question": "When does a leaver lose their system access?",
+      "doc": "governing-01-sample-policy.md",
+      "quote": "**AC-04** Access held by a departing employee or contractor is removed no later than the end of their final working day.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-gv1-04",
+      "question": "How long are audit trail entries retained?",
+      "doc": "governing-01-sample-policy.md",
+      "quote": "**AL-05** Audit trail entries are kept for at least one year.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-gv1-05",
+      "question": "Are staff changes to prices logged with before and after values?",
+      "doc": "governing-01-sample-policy.md",
+      "quote": "**AL-06** Changes to prices, discounts or payment amounts made by staff are recorded in the audit trail with the previous value and the new value.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-gv1-06",
+      "question": "How many years do we keep financial transaction records?",
+      "doc": "governing-01-sample-policy.md",
+      "quote": "**DR-01** Financial transaction records are kept for seven years from the end of the fiscal year they belong to.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-gv1-07",
+      "question": "What is the retention limit for recorded customer service calls and chat logs?",
+      "doc": "governing-01-sample-policy.md",
+      "quote": "**DR-04** Recorded support calls and chat transcripts are kept no longer than six months.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-gv1-08",
+      "question": "Can we keep the full credit card number on file?",
+      "doc": "governing-01-sample-policy.md",
+      "quote": "**EN-03** Full card numbers are never stored; at most the last four digits are kept for display.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-gv1-09",
+      "question": "How often should encryption keys be changed?",
+      "doc": "governing-01-sample-policy.md",
+      "quote": "**EN-04** Encryption keys are rotated at least once a year and are kept apart from the information they protect.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-gv1-10",
+      "question": "Who has to sign off a production change before release?",
+      "doc": "governing-01-sample-policy.md",
+      "quote": "**CM-01** Every change to a production system is approved by someone other than the person who made it before it goes live.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-gv1-11",
+      "question": "How much warning do customers get before planned downtime?",
+      "doc": "governing-01-sample-policy.md",
+      "quote": "**CM-05** Customers are told at least five working days in advance of planned downtime of a customer-facing service.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-gv1-12",
+      "question": "How fast must a supplier tell us about a breach that affects our data?",
+      "doc": "governing-01-sample-policy.md",
+      "quote": "**VM-04** Contracts with outside companies require them to report a security incident affecting our information within forty-eight hours.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-gv2-01",
+      "question": "Which two identifiers do staff check before opening the chart of a patient who is in front of them?",
+      "doc": "governing-02-clinic-records.md",
+      "quote": "**ID-01** Before a chart is opened for a patient who is present, staff confirm two identifiers with the patient: full name and date of birth.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-gv2-02",
+      "question": "For how long can a merge of two patient charts be reversed?",
+      "doc": "governing-02-clinic-records.md",
+      "quote": "two members of staff have each confirmed that they belong to the same person, and a combination can be undone for ninety days afterwards.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-gv2-03",
+      "question": "How is the patient's identity confirmed at the start of a phone or video consultation?",
+      "doc": "governing-02-clinic-records.md",
+      "quote": "**ID-03** At the start of every video or telephone consultation, the clinician confirms who they are speaking to with a one-time code",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-gv2-04",
+      "question": "What must a user do to open the record of a patient they are not currently treating?",
+      "doc": "governing-02-clinic-records.md",
+      "quote": "requires a reason typed before the chart opens, and every such opening is reviewed by the privacy officer within five working days",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-gv2-05",
+      "question": "Can receptionists see diagnoses or test results?",
+      "doc": "governing-02-clinic-records.md",
+      "quote": "**RA-03** Reception and billing roles see contact, appointment and payment details only; they never see clinical notes, results or diagnoses.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-gv2-06",
+      "question": "After how many minutes of inactivity do consulting room PCs lock?",
+      "doc": "governing-02-clinic-records.md",
+      "quote": "**RA-05** Computers in consulting rooms lock their screen after five minutes without keyboard or mouse input.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-gv2-07",
+      "question": "From when does a patient's withdrawal of consent take effect?",
+      "doc": "governing-02-clinic-records.md",
+      "quote": "**CS-02** A patient may withdraw consent at any time, and the withdrawal applies to every disclosure made from one working day after it is received.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-gv2-08",
+      "question": "Can we tell parents about a 16 or 17 year old's treatment?",
+      "doc": "governing-02-clinic-records.md",
+      "quote": "**CS-04** Nothing about a patient aged sixteen or seventeen is disclosed to a parent or guardian without the young person's agreement",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-gv2-09",
+      "question": "How long can a repeat prescription run before clinical review?",
+      "doc": "governing-02-clinic-records.md",
+      "quote": "**MS-03** A repeat prescription runs for at most six months before a clinician must review it.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-gv2-10",
+      "question": "Can a doctor silence a drug alert for good?",
+      "doc": "governing-02-clinic-records.md",
+      "quote": "**MS-05** A medicine warning shown to a prescriber can be acknowledged for the prescription in hand only; it can never be switched off for later prescriptions.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-gv2-11",
+      "question": "How much notice do patients get before a booked visit?",
+      "doc": "governing-02-clinic-records.md",
+      "quote": "**CM-03** Appointment reminders go out at least seventy-two hours before the appointment.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-gv2-12",
+      "question": "Who may translate for a non-English-speaking patient when we ask for their agreement to treatment?",
+      "doc": "governing-02-clinic-records.md",
+      "quote": "**CM-05** Any conversation that seeks consent from a patient who prefers a language other than English uses a qualified interpreter, never a relative or friend.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-gv2-13",
+      "question": "How long is an adult patient's record retained?",
+      "doc": "governing-02-clinic-records.md",
+      "quote": "**RK-01** An adult's chart is kept for eight years after the last contact with the network.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-gv2-14",
+      "question": "Can a clinical note be deleted or overwritten to correct it?",
+      "doc": "governing-02-clinic-records.md",
+      "quote": "**RK-03** A clinical entry is never deleted or overwritten; a correction is added as a new entry showing the original text, who corrected it and why.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-gv2-15",
+      "question": "Within what time must an incident that harmed or could have harmed a patient be logged?",
+      "doc": "governing-02-clinic-records.md",
+      "quote": "**IR-01** Any event that harmed a patient, or could have, is reported in the incident system within twenty-four hours of someone noticing it.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-gv2-16",
+      "question": "How quickly must a possible leak of patient data be escalated to the privacy officer?",
+      "doc": "governing-02-clinic-records.md",
+      "quote": "**IR-05** A suspected loss or disclosure of patient information is reported to the privacy officer within two hours.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-gv2-17",
+      "question": "Where may patient data be hosted geographically?",
+      "doc": "governing-02-clinic-records.md",
+      "quote": "**TP-02** Patient information is stored only in data centres located inside the country.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-gv2-18",
+      "question": "Can staff carry patient data on a USB stick?",
+      "doc": "governing-02-clinic-records.md",
+      "quote": "**TP-05** Patient information is not carried on USB drives or other removable media, except encrypted drives issued by the IT service desk.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cb-01",
+      "question": "How large is the clinics' registered patient list?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "Around 41,000 patients are registered across the six sites. Today almost every appointment is booked by telephone.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cb-02",
+      "question": "How many no-shows did the clinics have over the past year?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "The clinics recorded just over 9,000 missed appointments in the last financial year",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cb-03",
+      "question": "What target has been set for cutting inbound booking calls?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "Reduce the volume of inbound booking calls in the first two hours of opening by at least a third within six months of launch.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cb-04",
+      "question": "What is the goal for reducing no-shows?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "Reduce missed appointments by a fifth within twelve months of launch.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cb-05",
+      "question": "Which system owns the master appointment book, the PMS or the portal?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "The PMS remains the system of record for appointments. The portal is a patient-facing layer that reads availability from the PMS",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cb-06",
+      "question": "How long does a routine booking call take today?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "Receptionists estimate that a routine booking call takes between three and five minutes",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cb-07",
+      "question": "Why did the project reject an overnight-synced copy of the appointment book?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "That approach would have been simpler to build but would have made double booking likely and would have left receptionists working from two views.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cb-08",
+      "question": "Can front desk staff tell whether a patient has a locked portal account?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "Receptionists shall be able to see, for any patient, whether the patient has a portal account and whether it is locked",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cb-09",
+      "question": "Which appointment types are bookable online at launch?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "At launch these are expected to include routine general practitioner consultations, nurse appointments for blood pressure and diabetes reviews, childhood immunisations",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cb-10",
+      "question": "Can urgent or same-day appointments be booked through the portal?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "Urgent and same-day appointments remain telephone-only in the first release because the clinics triage those calls clinically.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cb-11",
+      "question": "How does a patient prove their identity when creating a portal account?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "using their date of birth, surname, postcode and a one-time code sent to the mobile number held in the PMS",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cb-12",
+      "question": "What if the practice system holds no phone to send the verification code to?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "If a patient has no mobile number recorded in the PMS, the portal shall tell the patient to contact their clinic",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cb-13",
+      "question": "When is a second sign-in factor required?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "the portal shall require a second factor on every sign-in from a device it has not seen before",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cb-14",
+      "question": "How many failed logins lock the account and when does it unlock?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "The portal shall lock an account after five consecutive failed sign-in attempts and shall unlock it automatically after thirty minutes.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cb-15",
+      "question": "Who is allowed to connect a carer to the person they book for?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "A link between a carer and a dependant shall only be created by front-desk staff after they have checked the carer's authority",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cb-16",
+      "question": "What happens to a parent's booking access when the child turns sixteen?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "A carer link for a dependant under the age of sixteen shall end automatically on the dependant's sixteenth birthday",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cb-17",
+      "question": "How far ahead can patients see available slots?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "The portal shall show availability for the next four weeks and shall let the patient filter by site, clinician, day of the week and time of day.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cb-18",
+      "question": "How long is a slot held while a patient finishes booking?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "the portal shall place a hold on it for five minutes so that no other patient or staff member can book it",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cb-19",
+      "question": "Is there a cap on how many future GP appointments a patient can hold?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "A patient shall not hold more than two future routine GP appointments at the same time across all sites.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cb-20",
+      "question": "How close to the start time can a booking be made online?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "The portal shall not allow a booking that starts less than two hours from the current time.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cb-21",
+      "question": "What warning about urgent problems must appear on booking screens?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "The portal shall show a clear warning on every booking screen that it must not be used for urgent medical problems",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cb-22",
+      "question": "When are text reminders sent before an appointment?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "The portal shall send each patient a reminder by text message 48 hours before every appointment",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cb-23",
+      "question": "Can a patient cancel straight from the reminder without logging in?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "A reminder shall let the patient cancel the appointment by replying to the message or by following a link, without signing in.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cb-24",
+      "question": "What time is the same-day physio reminder sent?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "A same-day text reminder is sent at 7am for physiotherapy appointments starting after 10am.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cb-25",
+      "question": "Can patients opt out of text reminders?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "Patients shall be able to choose not to receive text reminders, and the choice shall be recorded in the PMS",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cb-26",
+      "question": "In what order are freed slots offered to people on the waiting list?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "the portal shall offer it to patients on the waiting list in the order in which they joined",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cb-27",
+      "question": "When is someone taken off the waiting list?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "A patient shall be removed from a waiting list once they accept an offer, book a matching appointment themselves, or after 60 days",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cb-28",
+      "question": "How quickly does marking an appointment type bookable online take effect?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "Practice managers shall be able to mark or unmark each appointment type at their own site as bookable online, and the change shall take effect in the portal within fifteen minutes.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cb-29",
+      "question": "Can reception pause online booking for a clinician on unplanned leave?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "Front-desk staff shall be able to suspend online booking for a single clinician for a date range, for example during unplanned leave",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cb-30",
+      "question": "What uptime does the booking portal have to achieve?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "The portal shall be available at least 99.5% of the time in each calendar month, excluding planned maintenance announced at least five days in advance.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cb-31",
+      "question": "How fast must availability searches respond at peak?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "Availability searches shall return results within three seconds for 95% of requests at peak load.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cb-32",
+      "question": "How long are portal audit log entries kept?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "Audit log entries shall be kept for eight years and shall not be editable by any user, including system administrators.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cb-33",
+      "question": "When are unused portal accounts deleted?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "Portal accounts that have not been used for two years shall be deleted, and the patient shall be warned by email thirty days before deletion.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cb-34",
+      "question": "What session timeout did information governance propose?",
+      "doc": "docunderstanding-01-clinic-booking.md",
+      "quote": "Information governance suggested ten minutes; the patient representatives felt this was too short.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-fc-01",
+      "question": "How many consignments does Northgate move each year?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "Northgate Freight moves around 1.8 million consignments a year by road across the national network",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-fc-02",
+      "question": "How many complaints about claims did customer service get?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "Customer service received 380 complaints about claims, most of them about the time taken and the lack of updates.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-fc-03",
+      "question": "Are international shipments covered by the first release?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "International shipments, which are governed by different conventions and handled by the international desk.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-fc-04",
+      "question": "How long does it take on average to settle a claim today?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "The time from first notification to settlement averages 47 days and in a fifth of cases exceeds 90 days.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-fc-05",
+      "question": "What share of haulier recoveries are never pursued and why?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "About a third of the recoveries that could have been made from subcontracted hauliers are never pursued",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-fc-06",
+      "question": "What is the target average settlement time?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "- Reduce the average time to settle a claim to 30 days.\n- Ensure every claim is settled under the documented limitation rules.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-fc-07",
+      "question": "How long does preparing the quarterly insurance claim take today?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "the quarterly insurance claim takes the finance team about a week to prepare",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-fc-08",
+      "question": "What details must be captured when registering a claim?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "the application shall record the channel and the date and time the claim was first notified",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-fc-09",
+      "question": "What happens if the consignment note number cannot be found in tracking?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "the handler shall be able to register the claim with the consignment marked as unverified, and the application shall prevent any payment",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-fc-10",
+      "question": "What are the notification time limits for damage and loss under the standard conditions?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "Under the standard conditions, damage and shortage must be notified within 7 days of delivery and loss within 28 days of the expected delivery date.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-fc-11",
+      "question": "If a customer reports a problem after the deadline, is their claim thrown out?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "A late-notified claim shall not be rejected automatically; the handler shall record whether the time limit is being enforced",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-fc-12",
+      "question": "Who can change the list of required documents per loss type?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "the claims operations manager shall be able to change the list without a software release",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-fc-13",
+      "question": "When does an unanswered document request lead to the claim being abandoned?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "if they have still not been received 21 days after the reminder, the claim shall be closed as abandoned",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-fc-14",
+      "question": "When must an independent surveyor inspect damaged goods?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "An inspection shall be requested for every damage claim on a high-value consignment before liability is decided.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-fc-15",
+      "question": "What evidence is needed to decline a claim for poor packaging?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "on the grounds of inadequate packaging, the handler shall attach the evidence supporting that decision before the decision can be saved",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-fc-16",
+      "question": "How is the limit of liability calculated?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "The application shall calculate the limit of liability for each consignment from the weight of the goods lost or damaged and the per-kilogram limit",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-fc-17",
+      "question": "If the customer paid extra to insure a higher value, what caps the compensation?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "Where the claimant declared a value for the consignment and paid the declared value charge, the limit of liability shall be the declared value",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-fc-18",
+      "question": "How is the amount payable worked out, including salvage?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "The amount payable for a consignment shall be the lower of the proven value of the loss and the limit of liability, less any salvage value",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-fc-19",
+      "question": "Will we compensate a customer for profits they lost because goods arrived damaged?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "Consequential losses, such as lost profit or the cost of a missed production run, shall not be payable under the standard conditions",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-fc-20",
+      "question": "When is a delay claim payable and what is the cap?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "A delay claim shall only be payable where the claimant had a guaranteed delivery service, and the amount payable shall not exceed the carriage charge",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-fc-21",
+      "question": "Who approves a settlement between 10,000 and 50,000?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "The claims operations manager must approve a settlement from 10,000 to 50,000.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-fc-22",
+      "question": "What approval is needed for settlements above 50,000?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "The finance director must approve a settlement above 50,000, after review by the legal department.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-fc-23",
+      "question": "Can the person who handled a claim also approve its settlement?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "shall not allow a person to approve a settlement on a claim they registered or handled",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-fc-24",
+      "question": "What can a claimant do if they disagree with the settlement?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "A claimant shall be able to accept the settlement or dispute it, and a disputed settlement shall return to the handler with the claimant's reasons.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-fc-25",
+      "question": "When is a recovery case against a haulier created?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "the application shall create a recovery case linked to the claim if the amount paid exceeds the recovery threshold",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-fc-26",
+      "question": "How early is the recovery team alerted before a recovery time limit expires?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "The recovery case shall show the time limit for making the recovery claim under the haulier's subcontract and shall alert the recovery team 14 days before it expires.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-fc-27",
+      "question": "Which settled claims go on the insurer's schedule?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "identify every settled claim whose amount paid exceeds the insurance policy excess",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-fc-28",
+      "question": "At which stages does the claimant get an email update?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "when their claim is registered, when documents are requested, when liability is decided, when a settlement is approved and when the claim is closed",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-fc-29",
+      "question": "Can call-centre staff modify a claim or only look at it?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "Customer service staff shall be able to see the status of any claim and its history of messages, but shall not be able to change a claim.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-fc-30",
+      "question": "How long do we hold on to closed claim files and attachments?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "Claim records and their documents shall be retained for seven years after the claim is closed and then deleted, unless the claim is subject to litigation.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-fc-31",
+      "question": "During what part of the day must the system be up for the desks?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "The application shall be available during the claims desks' working hours, from 7am to 7pm on working days",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-fc-32",
+      "question": "How many concurrent users must the claims system support?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "The application shall support at least 40 concurrent users without any page taking more than three seconds to load.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-fc-33",
+      "question": "What notice period for damage does the business rules summary table give?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "| Notice of damage or shortage | Within 14 days of delivery |\n| Notice of loss |",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-fc-34",
+      "question": "What is still undecided about the recovery threshold?",
+      "doc": "docunderstanding-02-freight-claims.md",
+      "quote": "The recovery threshold below which a recovery is not worth pursuing has not been agreed between finance and the recovery team.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-01",
+      "question": "How much does the council give in grants each year?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "Harbour City Council gives around 4.2 million a year in grants to voluntary and community organisations",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-02",
+      "question": "What size grants does the Neighbourhood Fund award?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "The largest is the Neighbourhood Fund, which awards grants of between 1,000 and 25,000",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-03",
+      "question": "What is the annual cap on Strategic Partnerships grants?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "The Strategic Partnerships programme awards multi-year grants of up to 150,000 a year",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-04",
+      "question": "What did the internal audit find about payments before agreements were signed?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "in a sample of 60 grants seven had been paid before the grant agreement was signed",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-05",
+      "question": "What does it mean when the council takes money back from a funded group?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "Clawback: the recovery by the council of all or part of a grant that was not used for its agreed purpose.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-06",
+      "question": "Who must approve a round's set-up before it opens?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "A round shall only be opened once its programme manager has approved its set-up, and the system shall record who approved it and when.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-07",
+      "question": "Can the money set aside for funding rounds add up to more than a scheme's annual allocation?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "The system shall not allow the budget of the rounds in a programme in one financial year to exceed the programme's budget for that year.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-08",
+      "question": "Can the deadline be extended for one applicant with technical problems?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "The programme manager shall be able to extend the closing date for a single applicant, recording the reason",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-09",
+      "question": "Why must an organisation name two unrelated people when registering?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "The requirement for two unrelated people follows the council's grants policy, which does not fund organisations controlled by a single family.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-10",
+      "question": "Which documents can an organisation upload once and reuse?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "upload its governing document, latest accounts, safeguarding policy and equality policy to its organisation record once",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-11",
+      "question": "How old can an organisation's financial statements be before they need replacing?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "Accounts shall be treated as expired 18 months after the end of the financial year they cover.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-12",
+      "question": "How is a change of bank details verified?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "only take effect after a grants officer has confirmed it by telephone with a person connected with the organisation, using a telephone number already held on the record",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-13",
+      "question": "Is money held back when an organisation's account information was recently altered?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "No payment shall be released to bank details that were changed in the previous 10 working days until a finance officer has reviewed the change.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-14",
+      "question": "What happens if an applicant fails the eligibility check?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "An applicant who is not eligible shall be shown the contact details of the grants team and of the local umbrella body that can offer advice.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-15",
+      "question": "Is a group that is late with a progress report on an earlier award blocked from bidding again?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "The system shall prevent an organisation from applying to a round if it has an overdue monitoring report on any previous grant.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-16",
+      "question": "What does the acknowledgement email include after submission?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "When an application is submitted the system shall send the applicant an acknowledgement by email with a reference number and the date by which a decision is expected.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-17",
+      "question": "Can council staff fill in the form for someone who cannot use the website?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "A grants officer shall be able to complete and submit an application on behalf of an applicant who cannot apply online",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-18",
+      "question": "What age range is the Youth Voice form written for?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "The Youth Voice fund application form shall use plain language suitable for applicants aged 13 to 25",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-19",
+      "question": "Above what requested amount does a bid need a second scorer?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "the system shall require two independent assessors for any application requesting more than 10,000",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-20",
+      "question": "What happens when an assessor declares a conflict of interest?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "an assessor who declares an interest shall not be able to see or score the application",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-21",
+      "question": "Which sensitive details are hidden from scorers who come from outside the council?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "External volunteer assessors shall only see the applications allocated to them and shall not see the organisation's bank details",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-22",
+      "question": "When is an application flagged for moderation?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "Where the weighted totals given by two assessors differ by more than 20% of the maximum score, the system shall flag the application for moderation.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-23",
+      "question": "Above what award size do we check an organisation's creditworthiness?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "Due diligence includes checking the organisation's accounts, its governing document and, for grants over 25,000, a credit check.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-24",
+      "question": "Who signs off awards in the 25k to 100k band?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "The Cabinet member for communities decides on grants from 25,001 to 100,000.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-25",
+      "question": "How is the decision-maker chosen for a multi-year grant?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "For multi-year Strategic Partnerships grants, the total over all years determines the decision-maker.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-26",
+      "question": "How soon must applicants be told the decision?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "Every applicant shall be told the decision on their application by email within five working days of the decision",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-27",
+      "question": "Which grant decisions are published on the website?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "Decisions on grants over 25,000 shall be published on the council's website, showing the organisation, the amount and the purpose.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-28",
+      "question": "Can councillors put forward small awards in the run-up to polling day?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "Ward Member Grants shall not be recommended in the six weeks before a local election.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-29",
+      "question": "How many signatures are needed on a grant agreement over 5,000?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "the agreement shall be signed by two people connected with the organisation for grants over 5,000",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-30",
+      "question": "Is money ever released before both sides have signed the funding contract?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "No payment shall be made on a grant until the grant agreement has been signed by the recipient and countersigned by the council.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-31",
+      "question": "Are larger awards paid in one go or in stages?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "grants over 10,000 shall be paid in instalments set out in the payment schedule",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-32",
+      "question": "Is there a separation of duties between approving an award and paying it out?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "the system shall prevent the officer who approved the grant from releasing its payment",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-33",
+      "question": "Who signs off a small reallocation of spending between budget lines?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "A variation that moves less than 10% of the grant between budget items, without changing the total, shall be decided by a grants officer.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-34",
+      "question": "What progress reporting do the biggest awards require?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "Recipients of grants over 25,000 submit quarterly reports and an end-of-grant report with evidence of expenditure.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-35",
+      "question": "When is a monitoring report marked overdue?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "shall mark the report as overdue if it is not submitted within 14 days after the due date",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-36",
+      "question": "Who approves a large clawback before the repayment request?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "A clawback over 5,000 shall be approved by the programme manager before the request for repayment is sent.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-37",
+      "question": "Can assessors see an applicant's equality information?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "Equality information given by applicants shall be optional, shall be kept separately from the application, and shall not be visible to assessors",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-38",
+      "question": "How many years of past grants will be migrated?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "Grants made in the three financial years before go-live shall be migrated into the system",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-39",
+      "question": "How much concurrent load from applicants must the platform handle?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "The system shall support at least 500 applicants working on applications at the same time",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-40",
+      "question": "Can one organisation get two Neighbourhood Fund grants in a year?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "An organisation shall not receive more than one Neighbourhood Fund grant in the same financial year.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-41",
+      "question": "How are priority neighbourhoods favoured in scoring?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "the system shall add the priority weighting set for the round to the weighted score of applications from priority neighbourhoods",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-42",
+      "question": "What is the grant range for Small Sparks?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "Small Sparks grants range from 100 to 1,500, and groups without a bank account in their own name may be paid through a sponsoring organisation.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-43",
+      "question": "When is the programme manager alerted about an undecided Small Sparks application?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "the system shall alert the programme manager about any application still undecided after eight working days",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-44",
+      "question": "What must Arts in the Open applicants upload before payment?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "An Arts in the Open grant shall not be paid until the applicant has uploaded the event permission from the council's events team",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-cg-45",
+      "question": "In which months must the cold-weather fund's activities happen?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "Winter Warmth grants shall only be approved for activities that take place between 1 November and 31 March",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-cg-46",
+      "question": "In the community garden example, why was the application moderated?",
+      "doc": "docunderstanding-03-community-grants.md",
+      "quote": "The scores differ by 25% of the maximum, so the application is moderated.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-01",
+      "question": "How many branches and mobile libraries does Kestrel Vale run?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "It runs fourteen branch libraries, two mobile libraries that visit around ninety villages and estates on a fortnightly timetable",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-02",
+      "question": "How do extended-hours branches let members in without staff?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "lets members with an extended-hours enrolment enter the building with their card and PIN when no staff are present",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-03",
+      "question": "Why must the current library system be replaced?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "The supplier will stop supporting it at the end of next year. The system runs on servers in the council's own data centre",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-04",
+      "question": "Who is eligible to join the library?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "You can join the library if you live, work or study in Kestrel Vale, whatever your age.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-05",
+      "question": "What does the joining form do with a non-local address?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "The platform shall check the address you give against the council's address gazetteer and, if the address is outside Kestrel Vale",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-06",
+      "question": "What can someone who joins online without the identity service borrow straight away?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "you will receive a digital card straight away that lets you borrow e-books and e-audiobooks and reserve items",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-07",
+      "question": "How soon after joining online does the welcome message arrive?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "You will receive a welcome email or text message with your card number within five minutes of joining online.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-08",
+      "question": "Does one photo ID that also shows your home cover both checks when joining?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "A photocard driving licence is accepted as proof of both identity and address.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-09",
+      "question": "How old can a bill be if a new member uses it to show where they live?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "A utility bill, bank statement or council tax bill dated within the last three months is accepted as proof of address only.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-10",
+      "question": "Can someone with no fixed address get a library card?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "The lending policy is clear that nobody should be refused a library card because they lack a fixed address.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-11",
+      "question": "When does a child move to the Teen and Adult categories?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "A child's account is moved to the Teen category automatically on the child's 12th birthday and to the Adult category on their 18th birthday",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-12",
+      "question": "When does a parent stop seeing a child's loans?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "The platform shall stop showing a child's loans to a responsible adult when the child turns 16, unless the child agrees to keep sharing them.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-13",
+      "question": "What does a replacement card cost?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "A replacement physical card is issued at the counter free of charge the first time in any twelve months; any further replacement in the same twelve months costs 2.50.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-14",
+      "question": "What happens after five wrong PIN attempts?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "After five failed attempts to sign in with a card number and PIN, the platform shall lock the PIN for 30 minutes",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-15",
+      "question": "Has the library decided whether kiosk loans need a PIN?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "Whether a PIN should also be required to borrow at a kiosk, or whether the card alone should be enough, has not yet been decided by the Libraries Board.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-16",
+      "question": "After how long without any activity is a membership flagged as dormant?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "shall mark a membership as inactive when the member has not borrowed, renewed, reserved or signed in for three years",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-17",
+      "question": "How many things can a grown-up borrower take out at once, and how many films?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "Adult members may have up to 20 items on loan at once, of which no more than four may be DVDs.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-18",
+      "question": "What can Junior members borrow?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "may borrow only from the children's and teenage collections and DVDs with a U or PG certificate, unless a responsible adult has agreed otherwise",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-19",
+      "question": "What are the limits for Restricted members?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "Restricted members may have up to 3 items on loan at once and cannot borrow DVDs or equipment",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-20",
+      "question": "If borrowing limits are changed, do loans already out get new return dates?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "When a category's entitlements change, existing loans keep the due dates they already have.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-21",
+      "question": "Which fields can members search the catalogue by?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "You must be able to search the catalogue by title, author, subject, series, ISBN and keyword",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-22",
+      "question": "Will digital titles show up alongside print books when members look for something?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "E-books and e-audiobooks from the e-lending supplier shall appear in the same search results as physical items",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-23",
+      "question": "How long can kiosks keep working offline?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "If a kiosk loses its connection to the platform, it shall continue to lend and return items offline for up to four hours",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-24",
+      "question": "Can staff lend to a member who forgot their card?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "You must be able to lend items to a member who has forgotten their card, once you have confirmed who they are by asking for their date of birth and address.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-25",
+      "question": "How long are DVDs lent for and how many renewals?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "| DVDs | One week | DVDs are lent for one week and can be renewed twice. |",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-26",
+      "question": "Can a borrowed reading lamp be extended, and where does it go back?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "Equipment is lent for two weeks, cannot be renewed, and must be returned to the branch it was borrowed from.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-27",
+      "question": "What happens if a due date falls on a closed day?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "The platform shall set due dates so that no item falls due on a day when the branch it was borrowed from is closed",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-28",
+      "question": "How many times can an item be renewed according to the renewals section?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "You can renew an item up to three times, online, by phone, at a kiosk or at the counter, as long as nobody else has reserved it.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-29",
+      "question": "When does automatic renewal happen?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "The platform shall renew every eligible item on a member's account automatically two days before it is due",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-30",
+      "question": "If a member's account is restricted, can they still extend what they have out?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "You will still be able to renew items while your account is blocked, unless the block is for an item that is more than 28 days overdue.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-31",
+      "question": "Do reservations cost anything?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "Reservations are free of charge for every member.\n\nThe platform shall not let a member reserve a title they already have on loan",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-32",
+      "question": "How long can a reservation be suspended?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "You can suspend a reservation for up to 90 days, for example while you are on holiday, without losing your place in the queue.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-33",
+      "question": "How long do reserved items stay on the hold shelf?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "Reserved items are kept on the hold shelf for seven days, after which the reservation is cancelled",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-34",
+      "question": "Is a member nudged before an uncollected request is put back?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "You will receive a reminder two days before a reserved item you have not collected is taken off the hold shelf.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-35",
+      "question": "How long should inter-branch transfers for reservations take?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "shall be sent on the next van run and shall arrive within three working days, unless this is operationally impractical",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-36",
+      "question": "How many items from other library authorities can a grown-up ask for at once?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "Inter-library requests are limited to two at a time for each Adult member and are not available to other borrower categories.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-37",
+      "question": "On which days after the return date do late-item messages go out?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "Overdue notices are sent by email or text message 7, 14 and 28 days after the due date.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-38",
+      "question": "How do members without email or mobile get the 28-day notice?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "Members who have neither an email address nor a mobile number are sent the 28-day notice by post.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-39",
+      "question": "When is an overdue item treated as lost?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "After 42 days, an item still on loan shall be marked as lost, and the member shall be sent a bill for its replacement charge.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-40",
+      "question": "Are there late fines once the new platform goes live?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "the library is fine-free for every member: no charge is made for returning any item late",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-41",
+      "question": "If a book we billed someone for turns up later, do they get their money back?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "If you return an item you have been billed for as lost within six months of the bill, the replacement charge will be refunded to you in full",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-42",
+      "question": "What debt or lateness stops a member from taking out physical items?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "A member's account shall be blocked from borrowing physical items when the member owes more than 10 in charges or has an item that is more than 28 days overdue.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-43",
+      "question": "What overdue charge applies to adult DVDs?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "Overdue charges on DVDs borrowed by Adult members accrue at 1.00 a day, up to a maximum of 7.00 for each item",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-44",
+      "question": "How are card payments taken?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "Every card payment shall be taken through the council's payment gateway, and the platform shall never see or store a full card number.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-45",
+      "question": "Is there a cap on simultaneous digital borrowing?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "a member may hold up to 10 e-loans at once, whatever their borrower category",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-46",
+      "question": "Do digital loans trigger due-date or late messages?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "E-loans are returned automatically at the end of the loan period, and no reminder or overdue notice is sent for them.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-47",
+      "question": "When can volunteers see a home library member's details?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "Volunteers are given access only to the details of the members on their own round, and only on the day of the delivery and the day after it.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-48",
+      "question": "Must the vans' laptops keep working without a connection all day?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "The mobile library laptops shall work offline for the whole of a day's route",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-49",
+      "question": "How long is a reservation held on a mobile library?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "your reserved item will be held on the vehicle for its next two visits to that stop",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-50",
+      "question": "What are the conditions for getting after-hours building access?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "You can apply for an extended-hours enrolment if you are an Adult member and have held your membership for at least a month, by attending a short induction",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-51",
+      "question": "How far ahead and for how long can members book a public computer?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "You can book a public computer at any branch up to seven days ahead, online or at the counter, for up to two hours a day.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-52",
+      "question": "What happens to a booked computer if the member does not show up?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "The platform shall release a booked computer to walk-in users if the member who booked it has not signed in within ten minutes",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-53",
+      "question": "What is the most an SMS may reveal about something on loan?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "a text message shall never contain more about a loan than its title and due date",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-54",
+      "question": "At what age can a young person sign up on the website by themselves?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "Members aged 13 and over can join online without a responsible adult",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-55",
+      "question": "Is every view of a member's record logged?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "The platform shall record every time a member of staff views a member's record",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-56",
+      "question": "What small-number suppression applies to ward reports?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "No report shall show a member's name, card number or address unless the user's role allows it, and a report by ward shall suppress any figure below five.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-57",
+      "question": "Where must member data be hosted?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "The platform shall hold members' personal information only in data centres in the UK.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-58",
+      "question": "When is a member's record deleted after inactivity according to data retention?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "A member's record shall be deleted 18 months after the member's last activity, unless the member still has items on loan or owes charges.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-59",
+      "question": "How quickly is borrowing history deleted on request?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "You can ask for your borrowing history to be deleted at any time, and it will be deleted within one working day.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-60",
+      "question": "What catalogue search speed is required?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "95 per cent of catalogue searches shall return results within two seconds.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-61",
+      "question": "What recovery point objective is required for backups?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "All data shall be backed up daily, and the platform shall be restorable to its state no more than one hour before a failure.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-62",
+      "question": "Do members need a new PIN after migration?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "Members are not asked to register again or to choose a new PIN: their existing card numbers and PINs continue to work.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-63",
+      "question": "During the data move, are duplicate member records combined without a person deciding?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "Duplicate records shall be identified during migration and listed for branch supervisors, but shall not be merged automatically.",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-64",
+      "question": "How long must branch desks be able to lend without the system during the switchover?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "During the cut-over, you must be able to lend and return items offline at the counter for up to two days",
+      "phrasing": "paraphrase"
+    },
+    {
+      "id": "aq-ll-65",
+      "question": "What happens if a reading group set comes back incomplete?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "If a set comes back with copies missing, the organiser is asked to return them within four weeks before any replacement charge is made.",
+      "phrasing": "lexical"
+    },
+    {
+      "id": "aq-ll-66",
+      "question": "In the mixed renewal example, why were two items not renewed?",
+      "doc": "docunderstanding-04-library-lending.md",
+      "quote": "The ninth novel is not, because another member has reserved it, and the reading lamp is not, because equipment cannot be renewed.",
+      "phrasing": "paraphrase"
+    }
+  ]
+}

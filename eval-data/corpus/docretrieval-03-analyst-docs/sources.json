@@ -1,0 +1,75 @@
+{
+  "corpusId": "docretrieval-03-analyst-docs",
+  "documents": [
+    {
+      "id": "brd-01-billing.md",
+      "source": "brd-01-billing/source.md",
+      "sha256": "acca9faf930afd975cfbc88eaac35bb14afc4b1126154b8b99c1408498047362"
+    },
+    {
+      "id": "brd-02-compliance.md",
+      "source": "brd-02-compliance/source.md",
+      "sha256": "c5f93cc9dbc3af8930e0a4e849ce4f3776b381c38208bdc3eeb8a2046e94b9a1"
+    },
+    {
+      "id": "brd-03-onboarding.md",
+      "source": "brd-03-onboarding/source.md",
+      "sha256": "f905b80bda89170af76e541036506c179b4c361a1aec4eba02b843e02f7943c2"
+    },
+    {
+      "id": "brd-04-support.md",
+      "source": "brd-04-support/source.md",
+      "sha256": "f6b78dcfca1cf26d0fe5041c1d430fc7e30ddd4820162cd126f3b26d3024bdc8"
+    },
+    {
+      "id": "brd-05-inventory.md",
+      "source": "brd-05-inventory/source.md",
+      "sha256": "2e72bcc2c76c2386a16b629e112c1ae1663c5c943e704842fa8d209b96cf6c14"
+    },
+    {
+      "id": "brd-06-returns.md",
+      "source": "brd-06-returns/source.md",
+      "sha256": "7c486db1e99b681c89bb1e9a339d542e0a6d27bd613691b3dc619f040635ce0d"
+    },
+    {
+      "id": "prd-01-auth-portal.md",
+      "source": "prd-01-auth-portal/source.md",
+      "sha256": "d2114b6a9b0e9b674f0fe373e949a62f894045ee75d08508faa441617c5b8dca"
+    },
+    {
+      "id": "prd-02-checkout.md",
+      "source": "prd-02-checkout/source.md",
+      "sha256": "e53f69fa33b0cdcb59fc309f62e1f494223d9c7c9495aaf73262fad9f809c4e5"
+    },
+    {
+      "id": "docunderstanding-01-clinic-booking.md",
+      "source": "docunderstanding-01-clinic-booking/source.docx",
+      "sha256": "57818a7412d7ae853796091d8f831abd53de301b2c0c12cca417a19390016275"
+    },
+    {
+      "id": "docunderstanding-02-freight-claims.md",
+      "source": "docunderstanding-02-freight-claims/source.docx",
+      "sha256": "43ca0cabb2ec5d13cf1b034016a6ce24bd4c6930bab1656b2cad7800e0cfbadd"
+    },
+    {
+      "id": "docunderstanding-03-community-grants.md",
+      "source": "docunderstanding-03-community-grants/source.docx",
+      "sha256": "1d95e38b11b2cd72a168270cbfddf0c9253861673cb574fbacd19d8516e0a45b"
+    },
+    {
+      "id": "docunderstanding-04-library-lending.md",
+      "source": "docunderstanding-04-library-lending/source.docx",
+      "sha256": "63be8445c2edee4f1c85b32b0370924140162afc48cd19b4dc0f56a5332cda11"
+    },
+    {
+      "id": "governing-01-sample-policy.md",
+      "source": "governing-01-sample-policy/policy-v2.md",
+      "sha256": "73896474edbd4a87aa2d856543fdfef747d6f65c9187f04bbc6a10bd061c1292"
+    },
+    {
+      "id": "governing-02-clinic-records.md",
+      "source": "governing-02-clinic-records/policy-v2.md",
+      "sha256": "be42d5dac447d47d343f4435783873a4a8ba97108b5bc5a1dbcba8124ba7a16f"
+    }
+  ]
+}
