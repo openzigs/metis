@@ -57,10 +57,10 @@
  * BM25 does not get the line. It already indexes the path, extension stripped, as
  * its boosted `path` field (#717); the line would add `file` and the extension (`go`,
  * `ts`, `md`) to every chunk's text and count each path word twice. Measured with
- * `pnpm eval:repo-chunk-prefix` (`scripts/eval-repo-chunk-prefix.ts`): the line in
- * BM25 as well bought nothing over the embedder alone, and leaving the first chunk
- * (which opens with its own `# <path>` header) without a second copy was the only arm
- * no worse than before on every guard-set measure. Numbers:
+ * `scripts/eval-repo-chunk-prefix.ts`: the line in BM25 as well bought nothing over
+ * the embedder alone, and leaving the first chunk (which opens with its own
+ * `# <path>` header) without a second copy was the only arm no worse than before on
+ * every guard-set measure. Numbers:
  * docs/EMBEDDINGS_BACKENDS.md > "Repository chunks and their path line".
  *
  * The line is derived from the filename at every embed and never persisted, so it

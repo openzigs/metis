@@ -869,8 +869,8 @@ chunks are on another model. The fix deliberately does **not** bump an identity:
   until reindexed. A search drops every row whose `embeddingModel` differs from the
   query's.
 
-**Measured** with `pnpm eval:repo-chunk-prefix`
-(`server/scripts/eval-repo-chunk-prefix.ts`; reproduction steps in its header). It
+**Measured** with `server/scripts/eval-repo-chunk-prefix.ts` (run from `server/` with
+`pnpm exec tsx`; reproduction steps in its header). It
 uses production's walk, chunker, embedder (gte-modernbert-base), BM25 and fusion over
 Miniflux v2.3.3: 2,675 repository chunks, plus its `README.md` and `miniflux.1` as
 uploads. The guard set is the 30 Miniflux localization items. "Top 5" means an

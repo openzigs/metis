@@ -1,5 +1,6 @@
 /**
- * Issue #2193 — `pnpm eval:repo-chunk-prefix`.
+ * Issue #2193 — the repository-chunk path-line measurement. Run with
+ * `pnpm exec tsx scripts/eval-repo-chunk-prefix.ts` from `server/`.
  *
  * Measures what the `File: <repository path>` line does to retrieval over a real
  * repository, with no database and no model call. It rebuilds a repository
@@ -25,7 +26,11 @@
  *
  *   git clone --depth 1 --branch 2.3.3 https://github.com/miniflux/v2.git .tmp-2193/miniflux
  *   cd server && EMBED_BACKEND=xenova HF_HUB_OFFLINE=1 TRANSFORMERS_CACHE=~/.cache/metis-transformers \
- *     pnpm eval:repo-chunk-prefix --repo ../.tmp-2193/miniflux --cache ../.tmp-2193
+ *     pnpm exec tsx scripts/eval-repo-chunk-prefix.ts --repo ../.tmp-2193/miniflux --cache ../.tmp-2193
+ *
+ * (`.tmp-*` is gitignored. Drop `HF_HUB_OFFLINE=1` on a machine that has not cached
+ * gte-modernbert-base yet. About 25 minutes on a laptop CPU for the two vector sets;
+ * a re-run with `--cache` takes about a minute.)
  *
  * `--repo` is the checkout; its `README.md` and `miniflux.1` are added as uploaded
  * (non-repository) documents so a keyword probe can see a mixed project. The guard
