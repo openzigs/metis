@@ -85,7 +85,7 @@ import { GoverningFindingsPanel } from "@/components/analysis/governing-findings
 import { StakeholdersPanel } from "@/components/analysis/StakeholdersPanel";
 import { stakeholderApi } from "@/lib/stakeholder-api";
 import { AnalysisRunSummary } from "@/components/analysis/analysis-run-summary";
-import { defaultRunDocumentCount } from "@/lib/project-pipeline";
+import { defaultRunDocumentCount, runAwaitingReviewCount } from "@/lib/project-pipeline";
 import { AnalysisCapabilityBanner } from "@/components/analysis/analysis-capability-banner";
 import { RequirementInputAccountPanel } from "@/components/analysis/requirement-input-account-panel";
 import { AnalysisLimitsPanel } from "@/components/analysis/analysis-limits-panel";
@@ -561,6 +561,9 @@ export default function AnalysisPage(): React.ReactElement {
   // #1833 — re-running the code evaluation is the agent Regenerate, an
   // `analysis.run` write server-side: a viewer without it is offered no re-run.
   const canRunAnalysis = user?.permissions.includes("analysis.run") ?? false;
+  // #2554 — a run that read a document the viewer cannot read is not theirs to
+  // re-run, resume or cancel: the server refuses each, so none is offered.
+  const runRestricted = detail.data?.runRestricted === true;
   const [commentsReqId, setCommentsReqId] = useState<string | null>(null);
   // AC2 — pending optimistic-lock conflict awaiting 3-way merge resolution.
   const [conflict, setConflict] = useState<{
@@ -1070,6 +1073,7 @@ export default function AnalysisPage(): React.ReactElement {
             <AnalysisRunSummary
               docCount={selectedDocs.length}
               availableDocCount={defaultRunDocumentCount(allDocs)}
+              awaitingReviewCount={runAwaitingReviewCount(allDocs, selectedDocs)}
               listIsPartial={Boolean(docs.data?.nextCursor)}
               hasRequirements={
                 extraInstructions.trim().length > 0 || importedRequirementIds.length > 0
@@ -1217,7 +1221,8 @@ export default function AnalysisPage(): React.ReactElement {
                 <div className="flex items-center gap-2">
                   {/* #2350 — chat about this change request, scoped to its project. */}
                   <AskAboutThis kind="change-request" id={detail.data.id} />
-                  {detail.data.status === "running" || detail.data.status === "pending" ? (
+                  {!runRestricted &&
+                  (detail.data.status === "running" || detail.data.status === "pending") ? (
                     <Button
                       variant="outline"
                       onClick={() => cancel.mutate()}
@@ -1299,10 +1304,10 @@ export default function AnalysisPage(): React.ReactElement {
                   {/* Issue #741 — offer a resume of budget-skipped repos from the banner. */}
                   <AnalysisCapabilityBanner
                     capability={detail.data.capability}
-                    onResumeRepos={() => resumeRepos.mutate(undefined)}
+                    onResumeRepos={runRestricted ? undefined : () => resumeRepos.mutate(undefined)}
                     resuming={resumeRepos.isPending}
                     onContinueInvestigation={
-                      detail.data.status === "completed"
+                      detail.data.status === "completed" && !runRestricted
                         ? () => continueInvestigation.mutate(undefined)
                         : undefined
                     }
@@ -1690,7 +1695,7 @@ export default function AnalysisPage(): React.ReactElement {
                                 projectId={projectId}
                                 requirementId={req.id}
                                 analysisId={selectedAnalysisId}
-                                canRerunEvaluation={canRunAnalysis}
+                                canRerunEvaluation={canRunAnalysis && !runRestricted}
                               />
                             </div>
                             {historyReqId === req.id ? (
@@ -2030,7 +2035,10 @@ export default function AnalysisPage(): React.ReactElement {
                                 {liveAgentLine(live)}
                               </p>
                             ) : null}
-                            {isSpecialist && agent && detail.data.status === "completed" ? (
+                            {isSpecialist &&
+                            agent &&
+                            detail.data.status === "completed" &&
+                            !runRestricted ? (
                               <div className="mt-2">
                                 <Button
                                   size="sm"

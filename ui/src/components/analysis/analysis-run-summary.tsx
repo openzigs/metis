@@ -9,6 +9,9 @@
  * ready document, so an empty selection reads "all N documents", never "0".
  * #2185 — that count leaves out the connectors' code rows: see
  * `defaultRunDocumentCount` (`lib/project-pipeline.ts`).
+ * #2555 — and it says how many of them are still awaiting review
+ * (`runAwaitingReviewCount`): "uses all 3 documents" counted one an analyst
+ * could not tell was unapproved.
  */
 
 interface Props {
@@ -23,6 +26,8 @@ interface Props {
   listIsPartial?: boolean;
   /** Whether non-empty new-requirements text was provided. */
   hasRequirements: boolean;
+  /** #2555 — how many of the run's documents are awaiting review (`runAwaitingReviewCount`). */
+  awaitingReviewCount?: number;
 }
 
 const plural = (n: number): string => `${n} document${n === 1 ? "" : "s"}`;
@@ -47,11 +52,13 @@ export function AnalysisRunSummary({
   availableDocCount,
   listIsPartial = false,
   hasRequirements,
+  awaitingReviewCount = 0,
 }: Props): React.ReactElement {
+  const awaiting = awaitingReviewCount > 0 ? ` (${awaitingReviewCount} awaiting review)` : "";
   return (
     <p className="text-xs text-muted-foreground" data-testid="analysis-run-summary">
-      This run uses {documentsLabel(docCount, availableDocCount, listIsPartial)} + requirements
-      provided: {hasRequirements ? "yes" : "no"}.
+      This run uses {documentsLabel(docCount, availableDocCount, listIsPartial)}
+      {awaiting} + requirements provided: {hasRequirements ? "yes" : "no"}.
     </p>
   );
 }

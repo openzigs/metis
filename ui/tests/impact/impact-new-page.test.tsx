@@ -214,6 +214,29 @@ describe("NewImpactAnalysisPage", () => {
     expect(values).not.toContain("doc-0000004");
   });
 
+  it("#2555 — labels a quarantined document awaiting review, read from its indexState", async () => {
+    vi.mocked(documentsApi.list).mockResolvedValueOnce({
+      items: [
+        { id: "doc-0000001", filename: "spec.docx", status: "ready" },
+        { id: "doc-0000005", filename: "draft.docx", status: "ready", indexState: "quarantined" },
+      ],
+    } as unknown as Awaited<ReturnType<typeof documentsApi.list>>);
+    render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
+    await openScope();
+    fireEvent.click(await screen.findByLabelText("Alpha"));
+    fireEvent.click(screen.getByTestId("source-mode-document"));
+    const select = await screen.findByTestId("source-document-select");
+    await waitFor(() =>
+      expect(
+        within(select).getByRole("option", { name: "draft.docx (Alpha) — awaiting review" }),
+      ).toBeInTheDocument(),
+    );
+    expect(within(select).getByRole("option", { name: "spec.docx (Alpha)" })).toBeInTheDocument();
+    expect(screen.getByTestId("source-documents-awaiting-review")).toHaveTextContent(
+      "1 of these documents is awaiting review",
+    );
+  });
+
   it("#2280 — offers to read the document again only for a document source, and sends it when ticked", async () => {
     render(<NewImpactAnalysisPage />, { wrapper: makeWrapper() });
     await openScope();

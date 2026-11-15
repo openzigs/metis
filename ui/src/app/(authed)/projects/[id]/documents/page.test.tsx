@@ -289,7 +289,7 @@ describe("Documents page — #2547 the document access list", () => {
     renderPage();
     const badge = await screen.findByTestId("document-restricted-badge-d-pay");
     expect(badge).toHaveTextContent("Restricted");
-    expect(badge).toHaveTextContent("Readable by role coordinator and admins");
+    expect(badge).toHaveTextContent("Readable by the coordinator role and admins");
     expect(screen.queryByTestId("document-restricted-d-pay")).toBeNull();
     expect(screen.queryByTestId("document-restricted-badge-d-open")).toBeNull();
   });
@@ -302,7 +302,7 @@ describe("Documents page — #2547 the document access list", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     fireEvent.click(toggle);
     const editor = await screen.findByTestId("acl-editor");
-    expect(editor).toHaveTextContent("role · coordinator");
+    expect(editor).toHaveTextContent("the coordinator role");
 
     const before = listDocuments.mock.calls.length;
     fireEvent.click(screen.getByTestId("acl-save"));
@@ -312,6 +312,33 @@ describe("Documents page — #2547 the document access list", () => {
     // The editor closes and the list is read again, so the badge shows the saved list.
     await waitFor(() => expect(screen.queryByTestId("acl-editor")).toBeNull());
     await waitFor(() => expect(listDocuments.mock.calls.length).toBeGreaterThan(before));
+  });
+
+  // #2555 — a person on the list is named, in the badge and in the editor it opens.
+  it("names the people on a document's list, never their ids", async () => {
+    viewer = { id: "u-alice", role: "coordinator" };
+    const alice = { id: "u-alice", username: "asmith", displayName: "Alice Smith" };
+    listDocuments.mockResolvedValue(
+      page([
+        doc({
+          id: "d-pay",
+          status: "ready",
+          filename: "payroll.md",
+          access: {
+            restricted: true,
+            canRead: true,
+            subjects: [{ kind: "user", value: alice.id }],
+            users: [alice],
+          },
+        }),
+      ]),
+    );
+    renderPage();
+    const badge = await screen.findByTestId("document-restricted-badge-d-pay");
+    expect(badge).toHaveTextContent("Readable by Alice Smith and admins");
+    expect(badge).not.toHaveTextContent("u-alice");
+    fireEvent.click(screen.getByTestId("document-access-toggle-d-pay"));
+    expect(await screen.findByTestId("acl-subjects")).toHaveTextContent("Alice Smith @asmith");
   });
 
   it("a member the document is restricted away from sees only Restricted, and no editor or portfolio check", async () => {

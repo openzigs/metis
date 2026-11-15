@@ -20,12 +20,33 @@ export interface SourceDocument {
    * out is not offered at all: the page drops it, #2546.)
    */
   restricted?: boolean;
+  /**
+   * #2555 — the document is quarantined, awaiting review (`indexState`), as the
+   * Analysis page's picker labels it.
+   */
+  awaitingReview?: boolean;
 }
 
-/** #2547 — the option's text: a restricted document says so. */
-function optionLabel(doc: SourceDocument): string {
+/**
+ * #2547 — the option's text: a restricted document says so. #2555 — and one
+ * awaiting review says that.
+ */
+export function optionLabel(doc: SourceDocument): string {
+  const marks = [
+    ...(doc.restricted ? ["restricted"] : []),
+    ...(doc.awaitingReview ? ["awaiting review"] : []),
+  ];
   const base = `${doc.filename} (${doc.projectName})`;
-  return doc.restricted ? `${base} — restricted` : base;
+  return marks.length > 0 ? `${base} — ${marks.join(", ")}` : base;
+}
+
+/** #2555 — how many of the listed documents are awaiting review, said under the list. */
+export function awaitingReviewNote(documents: readonly SourceDocument[]): string | null {
+  const n = documents.filter((d) => d.awaitingReview).length;
+  if (n === 0) return null;
+  return n === 1
+    ? "1 of these documents is awaiting review: it has not been approved yet."
+    : `${n} of these documents are awaiting review: they have not been approved yet.`;
 }
 
 export interface DocumentSourceSelectorProps {
@@ -94,20 +115,30 @@ export function DocumentSourceSelector({
           No documents found in the selected projects.
         </p>
       ) : (
-        <select
-          className="w-full rounded border bg-background px-2 py-1 text-sm"
-          value={documentId ?? ""}
-          onChange={(e) => onDocumentChange(e.target.value || null)}
-          data-testid="source-document-select"
-          aria-label="Select a document"
-        >
-          <option value="">Select a document…</option>
-          {documents.map((doc) => (
-            <option key={doc.id} value={doc.id}>
-              {optionLabel(doc)}
-            </option>
-          ))}
-        </select>
+        <div className="space-y-1">
+          <select
+            className="w-full rounded border bg-background px-2 py-1 text-sm"
+            value={documentId ?? ""}
+            onChange={(e) => onDocumentChange(e.target.value || null)}
+            data-testid="source-document-select"
+            aria-label="Select a document"
+          >
+            <option value="">Select a document…</option>
+            {documents.map((doc) => (
+              <option key={doc.id} value={doc.id}>
+                {optionLabel(doc)}
+              </option>
+            ))}
+          </select>
+          {awaitingReviewNote(documents) ? (
+            <p
+              className="text-xs text-muted-foreground"
+              data-testid="source-documents-awaiting-review"
+            >
+              {awaitingReviewNote(documents)}
+            </p>
+          ) : null}
+        </div>
       )}
     </Card>
   );

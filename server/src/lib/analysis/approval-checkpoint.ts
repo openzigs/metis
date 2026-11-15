@@ -158,9 +158,14 @@ export async function reviewApprovalRequest(
 export async function approveAllPendingApprovalRequests(
   analysisId: string,
   review: { reviewerId: string; reviewNote?: string },
+  onlyIds?: readonly string[],
 ): Promise<{ approvedCount: number }> {
+  // #2554 — given `onlyIds` (the pending checkpoints the caller was checked
+  // against), only those: one created between that check and this write is
+  // left pending, never approved unchecked.
+  if (onlyIds && onlyIds.length === 0) return { approvedCount: 0 };
   const { count } = await prisma.approvalRequest.updateMany({
-    where: { analysisId, status: "pending" },
+    where: { analysisId, status: "pending", ...(onlyIds ? { id: { in: [...onlyIds] } } : {}) },
     data: {
       status: "approved",
       reviewerId: review.reviewerId,
@@ -183,10 +188,19 @@ export async function rejectPendingRequirementApprovals(
   analysisId: string,
   itemIds: readonly string[],
   review: { reviewerId: string; reviewNote?: string },
+  onlyIds?: readonly string[],
 ): Promise<{ rejectedCount: number }> {
   if (itemIds.length === 0) return { rejectedCount: 0 };
+  // #2554 — given `onlyIds` (the checkpoints the caller was checked against), only those.
+  if (onlyIds && onlyIds.length === 0) return { rejectedCount: 0 };
   const { count } = await prisma.approvalRequest.updateMany({
-    where: { analysisId, type: "requirement", status: "pending", itemId: { in: [...itemIds] } },
+    where: {
+      analysisId,
+      type: "requirement",
+      status: "pending",
+      itemId: { in: [...itemIds] },
+      ...(onlyIds ? { id: { in: [...onlyIds] } } : {}),
+    },
     data: {
       status: "rejected",
       reviewerId: review.reviewerId,

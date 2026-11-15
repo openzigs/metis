@@ -174,6 +174,12 @@ vi.mock("../lib/analysis/clarify-csv.js", () => ({
   parseClarifyCsv: vi.fn(),
   ClarifyCsvError: class extends Error {},
 }));
+// #2554 — which checkpoints the caller may decide is pinned over a real
+// database in tests/restricted-checkpoints-2554.sqlite.test.ts; here every one.
+vi.mock("../lib/analysis/checkpoint-access.js", () => ({
+  checkpointRows: async () => [],
+  hiddenCheckpointIds: async () => new Set<string>(),
+}));
 vi.mock("../lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 vi.mock("../lib/ai/index.js", () => ({
   buildProvider: vi.fn(() => ({})),
@@ -399,6 +405,7 @@ describe("analyses/:id/* — cross-project scope (#1097)", () => {
       expect(approveAllPendingApprovalRequests).toHaveBeenCalledWith(
         "ana-b",
         expect.objectContaining({ reviewerId: expect.any(String) }),
+        expect.any(Array),
       );
     });
   });
@@ -426,6 +433,7 @@ describe("analyses/:id/* — cross-project scope (#1097)", () => {
         "ana-b",
         expect.any(Array),
         expect.objectContaining({ reviewerId: expect.any(String) }),
+        expect.any(Array),
       );
     });
   });

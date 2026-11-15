@@ -48,6 +48,32 @@ describe("AnalysisRunSummary (#907)", () => {
     );
   });
 
+  // #2555 — a document still awaiting review is counted, and said to be.
+  it("says how many of the run's documents are awaiting review", () => {
+    const { rerender } = render(
+      <AnalysisRunSummary
+        docCount={0}
+        availableDocCount={3}
+        awaitingReviewCount={1}
+        hasRequirements={false}
+      />,
+    );
+    expect(screen.getByTestId("analysis-run-summary")).toHaveTextContent(
+      "This run uses all 3 documents (1 awaiting review) + requirements provided: no.",
+    );
+    rerender(
+      <AnalysisRunSummary
+        docCount={2}
+        availableDocCount={3}
+        awaitingReviewCount={0}
+        hasRequirements={false}
+      />,
+    );
+    expect(screen.getByTestId("analysis-run-summary")).toHaveTextContent(
+      "This run uses 2 documents + requirements provided: no.",
+    );
+  });
+
   it("says no documents only when the project has none ready", () => {
     render(<AnalysisRunSummary docCount={0} availableDocCount={0} hasRequirements />);
     expect(screen.getByTestId("analysis-run-summary")).toHaveTextContent(

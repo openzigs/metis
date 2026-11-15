@@ -23,6 +23,7 @@ import {
 import { Card } from "@/components/ui/card";
 import { projectsApi, documentsApi, type Project } from "@/lib/projects-api";
 import { isUnreadableDocument } from "@/lib/document-access";
+import { isDocumentAwaitingReview } from "@/lib/project-pipeline";
 import { useCreateImpactAnalysis } from "@/lib/impact-analysis-hooks";
 import { ScopePicker, type ScopeKind } from "@/components/scope/scope-picker";
 import { useValidatedActiveWorkspaceId, workspaceListQuery } from "@/lib/active-workspace";
@@ -149,6 +150,8 @@ export default function NewImpactAnalysisPage() {
           projectName: project?.name ?? projectId,
           // #2547 — a readable restricted document is marked as restricted.
           restricted: doc.access?.restricted === true,
+          // #2555 — and one awaiting review is labelled, as on the Analysis page.
+          awaitingReview: isDocumentAwaitingReview(doc),
         });
       }
     });

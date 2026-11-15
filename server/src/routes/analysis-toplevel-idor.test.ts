@@ -173,6 +173,8 @@ vi.mock("../lib/change-analysis/requirement-diff-service.js", () => ({
 vi.mock("../lib/analysis/source-redaction.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../lib/analysis/source-redaction.js")>()),
   restrictedIds: vi.fn(async () => new Set<string>()),
+  // #2554 — and every run is seen as a whole (Regenerate, Cancel, resume).
+  loadSourceGuard: async () => ({ canSee: () => true, canSeeRun: () => true }),
 }));
 vi.mock("../lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 vi.mock("../lib/ai/index.js", () => ({

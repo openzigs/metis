@@ -97,6 +97,12 @@ vi.mock("../lib/analysis/index.js", () => ({
   serializeTraceabilityMarkdown: vi.fn(),
 }));
 
+// #2554 — whether the caller sees the run as a whole is pinned over a real
+// database in tests/restricted-checkpoints-2554.sqlite.test.ts; here they do.
+vi.mock("../lib/analysis/source-redaction.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/analysis/source-redaction.js")>()),
+  loadSourceGuard: async () => ({ canSee: () => true, canSeeRun: () => true }),
+}));
 vi.mock("../lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 vi.mock("../lib/ai/index.js", () => ({
   buildProvider: vi.fn(() => ({})),

@@ -43,6 +43,7 @@ import {
 } from "./project-vector-write.js";
 import { RESTRICTED_SOURCE_TITLE, type AclSubject } from "@metis/shared";
 import {
+  aclUserNames,
   documentAccessOf,
   documentVisibilityFor,
   type DocumentReader,
@@ -808,6 +809,7 @@ export async function rejectDocument(
  * #2547 — given a `reader`, each row carries `access` as that reader may see
  * it ({@link documentAccessOf}): a reader of the document is told who it is
  * restricted to; a reader it leaves out only that it is restricted.
+ * #2555 — and, by name, the people on it ({@link aclUserNames}).
  */
 export async function listQuarantine(projectId: string, reader?: string | DocumentReader) {
   const docs = await prisma.document.findMany({
@@ -840,9 +842,11 @@ export async function listQuarantine(projectId: string, reader?: string | Docume
   });
   if (!reader) return docs.map((d) => quarantineRow(d));
   const sees = await documentVisibilityFor(reader, docs);
+  // #2555 — the people a reader's lists name, from the rows they may read only.
+  const names = await aclUserNames(projectId, docs.filter(sees));
   return docs.map((d) =>
     sees(d)
-      ? { ...quarantineRow(d), access: documentAccessOf(d, true) }
+      ? { ...quarantineRow(d), access: documentAccessOf(d, true, names) }
       : {
           ...quarantineRow(d),
           filename: RESTRICTED_SOURCE_TITLE,

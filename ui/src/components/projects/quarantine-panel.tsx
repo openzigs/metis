@@ -234,6 +234,7 @@ export function QuarantinePanel({
                     projectId={projectId}
                     documentId={row.documentId}
                     initialSubjects={row.access?.subjects ?? []}
+                    initialUsers={row.access?.users}
                     onSaved={() => setAccessOpenFor(null)}
                   />
                 ) : null}

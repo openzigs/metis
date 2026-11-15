@@ -844,12 +844,18 @@ describe("listQuarantine", () => {
     const accessOf = (r: object) => (r as { access?: unknown }).access;
     const byId = new Map(asBob.map((r) => [r.documentId, accessOf(r)]));
     expect(byId.get("d1")).toEqual({ restricted: true, canRead: false });
-    expect(byId.get("d2")).toEqual({ restricted: false, canRead: true, subjects: [] });
+    expect(byId.get("d2")).toEqual({
+      restricted: false,
+      canRead: true,
+      subjects: [],
+      users: [],
+    });
     const asAlice = await listQuarantine("p1", { userId: "u-alice", role: "coordinator" });
     expect(accessOf(asAlice.find((r) => r.documentId === "d1")!)).toEqual({
       restricted: true,
       canRead: true,
       subjects,
+      users: [],
     });
     // An internal read (no reader) carries no access field at all.
     expect((await listQuarantine("p1"))[0]).not.toHaveProperty("access");
