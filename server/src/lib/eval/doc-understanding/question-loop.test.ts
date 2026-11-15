@@ -88,7 +88,16 @@ function loopProvider(
           })),
         });
       } else if (system.includes("Extract structured requirements")) {
-        content = JSON.stringify(extraction);
+        // Only the requirements whose statements this call lists, so a
+        // batched extraction (#2530) is answered once per statement.
+        const listed = (r: { sourceIds?: string[] }) =>
+          !r.sourceIds || r.sourceIds.some((id) => user.includes(`[${id}]`));
+        const all = extraction as { requirements?: Array<{ sourceIds?: string[] }> };
+        content = JSON.stringify(
+          Array.isArray(all.requirements)
+            ? { ...all, requirements: all.requirements.filter(listed) }
+            : extraction,
+        );
       } else {
         throw new Error(`no route for: ${system.slice(0, 80)}`);
       }

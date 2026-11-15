@@ -1,0 +1,1865 @@
+{
+  "generatedAt": "2026-11-15T02:16:42.576Z",
+  "model": "anthropic/claude-sonnet-5-5",
+  "judgeModel": "anthropic/claude-sonnet-5-5",
+  "runsRequested": 1,
+  "budgetUsd": 30,
+  "spentUsd": 2.8578663000000004,
+  "judgeSpentUsd": 0.148822,
+  "unpricedCalls": 0,
+  "outputTokenCap": 16384,
+  "stopped": null,
+  "provenance": {
+    "commit": "1f9a591fbf36e944d3e17e8c5720005fddf8c539",
+    "dirty": false
+  },
+  "corpus": [
+    {
+      "id": "docunderstanding-01-clinic-booking",
+      "title": "Riverside Community Clinics: Online Appointment Booking, Functional Requirements Document",
+      "docxBytes": 17991,
+      "chars": 22129,
+      "sections": 26,
+      "chunks": 26,
+      "requirements": 59,
+      "labelledSections": 13,
+      "ambiguities": 12
+    },
+    {
+      "id": "docunderstanding-02-freight-claims",
+      "title": "Northgate Freight: Cargo Loss and Damage Claims Handling, Business Requirements Document",
+      "docxBytes": 17918,
+      "chars": 23478,
+      "sections": 36,
+      "chunks": 36,
+      "requirements": 63,
+      "labelledSections": 17,
+      "ambiguities": 18
+    },
+    {
+      "id": "docunderstanding-03-community-grants",
+      "title": "Harbour City Council: Community Grants Management System, Functional Requirements Document",
+      "docxBytes": 21643,
+      "chars": 35075,
+      "sections": 53,
+      "chunks": 54,
+      "requirements": 106,
+      "labelledSections": 31,
+      "ambiguities": 17
+    }
+  ],
+  "arms": [
+    {
+      "id": "R",
+      "label": "R — the document reader (readDocumentOnce): whole document, statements by section batch",
+      "configuration": {
+        "conversion": "parseDocument (docxToMarkdown)",
+        "reader": "readDocumentOnce (document-reader/reading-cache.ts) over readDocument (document-reader/reader.ts), mode chosen by the model's window",
+        "savedReadings": "read again every run, then saved (reread)",
+        "requirements": "statements labelled requirement, constraint or business-rule",
+        "extraction": "RequirementsExtractor in source mode over those statements, at the provider's model as in an analysis (GtWR R7/R8/R9 and TBD rules on their paragraphs); a failure fails the question round, not the reading",
+        "questions": "the dialog's first round: generateClarifyingQuestions in source mode, writing questions for at most 24 open ambiguities (ambiguitiesToQuestion, #2534), then selectQuestionsToAsk (unanswerable and same-outcome set aside, ranked, at most 8 asked); the open ambiguities as written when none is worth asking. The second round, once every question asked is answered, is counted in the diagnostics (secondRound*), not scored",
+        "questionModel": "the provider's Haiku tier where it serves one, else its model (tierModelFor, as the dialog's round 1)",
+        "model": "anthropic/claude-sonnet-5-5"
+      },
+      "records": [
+        {
+          "itemId": "docunderstanding-01-clinic-booking",
+          "armId": "R",
+          "run": 1,
+          "output": {
+            "requirements": [
+              {
+                "text": "Receptionists must be able to see, for any patient, whether the patient has a portal account and whether it is locked.",
+                "section": "1.4 How booking will work",
+                "quote": "Receptionists shall be able to see, for any patient, whether the patient has a portal account and whether it is locked, so that they can direct the patient appropriately."
+              },
+              {
+                "text": "The portal must not keep its own copy of the appointment book; every availability search and booking must be made against the PMS.",
+                "section": "1.4 How booking will work",
+                "quote": "The portal shall not keep its own copy of the appointment book; every availability search and booking shall be made against the PMS."
+              },
+              {
+                "text": "Each site may choose which of its appointment types are offered online.",
+                "section": "2.1 In scope",
+                "quote": "Each site may choose which of its appointment types are offered online."
+              },
+              {
+                "text": "The portal will not offer a symptom checker or any form of clinical advice.",
+                "section": "2.2 Out of scope",
+                "quote": "The portal will not offer a symptom checker or any form of clinical advice."
+              },
+              {
+                "text": "Patients must already be registered at one of the six clinics to use the portal.",
+                "section": "4. Patient access and identity",
+                "quote": "Patients must already be registered at one of the six clinics to use the portal."
+              },
+              {
+                "text": "A registered patient can create a portal account by verifying identity against PMS details using date of birth, surname, postcode and a one-time code sent to the mobile number held in the PMS.",
+                "section": "4. Patient access and identity",
+                "quote": "A registered patient shall be able to create a portal account by verifying their identity against the details held in the PMS, using their date of birth, surname, postcode and a one-time code sent to the mobile number held in the PMS."
+              },
+              {
+                "text": "If no mobile number is recorded in the PMS, the portal tells the patient to contact their clinic and offers no other online identity verification.",
+                "section": "4. Patient access and identity",
+                "quote": "the portal shall tell the patient to contact their clinic and shall not offer any other way to verify their identity online."
+              },
+              {
+                "text": "Patients sign in with an email address and password, and the portal requires a second factor on every sign-in from a device it has not seen before.",
+                "section": "4. Patient access and identity",
+                "quote": "A patient shall sign in with an email address and password, and the portal shall require a second factor on every sign-in from a device it has not seen before."
+              },
+              {
+                "text": "The portal locks an account after five consecutive failed sign-in attempts and unlocks it automatically after thirty minutes.",
+                "section": "4. Patient access and identity",
+                "quote": "The portal shall lock an account after five consecutive failed sign-in attempts and shall unlock it automatically after thirty minutes."
+              },
+              {
+                "text": "Front-desk staff will not be able to manually unlock accounts in the first release. Manual unlocking was deliberately left out to avoid creating a social engineering route.",
+                "section": "4. Patient access and identity",
+                "quote": "Front-desk staff will not be able to unlock accounts manually in the first release; this was discussed and deliberately left out to avoid creating a social engineering route."
+              },
+              {
+                "text": "A signed-in session ends after a period of inactivity, and the patient is warned before it ends.",
+                "section": "4. Patient access and identity",
+                "quote": "A signed-in session shall end after a period of inactivity, and the patient shall be warned before it ends."
+              },
+              {
+                "text": "A carer can book, reschedule and cancel appointments for any dependant linked to their account.",
+                "section": "4.1 Carers and dependants",
+                "quote": "A carer shall be able to book, reschedule and cancel appointments for any dependant linked to their account."
+              },
+              {
+                "text": "A carer–dependant link is created only by front-desk staff after checking the carer's authority, and patients cannot create links themselves.",
+                "section": "4.1 Carers and dependants",
+                "quote": "A link between a carer and a dependant shall only be created by front-desk staff after they have checked the carer's authority, and the portal shall not let a patient create such a link themselves."
+              },
+              {
+                "text": "A carer link for a dependant under sixteen ends automatically on their sixteenth birthday, and the portal notifies the carer thirty days beforehand.",
+                "section": "4.1 Carers and dependants",
+                "quote": "A carer link for a dependant under the age of sixteen shall end automatically on the dependant's sixteenth birthday, and the portal shall notify the carer thirty days beforehand."
+              },
+              {
+                "text": "Links for adult dependants are reviewed periodically.",
+                "section": "4.1 Carers and dependants",
+                "quote": "Links for adult dependants, for example a patient with a lasting power of attorney in place, are reviewed periodically."
+              },
+              {
+                "text": "The portal shows a patient only appointment types marked bookable online at the patient's registered site.",
+                "section": "5.1 Finding a slot",
+                "quote": "The portal shall show a patient only the appointment types that are marked as bookable online at the patient's registered site."
+              },
+              {
+                "text": "For physiotherapy follow-ups and travel health consultations, the portal also offers slots at other sites that deliver those services.",
+                "section": "5.1 Finding a slot",
+                "quote": "For physiotherapy follow-ups and travel health consultations, the portal shall also offer slots at the other sites that deliver those services."
+              },
+              {
+                "text": "The portal shows availability for the next four weeks and lets the patient filter by site, clinician, day of week and time of day.",
+                "section": "5.1 Finding a slot",
+                "quote": "The portal shall show availability for the next four weeks and shall let the patient filter by site, clinician, day of the week and time of day."
+              },
+              {
+                "text": "Availability shown in the portal reflects the PMS appointment book in near real time.",
+                "section": "5.1 Finding a slot",
+                "quote": "Availability shown in the portal shall reflect the PMS appointment book in near real time."
+              },
+              {
+                "text": "When a patient selects a slot, the portal holds it for five minutes so no one else can book it, and releases it if not confirmed within that period.",
+                "section": "5.1 Finding a slot",
+                "quote": "the portal shall place a hold on it for five minutes so that no other patient or staff member can book it while the patient completes the booking."
+              },
+              {
+                "text": "A patient may not hold more than two future routine GP appointments at once across all sites.",
+                "section": "5.2 Booking rules",
+                "quote": "A patient shall not hold more than two future routine GP appointments at the same time across all sites."
+              },
+              {
+                "text": "The two-appointment limit does not apply to nurse reviews, immunisations or physiotherapy.",
+                "section": "5.2 Booking rules",
+                "quote": "This limit does not apply to nurse reviews, immunisations or physiotherapy, which are often booked as a series."
+              },
+              {
+                "text": "The portal does not allow a booking that starts less than two hours from the current time.",
+                "section": "5.2 Booking rules",
+                "quote": "The portal shall not allow a booking that starts less than two hours from the current time."
+              },
+              {
+                "text": "Childhood immunisation appointments are bookable only by a carer for a dependant whose age is within the range set for that immunisation type in the PMS.",
+                "section": "5.2 Booking rules",
+                "quote": "Childhood immunisation appointments shall only be bookable by a carer for a dependant whose age is within the range set for that immunisation type in the PMS."
+              },
+              {
+                "text": "Before confirming, the portal asks for a free-text reason of up to 200 characters and passes it to the PMS with the booking.",
+                "section": "5.2 Booking rules",
+                "quote": "the portal shall ask the patient to state the reason for the appointment in a free-text field of up to 200 characters, which shall be passed to the PMS with the booking."
+              },
+              {
+                "text": "Patients are told that the reason field is not monitored and urgent problems must be telephoned in.",
+                "section": "5.2 Booking rules",
+                "quote": "Patients will be told that the field is not monitored and that urgent problems must be telephoned in."
+              },
+              {
+                "text": "Every booking screen shows a clear warning not to use the portal for urgent medical problems, with the clinic telephone number and national urgent care number.",
+                "section": "5.2 Booking rules",
+                "quote": "The portal shall show a clear warning on every booking screen that it must not be used for urgent medical problems, with the telephone number of the clinic and the national urgent care number."
+              },
+              {
+                "text": "On confirmation the portal writes the booking to the PMS and shows the patient a confirmation only after the PMS has accepted it.",
+                "section": "5.2 Booking rules",
+                "quote": "the portal shall write it to the PMS and shall show the patient a confirmation only after the PMS has accepted it."
+              },
+              {
+                "text": "If the PMS is unavailable, the booking should be handled appropriately.",
+                "section": "5.2 Booking rules",
+                "quote": "If the PMS is unavailable, the booking should be handled appropriately."
+              },
+              {
+                "text": "A patient can cancel an appointment through the portal up to two hours before its start time.",
+                "section": "5.3 Rescheduling and cancelling",
+                "quote": "A patient shall be able to cancel an appointment through the portal up to two hours before its start time."
+              },
+              {
+                "text": "A patient can move an appointment to another slot of the same type, and the original slot is released only once the PMS accepts the new booking.",
+                "section": "5.3 Rescheduling and cancelling",
+                "quote": "A patient shall be able to move an appointment to another slot of the same appointment type, and the original slot shall only be released once the new booking has been accepted by the PMS."
+              },
+              {
+                "text": "The portal asks a cancelling patient to choose a reason from a list maintained by practice managers.",
+                "section": "5.3 Rescheduling and cancelling",
+                "quote": "The portal shall ask a patient who cancels to choose a reason from a list maintained by the practice managers."
+              },
+              {
+                "text": "Telephone-booked appointments are visible in the portal and cancellable by the patient in the same way as online bookings.",
+                "section": "5.3 Rescheduling and cancelling",
+                "quote": "Appointments booked by telephone shall be visible in the portal and shall be cancellable by the patient in the same way as appointments booked online."
+              },
+              {
+                "text": "The portal sends each patient a text reminder 48 hours before every appointment, whether booked online or by telephone.",
+                "section": "6. Reminders and notifications",
+                "quote": "The portal shall send each patient a reminder by text message 48 hours before every appointment, whether it was booked online or by telephone."
+              },
+              {
+                "text": "A reminder lets the patient cancel by replying or following a link without signing in, and cancelling this way releases the slot as in the portal.",
+                "section": "6. Reminders and notifications",
+                "quote": "A reminder shall let the patient cancel the appointment by replying to the message or by following a link, without signing in."
+              },
+              {
+                "text": "The portal sends an email confirmation when an appointment is booked, moved or cancelled, to the email address of the account that made the change (the carer where a carer makes it).",
+                "section": "6. Reminders and notifications",
+                "quote": "The portal shall send a confirmation by email when an appointment is booked, moved or cancelled, to the email address on the account that made the change."
+              },
+              {
+                "text": "Where a carer makes the change, the confirmation goes to the carer.",
+                "section": "6. Reminders and notifications",
+                "quote": "Where a carer makes the change, the confirmation goes to the carer."
+              },
+              {
+                "text": "Patients can opt out of text reminders, and the choice is recorded in the PMS so it also applies to PMS reminders.",
+                "section": "6. Reminders and notifications",
+                "quote": "Patients shall be able to choose not to receive text reminders, and the choice shall be recorded in the PMS so that it also applies to reminders the PMS sends."
+              },
+              {
+                "text": "A text reminder is sent 24 hours before an upcoming appointment to the patient, or the carer for a dependant (conflicts with the 48-hour reminder).",
+                "section": "6. Reminders and notifications",
+                "quote": "| Upcoming appointment | Text message | 24 hours before the appointment | The patient, or the carer for a dependant |"
+              },
+              {
+                "text": "A same-day text reminder is sent at 7am to the patient for physiotherapy appointments starting after 10am.",
+                "section": "6. Reminders and notifications",
+                "quote": "A same-day text reminder is sent at 7am for physiotherapy appointments starting after 10am."
+              },
+              {
+                "text": "A text and email waiting list offer is sent to the waiting-list patient when a matching slot is released.",
+                "section": "6. Reminders and notifications",
+                "quote": "| Waiting list offer | Text message and email | When a matching slot is released | The patient on the waiting list |"
+              },
+              {
+                "text": "A patient who cannot find a suitable slot can join a waiting list for an appointment type and site, stating days and times they could attend.",
+                "section": "7. Waiting list",
+                "quote": "A patient who cannot find a suitable slot shall be able to join a waiting list for a chosen appointment type and site, stating the days of the week and times of day they could attend."
+              },
+              {
+                "text": "When a matching slot is released within the patient's availability, it is offered to waiting list patients in the order they joined.",
+                "section": "7. Waiting list",
+                "quote": "the portal shall offer it to patients on the waiting list in the order in which they joined."
+              },
+              {
+                "text": "An unaccepted offer expires after a short period and the slot is then offered to the next patient.",
+                "section": "7. Waiting list",
+                "quote": "An offer shall expire if it is not accepted within a short period, and the slot shall then be offered to the next patient on the list."
+              },
+              {
+                "text": "A patient is removed from a waiting list on accepting an offer, booking a matching appointment, or after 60 days, whichever is first.",
+                "section": "7. Waiting list",
+                "quote": "A patient shall be removed from a waiting list once they accept an offer, book a matching appointment themselves, or after 60 days, whichever comes first."
+              },
+              {
+                "text": "Practice managers can mark or unmark each appointment type at their site as bookable online, with the change effective in the portal within fifteen minutes.",
+                "section": "8. Staff functions and reporting",
+                "quote": "Practice managers shall be able to mark or unmark each appointment type at their own site as bookable online, and the change shall take effect in the portal within fifteen minutes."
+              },
+              {
+                "text": "Front-desk staff can see a list of the day's online bookings, cancellations and waiting list offers for their site, with each patient's reason for appointment.",
+                "section": "8. Staff functions and reporting",
+                "quote": "Front-desk staff shall be able to see a list of the day's online bookings, cancellations and waiting list offers for their site, with the reason for appointment given by each patient."
+              },
+              {
+                "text": "Front-desk staff can suspend online booking for a single clinician for a date range without changing the PMS rota. Unplanned leave is an example of when booking for a clinician might be suspended.",
+                "section": "8. Staff functions and reporting",
+                "quote": "Front-desk staff shall be able to suspend online booking for a single clinician for a date range, for example during unplanned leave, without changing the PMS rota."
+              },
+              {
+                "text": "The portal provides a monthly report per site of appointments booked, moved and cancelled online, reminders sent, and missed appointments for online and telephone bookings separately.",
+                "section": "8. Staff functions and reporting",
+                "quote": "The portal shall provide a monthly report for each site showing the number of appointments booked, moved and cancelled online, the number of reminders sent, and the number of missed appointments for online and telephone bookings separately."
+              },
+              {
+                "text": "The portal must be available at least 99.5% of the time each calendar month, excluding planned maintenance announced at least five days ahead.",
+                "section": "9.1 Availability and performance",
+                "quote": "The portal shall be available at least 99.5% of the time in each calendar month, excluding planned maintenance announced at least five days in advance."
+              },
+              {
+                "text": "Availability searches must return within three seconds for 95% of requests at peak load.",
+                "section": "9.1 Availability and performance",
+                "quote": "Availability searches shall return results within three seconds for 95% of requests at peak load."
+              },
+              {
+                "text": "The patient-facing portal must meet WCAG 2.2 AA.",
+                "section": "9.2 Accessibility and language",
+                "quote": "The patient-facing portal shall meet the WCAG 2.2 AA accessibility standard."
+              },
+              {
+                "text": "The portal is available in English and, where possible, the other languages most commonly spoken by registered patients.",
+                "section": "9.2 Accessibility and language",
+                "quote": "The portal shall be available in English and in the other languages most commonly spoken by registered patients, where possible."
+              },
+              {
+                "text": "The portal stores only personal data needed for sign-in and reminders and reads other patient details from the PMS when needed.",
+                "section": "9.3 Privacy, security and data retention",
+                "quote": "The portal shall store only the personal data needed to sign patients in and to send reminders, and shall read all other patient details from the PMS when they are needed."
+              },
+              {
+                "text": "Every booking, change and cancellation is recorded in an audit log showing who made it, on whose behalf, and when.",
+                "section": "9.3 Privacy, security and data retention",
+                "quote": "Every booking, change and cancellation made through the portal shall be recorded in an audit log showing who made it, on whose behalf, and when."
+              },
+              {
+                "text": "Audit log entries are kept for eight years and are not editable by any user, including system administrators.",
+                "section": "9.3 Privacy, security and data retention",
+                "quote": "Audit log entries shall be kept for eight years and shall not be editable by any user, including system administrators."
+              },
+              {
+                "text": "Portal accounts unused for two years are deleted, with an email warning thirty days before deletion.",
+                "section": "9.3 Privacy, security and data retention",
+                "quote": "Portal accounts that have not been used for two years shall be deleted, and the patient shall be warned by email thirty days before deletion."
+              },
+              {
+                "text": "Deleting a portal account does not affect the patient's PMS record.",
+                "section": "9.3 Privacy, security and data retention",
+                "quote": "Deleting a portal account does not affect the patient's record in the PMS."
+              }
+            ],
+            "questions": [
+              {
+                "text": "In §1.4, does 'the portal shall not keep its own copy of the appointment book' prohibit all caching including seconds-long cache of search results, or does it permit short-lived caching for performance if every search is ultimately made against the PMS?",
+                "section": "1.4 How booking will work",
+                "quote": "The portal shall not keep its own copy of the appointment book; every availability search and booking shall be made against the PMS."
+              },
+              {
+                "text": "In §2.2, does 'the portal will not offer a symptom checker or any form of clinical advice' prohibit appointment-type descriptions, guidance on choosing an appointment type, and urgent-care signposting, or are those excluded only if they advise on diagnosis or treatment?",
+                "section": "2.2 Out of scope",
+                "quote": "The portal will not offer a symptom checker or any form of clinical advice."
+              },
+              {
+                "text": "In §4, which PMS registration statuses count as 'registered'? Specifically, should the portal accept patients with temporary status, exclude deregistered or deceased patients, and how should multi-site registrations be handled?",
+                "section": "4. Patient access and identity",
+                "quote": "Patients must already be registered at one of the six clinics to use the portal."
+              },
+              {
+                "text": "In §5.1, does 'show a patient only the appointment types that are marked as bookable online at the patient's registered site' apply to all services, or does REQ-017 create an exception for certain services that offer cross-site slots?",
+                "section": "5.1 Finding a slot",
+                "quote": "The portal shall show a patient only the appointment types that are marked as bookable online at the patient's registered site."
+              },
+              {
+                "text": "In §5.1, what is the maximum acceptable delay for availability shown in the portal to reflect PMS appointment book changes? What constitutes 'near real time'?",
+                "section": "5.1 Finding a slot",
+                "quote": "Availability shown in the portal shall reflect the PMS appointment book in near real time."
+              },
+              {
+                "text": "In §5.1, the five-minute hold must live in the PMS (per REQ-002). Does the PMS support holds that also prevent staff from booking the same slot, or only prevent other patient bookings?",
+                "section": "5.1 Finding a slot",
+                "quote": "the portal shall place a hold on it for five minutes so that no other patient or staff member can book it while the patient completes the booking."
+              },
+              {
+                "text": "In §5.2, when checking whether a dependant's age falls within the range for a childhood immunisation, should age be calculated on the booking date or the appointment date, and in what unit (days, weeks, months, years)?",
+                "section": "5.2 Booking rules",
+                "quote": "Childhood immunisation appointments shall only be bookable by a carer for a dependant whose age is within the range set for that immunisation type in the PMS."
+              },
+              {
+                "text": "In the receptionist view (§1.4), should receptionists see only whether a patient has an account and whether it is locked, or should they also see lock time, unlock time, failed attempt count, and account email?",
+                "section": "1.4 How booking will work",
+                "quote": "Receptionists shall be able to see, for any patient, whether the patient has a portal account and whether it is locked, so that they can direct the patient appropriately."
+              }
+            ]
+          },
+          "diagnostics": {
+            "documentChars": 22129,
+            "sections": 26,
+            "statements": 140,
+            "droppedUnverified": 0,
+            "unreadSections": 0,
+            "mergeDone": 1,
+            "wholeMode": 1,
+            "outputTokenCap": 16384,
+            "calls": 4,
+            "reused": 0,
+            "sourceStatements": 58,
+            "structuredRequirements": 57,
+            "ambiguities": 227,
+            "questionCandidates": 24,
+            "questionsGenerated": 24,
+            "setAsideUnanswerable": 0,
+            "setAsideSameOutcome": 0,
+            "overCap": 16,
+            "fallback": 0,
+            "questionsAsked": 8,
+            "secondRoundOpen": 219,
+            "secondRoundGenerated": 24,
+            "secondRoundAsked": 8,
+            "secondRoundRepeats": 0,
+            "secondRoundFailed": 0,
+            "questionsFailed": 0
+          },
+          "score": {
+            "labelled": 59,
+            "extracted": 58,
+            "matched": 56,
+            "repeats": 0,
+            "requirementRecall": 0.9491525423728814,
+            "requirementPrecision": 0.9655172413793104,
+            "labelledSections": 13,
+            "coveredSections": 12,
+            "sectionCoverage": 0.9230769230769231,
+            "missedSections": ["2.2 Out of scope"],
+            "questions": 8,
+            "worthAsking": 3,
+            "questionPrecision": 0.375,
+            "ambiguities": 12,
+            "ambiguitiesRaised": 1,
+            "ambiguityRecall": 0.08333333333333333,
+            "missedRequirements": ["R47", "R51", "R54"],
+            "missedAmbiguities": [
+              "A1",
+              "A2",
+              "A3",
+              "A4",
+              "A6",
+              "A7",
+              "A8",
+              "A9",
+              "A10",
+              "A11",
+              "A12"
+            ],
+            "unmatchedExtracted": [
+              "Each site may choose which of its appointment types are offered online.",
+              "The portal will not offer a symptom checker or any form of clinical advice."
+            ],
+            "quoted": 58,
+            "quotesVerified": 58,
+            "quoteAccuracy": 1
+          },
+          "judge": {
+            "invalid": 0,
+            "ungraded": 0
+          },
+          "costUsd": 0.6777837000000001,
+          "judgeCostUsd": 0.039472,
+          "unpricedCalls": 0,
+          "inputTokens": 56470,
+          "completionTokens": 62692,
+          "seconds": 272.29
+        },
+        {
+          "itemId": "docunderstanding-02-freight-claims",
+          "armId": "R",
+          "run": 1,
+          "output": {
+            "requirements": [
+              {
+                "text": "A handler must be able to register a claim from an email, a telephone note or a claim form, and the application must record the channel and the date and time of first notification.",
+                "section": "5.1 Notification",
+                "quote": "A handler shall be able to register a claim from an email, a telephone note passed on by customer service, or a completed claim form, and the application shall record the channel and the date and time the claim was first notified."
+              },
+              {
+                "text": "The application must require the consignment note number at registration and retrieve the consignment's details from the tracking system, including dates, depots, exceptions and proof of delivery.",
+                "section": "5.1 Notification",
+                "quote": "The application shall require the consignment note number when a claim is registered and shall retrieve the consignment's details from the operational tracking system, including the collection and delivery dates, the depots it passed through, any exceptions recorded and the proof of delivery."
+              },
+              {
+                "text": "If the consignment note number is not found, the handler must be able to register the claim with the consignment marked unverified, and the application must prevent any payment until the consignment is verified.",
+                "section": "5.1 Notification",
+                "quote": "If the consignment note number cannot be found in the tracking system, the handler shall be able to register the claim with the consignment marked as unverified, and the application shall prevent any payment on the claim until the consignment has been verified."
+              },
+              {
+                "text": "A single claim must be able to cover several consignments for the same claimant, with loss type and amount claimed recorded separately for each consignment.",
+                "section": "5.1 Notification",
+                "quote": "A single claim shall be able to cover several consignments for the same claimant, and the application shall record the loss type and amount claimed separately for each consignment."
+              },
+              {
+                "text": "The application must warn the handler when a new claim is registered for a consignment that already has an open or closed claim, and show the existing claim.",
+                "section": "5.1 Notification",
+                "quote": "The application shall warn the handler when a new claim is registered for a consignment that already has an open or closed claim, and shall show the existing claim."
+              },
+              {
+                "text": "The application must calculate for each consignment whether the claim was notified within the time limit in the claimant's terms, and flag late-notified claims.",
+                "section": "5.2 Time limits for notification",
+                "quote": "The application shall calculate, for each consignment on a claim, whether the claim was notified within the time limit in the claimant's terms, and shall flag any claim notified late."
+              },
+              {
+                "text": "Under the standard conditions, damage and shortage must be notified within 7 days of delivery and loss within 28 days of the expected delivery date.",
+                "section": "5.2 Time limits for notification",
+                "quote": "Under the standard conditions, damage and shortage must be notified within 7 days of delivery and loss within 28 days of the expected delivery date."
+              },
+              {
+                "text": "A late-notified claim must not be rejected automatically; the handler must record whether the time limit is enforced and, if waived, the reason.",
+                "section": "5.2 Time limits for notification",
+                "quote": "A late-notified claim shall not be rejected automatically; the handler shall record whether the time limit is being enforced and, if it is waived, the reason for the waiver."
+              },
+              {
+                "text": "The application must maintain the list of required documents per loss type, and the claims operations manager must be able to change it without a software release.",
+                "section": "6.1 Required documents",
+                "quote": "The application shall maintain the list of documents required for each loss type, and the claims operations manager shall be able to change the list without a software release."
+              },
+              {
+                "text": "On registration the application must generate a request to the claimant listing the documents required for each consignment.",
+                "section": "6.1 Required documents",
+                "quote": "When a claim is registered, the application shall generate a request to the claimant listing the documents required for each consignment on the claim."
+              },
+              {
+                "text": "A handler must be able to attach documents from email, a file, or by forwarding to a claim-specific address, and the application must record who attached each and when.",
+                "section": "6.1 Required documents",
+                "quote": "A handler shall be able to attach documents to a claim from email, from a file, or by forwarding an email to a claim-specific address, and the application shall record who attached each document and when."
+              },
+              {
+                "text": "The application must not allow a claim to proceed to approval until every required document is received or the handler has recorded why it is not needed.",
+                "section": "6.1 Required documents",
+                "quote": "The application shall not allow a claim to proceed to approval until every required document has been received or the handler has recorded why it is not needed."
+              },
+              {
+                "text": "If documents are not received 21 days after the request, the application must send a reminder, and if still not received 21 days after the reminder, the claim must be closed as abandoned.",
+                "section": "6.1 Required documents",
+                "quote": "If the required documents have not been received 21 days after the request, the application shall send a reminder to the claimant, and if they have still not been received 21 days after the reminder, the claim shall be closed as abandoned."
+              },
+              {
+                "text": "An abandoned claim can be reopened if the documents arrive later.",
+                "section": "6.1 Required documents",
+                "quote": "An abandoned claim can be reopened if the documents arrive later."
+              },
+              {
+                "text": "The handler must be able to request an independent inspection for a damage claim, record the surveyor appointed, and attach the surveyor's report.",
+                "section": "6.2 Photographs and inspection",
+                "quote": "The handler shall be able to request an independent inspection for a damage claim, record the surveyor appointed, and attach the surveyor's report."
+              },
+              {
+                "text": "An inspection must be requested for every damage claim on a high-value consignment before liability is decided.",
+                "section": "6.2 Photographs and inspection",
+                "quote": "An inspection shall be requested for every damage claim on a high-value consignment before liability is decided."
+              },
+              {
+                "text": "Northgate is liable for loss and damage occurring while goods are in its care, subject to exceptions in the conditions of carriage such as inadequate packaging or inherent defects.",
+                "section": "7.1 Determining liability",
+                "quote": "Northgate is liable for loss and damage that occurs while goods are in its care, subject to the exceptions in the conditions of carriage, such as inadequate packaging by the customer or inherent defects in the goods."
+              },
+              {
+                "text": "The handler must record a liability decision per consignment (accepted, partly accepted or declined) with a reason from a list maintained by the claims operations manager.",
+                "section": "7.1 Determining liability",
+                "quote": "The handler shall record a liability decision for each consignment on a claim, chosen from accepted, partly accepted or declined, with a reason chosen from a list maintained by the claims operations manager."
+              },
+              {
+                "text": "Where liability is declined or partly accepted for inadequate packaging, the handler must attach supporting evidence before the decision can be saved.",
+                "section": "7.1 Determining liability",
+                "quote": "Where the liability decision is declined or partly accepted on the grounds of inadequate packaging, the handler shall attach the evidence supporting that decision before the decision can be saved."
+              },
+              {
+                "text": "The application must show the handler the depot exceptions recorded for the consignment.",
+                "section": "7.1 Determining liability",
+                "quote": "The application shall show the handler the depot exceptions recorded for the consignment, so that the handler can see where in the network the loss or damage was first recorded."
+              },
+              {
+                "text": "Where a subcontracted haulier carried the consignment on any leg, the application must identify the haulier and leg from the tracking system and record them on the claim.",
+                "section": "7.1 Determining liability",
+                "quote": "Where the consignment was carried by a subcontracted haulier on any leg, the application shall identify the haulier and the leg from the tracking system and shall record them on the claim."
+              },
+              {
+                "text": "The amount Northgate pays is the lower of the value of the loss and the applicable limit of liability.",
+                "section": "7.2 Limitation of liability",
+                "quote": "The amount Northgate pays is the lower of the value of the loss and the limit of liability that applies to the consignment."
+              },
+              {
+                "text": "The application must calculate the limit of liability for each consignment from the weight of goods lost or damaged and the per-kilogram limit in the claimant's terms.",
+                "section": "7.2 Limitation of liability",
+                "quote": "The application shall calculate the limit of liability for each consignment from the weight of the goods lost or damaged and the per-kilogram limit in the claimant's terms."
+              },
+              {
+                "text": "Where the claimant declared a value and paid the declared value charge, the limit of liability is the declared value instead of the per-kilogram limit.",
+                "section": "7.2 Limitation of liability",
+                "quote": "Where the claimant declared a value for the consignment and paid the declared value charge, the limit of liability shall be the declared value instead of the per-kilogram limit."
+              },
+              {
+                "text": "Where special terms apply, the application must use their limits, and the handler must not be able to override the calculated limit without the claims operations manager's approval.",
+                "section": "7.2 Limitation of liability",
+                "quote": "Where special terms apply, the application shall use the limits in the special terms, and the handler shall not be able to override the calculated limit without the approval of the claims operations manager."
+              },
+              {
+                "text": "The amount payable per consignment is the lower of the proven value of the loss and the limit of liability, less any salvage value recovered.",
+                "section": "7.2 Limitation of liability",
+                "quote": "The amount payable for a consignment shall be the lower of the proven value of the loss and the limit of liability, less any salvage value recovered from damaged goods."
+              },
+              {
+                "text": "The application must show the handler step by step how the amount payable was calculated, and include the same explanation in the settlement letter.",
+                "section": "7.2 Limitation of liability",
+                "quote": "The application shall show the handler how the amount payable was calculated, step by step, and the same explanation shall be included in the settlement letter to the claimant."
+              },
+              {
+                "text": "Consequential losses are not payable under the standard conditions, and the application must prevent handlers including them unless special terms allow them.",
+                "section": "7.2 Limitation of liability",
+                "quote": "Consequential losses, such as lost profit or the cost of a missed production run, shall not be payable under the standard conditions, and the application shall prevent a handler from including them in the amount payable unless special terms allow them."
+              },
+              {
+                "text": "A delay claim is payable only where the claimant had a guaranteed delivery service, and the amount payable may not exceed the carriage charge for the consignment.",
+                "section": "7.3 Delay claims",
+                "quote": "A delay claim shall only be payable where the claimant had a guaranteed delivery service, and the amount payable shall not exceed the carriage charge for the consignment."
+              },
+              {
+                "text": "The handler managing the claim can approve a settlement of up to 1,000.",
+                "section": "8.1 Approval matrix",
+                "quote": "The handler managing the claim can approve a settlement of up to 1,000."
+              },
+              {
+                "text": "A team leader on the regional desk must approve a settlement from 1,000 to 10,000.",
+                "section": "8.1 Approval matrix",
+                "quote": "A team leader on the regional desk must approve a settlement from 1,000 to 10,000."
+              },
+              {
+                "text": "The claims operations manager must approve a settlement from 10,000 to 50,000.",
+                "section": "8.1 Approval matrix",
+                "quote": "The claims operations manager must approve a settlement from 10,000 to 50,000."
+              },
+              {
+                "text": "The finance director must approve a settlement above 50,000, after review by the legal department.",
+                "section": "8.1 Approval matrix",
+                "quote": "The finance director must approve a settlement above 50,000, after review by the legal department."
+              },
+              {
+                "text": "The application routes each settlement to the approver required by the matrix and does not allow a person to approve a settlement on a claim they registered or handled.",
+                "section": "8.1 Approval matrix",
+                "quote": "The application shall route each settlement to the approver required by the matrix and shall not allow a person to approve a settlement on a claim they registered or handled."
+              },
+              {
+                "text": "The claims operations manager can configure the approval limits, and every change is recorded with the name of the person who made it and the date.",
+                "section": "8.1 Approval matrix",
+                "quote": "The approval limits in the matrix shall be configurable by the claims operations manager, and every change shall be recorded with the name of the person who made it and the date."
+              },
+              {
+                "text": "Approvers are expected to deal with approvals promptly so that settlement times can be met.",
+                "section": "8.1 Approval matrix",
+                "quote": "Approvers are expected to deal with approvals promptly so that settlement times can be met."
+              },
+              {
+                "text": "Once a settlement is approved, the application generates a settlement letter to the claimant showing the amount payable per consignment and how it was calculated.",
+                "section": "8.2 Settlement and payment",
+                "quote": "Once a settlement is approved, the application shall generate a settlement letter to the claimant showing the amount payable for each consignment and how it was calculated."
+              },
+              {
+                "text": "The application sends an approved payment to the finance ledger as a payment instruction with the claimant's account details, and records the payment reference when finance confirms payment.",
+                "section": "8.2 Settlement and payment",
+                "quote": "The application shall send an approved payment to the finance ledger as a payment instruction with the claimant's account details, and shall record the payment reference when finance confirms the payment."
+              },
+              {
+                "text": "A claimant can accept or dispute the settlement, and a disputed settlement returns to the handler with the claimant's reasons.",
+                "section": "8.2 Settlement and payment",
+                "quote": "A claimant shall be able to accept the settlement or dispute it, and a disputed settlement shall return to the handler with the claimant's reasons."
+              },
+              {
+                "text": "A claim is closed when every consignment on it has been paid, declined or withdrawn, and the application records the closing date and outcome for each consignment.",
+                "section": "8.2 Settlement and payment",
+                "quote": "A claim shall be closed when every consignment on it has been paid, declined or withdrawn, and the application shall record the closing date and the outcome for each consignment."
+              },
+              {
+                "text": "When a claim is settled for a consignment carried by a subcontracted haulier, the application creates a linked recovery case if the amount paid exceeds the recovery threshold.",
+                "section": "9.1 Recovery from subcontracted hauliers",
+                "quote": "When a claim is settled for a consignment carried by a subcontracted haulier, the application shall create a recovery case linked to the claim if the amount paid exceeds the recovery threshold."
+              },
+              {
+                "text": "The recovery case shows the time limit for the recovery claim under the haulier's subcontract and alerts the recovery team 14 days before it expires.",
+                "section": "9.1 Recovery from subcontracted hauliers",
+                "quote": "The recovery case shall show the time limit for making the recovery claim under the haulier's subcontract and shall alert the recovery team 14 days before it expires."
+              },
+              {
+                "text": "The recovery team can record the amount claimed from the haulier, the haulier's response and the amount recovered, and the application shows the net cost of the original claim after recovery.",
+                "section": "9.1 Recovery from subcontracted hauliers",
+                "quote": "The recovery team shall be able to record the amount claimed from the haulier, the haulier's response, and the amount recovered, and the application shall show the net cost of the original claim after recovery."
+              },
+              {
+                "text": "The recovery team can deduct an agreed recovery amount from the next payment to the haulier, and the application sends the deduction to the finance ledger as an instruction.",
+                "section": "9.1 Recovery from subcontracted hauliers",
+                "quote": "The recovery team shall be able to deduct an agreed recovery amount from the next payment to the haulier, and the application shall send the deduction to the finance ledger as an instruction."
+              },
+              {
+                "text": "The application identifies every settled claim whose amount paid exceeds the insurance policy excess and produces, for any period, the schedule of those claims in the insurer's required format.",
+                "section": "9.2 Insurance",
+                "quote": "The application shall identify every settled claim whose amount paid exceeds the insurance policy excess and shall produce, for any period, the schedule of those claims in the format the insurer requires."
+              },
+              {
+                "text": "The application records the amount recovered from the insurer against each claim in the schedule.",
+                "section": "9.2 Insurance",
+                "quote": "The application shall record the amount recovered from the insurer against each claim in the schedule."
+              },
+              {
+                "text": "The application emails the claimant when the claim is registered, documents are requested, liability is decided, a settlement is approved and the claim is closed.",
+                "section": "10. Customer communication",
+                "quote": "The application shall send the claimant an email when their claim is registered, when documents are requested, when liability is decided, when a settlement is approved and when the claim is closed."
+              },
+              {
+                "text": "Every message to the claimant quotes the claim reference and the handler's name and is sent from an address to which the claimant can reply.",
+                "section": "10. Customer communication",
+                "quote": "Every message to the claimant shall quote the claim reference and the name of the handler managing the claim, and shall be sent from an address to which the claimant can reply."
+              },
+              {
+                "text": "Replies from claimants are attached to the claim automatically and the handler is notified.",
+                "section": "10. Customer communication",
+                "quote": "Replies from claimants shall be attached to the claim automatically and the handler shall be notified."
+              },
+              {
+                "text": "Customer service staff can see the status and message history of any claim but cannot change a claim.",
+                "section": "10. Customer communication",
+                "quote": "Customer service staff shall be able to see the status of any claim and its history of messages, but shall not be able to change a claim."
+              },
+              {
+                "text": "The application must provide management reporting directly.",
+                "section": "11. Reporting",
+                "quote": "The application must provide it directly."
+              },
+              {
+                "text": "The application reports, for any period and by region, claims notified, claims settled, average time from notification to settlement, total claimed, total paid and total recovered.",
+                "section": "11. Reporting",
+                "quote": "The application shall report, for any period and by region, the number of claims notified, the number settled, the average time from notification to settlement, the total amount claimed, the total amount paid and the total amount recovered."
+              },
+              {
+                "text": "The application reports claims open more than 30 days, with the stage each is at and how long it has been at that stage.",
+                "section": "11. Reporting",
+                "quote": "The application shall report the claims that have been open for more than 30 days, with the stage each one is at and how long it has been at that stage."
+              },
+              {
+                "text": "The application reports recovery cases whose time limit expires in the next 30 days and that have not yet been submitted to the haulier.",
+                "section": "11. Reporting",
+                "quote": "The application shall report recovery cases whose time limit expires in the next 30 days and have not yet been submitted to the haulier."
+              },
+              {
+                "text": "Finance can reconcile the payments recorded in the ledger against the settlements approved in the application for any period.",
+                "section": "11. Reporting",
+                "quote": "Finance shall be able to reconcile the payments recorded in the ledger against the settlements approved in the application for any period."
+              },
+              {
+                "text": "Access to claims is restricted by role, and handlers see the claims of every region so work can be moved between desks.",
+                "section": "12. Data, security and audit",
+                "quote": "Access to claims shall be restricted by role, and handlers shall see the claims of every region so that work can be moved between desks when one is busy."
+              },
+              {
+                "text": "Every change to a claim is recorded with the person, date and time, and the record is not editable.",
+                "section": "12. Data, security and audit",
+                "quote": "Every change to a claim, including changes to amounts, liability decisions and approvals, shall be recorded with the person who made it and the date and time, and the record shall not be editable."
+              },
+              {
+                "text": "Claim records and documents are retained for seven years after closure and then deleted, unless the claim is subject to litigation.",
+                "section": "12. Data, security and audit",
+                "quote": "Claim records and their documents shall be retained for seven years after the claim is closed and then deleted, unless the claim is subject to litigation."
+              },
+              {
+                "text": "Access to documents must be no wider than access to claims, as requested by the legal department.",
+                "section": "12. Data, security and audit",
+                "quote": "The legal department has asked that access to documents be no wider than access to claims."
+              },
+              {
+                "text": "Open claims must be moved into the application at go-live so the desks do not run two processes in parallel.",
+                "section": "13. Migration",
+                "quote": "They need to be moved into the application at go-live so that the desks do not run two processes in parallel."
+              },
+              {
+                "text": "All claims open on the regional spreadsheets at go-live are migrated with their status, amounts and the documents held in the mailbox.",
+                "section": "13. Migration",
+                "quote": "All claims open on the regional spreadsheets at go-live shall be migrated into the application with their status, amounts and the documents held in the mailbox."
+              },
+              {
+                "text": "Claims closed in the twelve months before go-live are migrated so duplicate claim warnings and reporting cover them.",
+                "section": "13. Migration",
+                "quote": "Claims closed in the twelve months before go-live shall be migrated so that duplicate claim warnings and reporting cover them."
+              },
+              {
+                "text": "The application must be available at least 99.5% of the time during working hours, 7am to 7pm on working days.",
+                "section": "14. Non-functional requirements",
+                "quote": "The application shall be available during the claims desks' working hours, from 7am to 7pm on working days, at least 99.5% of the time."
+              },
+              {
+                "text": "The application must support at least 40 concurrent users without any page taking more than three seconds to load.",
+                "section": "14. Non-functional requirements",
+                "quote": "The application shall support at least 40 concurrent users without any page taking more than three seconds to load."
+              },
+              {
+                "text": "The application must be usable by handlers working from home through the company's standard remote access arrangements.",
+                "section": "14. Non-functional requirements",
+                "quote": "The application shall be usable by handlers working from home through the company's standard remote access arrangements."
+              },
+              {
+                "text": "Notice of damage or shortage is due within 14 days of delivery.",
+                "section": "15. Business rules summary",
+                "quote": "| Notice of damage or shortage | Within 14 days of delivery |"
+              }
+            ],
+            "questions": [
+              {
+                "text": "In section 5.1, which moment defines 'first notified' for the timestamp: when the claimant initiated contact, when Northgate received it, or when the handler registered it in the system?",
+                "section": "5.1 Notification",
+                "quote": "A handler shall be able to register a claim from an email, a telephone note passed on by customer service, or a completed claim form, and the application shall record the channel and the date and time the claim was first notified."
+              },
+              {
+                "text": "In section 5.1, what should the application do if the tracking system is unavailable, times out, or returns an error when retrieving consignment details?",
+                "section": "5.1 Notification",
+                "quote": "The application shall require the consignment note number when a claim is registered and shall retrieve the consignment's details from the operational tracking system, including the collection and delivery dates, the depots it passed through, any exceptions recorded and the proof of delivery."
+              },
+              {
+                "text": "What is the interface for the operational tracking system (API endpoint, file location, database connection, message queue), and what are its availability and response-time SLAs?",
+                "section": "5.1 Notification",
+                "quote": "The application shall require the consignment note number when a claim is registered and shall retrieve the consignment's details from the operational tracking system, including the collection and delivery dates, the depots it passed through, any exceptions recorded and the proof of delivery."
+              },
+              {
+                "text": "In section 5.1, who verifies an unverified consignment, by what evidence, and how does the application learn that verification is complete and the status can change?",
+                "section": "5.1 Notification",
+                "quote": "If the consignment note number cannot be found in the tracking system, the handler shall be able to register the claim with the consignment marked as unverified, and the application shall prevent any payment on the claim until the consignment has been verified."
+              },
+              {
+                "text": "In section 5.1, how is 'same claimant' defined: by account ID, legal entity, shipper identity, receiver identity, or some other criterion?",
+                "section": "5.1 Notification",
+                "quote": "A single claim shall be able to cover several consignments for the same claimant, and the application shall record the loss type and amount claimed separately for each consignment."
+              },
+              {
+                "text": "In section 5.2, where are claimant-specific time limits held and maintained, who maintains them, and what time limit applies when a claimant has no specific terms?",
+                "section": "5.2 Time limits for notification",
+                "quote": "The application shall calculate, for each consignment on a claim, whether the claim was notified within the time limit in the claimant's terms, and shall flag any claim notified late."
+              },
+              {
+                "text": "In section 5.2, are the 7-day and 28-day notification time limits measured in calendar days or working days?",
+                "section": "5.2 Time limits for notification",
+                "quote": "Under the standard conditions, damage and shortage must be notified within 7 days of delivery and loss within 28 days of the expected delivery date."
+              },
+              {
+                "text": "In section 6.1, does 'generate a request' mean the application sends it to the claimant automatically, or does it create a document for the handler to send?",
+                "section": "6.1 Required documents",
+                "quote": "When a claim is registered, the application shall generate a request to the claimant listing the documents required for each consignment on the claim."
+              }
+            ]
+          },
+          "diagnostics": {
+            "documentChars": 23478,
+            "sections": 36,
+            "statements": 143,
+            "droppedUnverified": 0,
+            "unreadSections": 0,
+            "mergeDone": 1,
+            "wholeMode": 1,
+            "outputTokenCap": 16384,
+            "calls": 5,
+            "reused": 0,
+            "sourceStatements": 66,
+            "structuredRequirements": 71,
+            "ambiguities": 267,
+            "questionCandidates": 24,
+            "questionsGenerated": 24,
+            "setAsideUnanswerable": 0,
+            "setAsideSameOutcome": 1,
+            "overCap": 15,
+            "fallback": 0,
+            "questionsAsked": 8,
+            "secondRoundOpen": 258,
+            "secondRoundGenerated": 24,
+            "secondRoundAsked": 8,
+            "secondRoundRepeats": 0,
+            "secondRoundFailed": 0,
+            "questionsFailed": 0
+          },
+          "score": {
+            "labelled": 63,
+            "extracted": 66,
+            "matched": 63,
+            "repeats": 1,
+            "requirementRecall": 1,
+            "requirementPrecision": 0.9545454545454546,
+            "labelledSections": 17,
+            "coveredSections": 17,
+            "sectionCoverage": 1,
+            "missedSections": [],
+            "questions": 8,
+            "worthAsking": 6,
+            "questionPrecision": 0.75,
+            "ambiguities": 18,
+            "ambiguitiesRaised": 0,
+            "ambiguityRecall": 0,
+            "missedRequirements": [],
+            "missedAmbiguities": [
+              "A1",
+              "A2",
+              "A3",
+              "A4",
+              "A5",
+              "A6",
+              "A7",
+              "A8",
+              "A9",
+              "A10",
+              "A11",
+              "A12",
+              "A13",
+              "A14",
+              "A15",
+              "A16",
+              "A17",
+              "A18"
+            ],
+            "unmatchedExtracted": [
+              "The application must provide management reporting directly.",
+              "Open claims must be moved into the application at go-live so the desks do not run two processes in parallel."
+            ],
+            "quoted": 66,
+            "quotesVerified": 66,
+            "quoteAccuracy": 1
+          },
+          "judge": {
+            "invalid": 0,
+            "ungraded": 0
+          },
+          "costUsd": 0.8117538000000001,
+          "judgeCostUsd": 0.044014,
+          "unpricedCalls": 0,
+          "inputTokens": 74655,
+          "completionTokens": 74871,
+          "seconds": 286.026
+        },
+        {
+          "itemId": "docunderstanding-03-community-grants",
+          "armId": "R",
+          "run": 1,
+          "output": {
+            "requirements": [
+              {
+                "text": "A grants officer can create a round recording opening and closing date and time, budget, minimum and maximum grant, eligibility questions, application questions and weighted assessment criteria.",
+                "section": "4. Programme and round set-up",
+                "quote": "A grants officer shall be able to create a round for a programme, recording its opening and closing date and time, its budget, the minimum and maximum grant that can be requested, the eligibility questions, the application questions and the assessment criteria with their weightings."
+              },
+              {
+                "text": "A round may only be opened once its programme manager has approved its set-up, and the system records who approved and when.",
+                "section": "4. Programme and round set-up",
+                "quote": "A round shall only be opened once its programme manager has approved its set-up, and the system shall record who approved it and when."
+              },
+              {
+                "text": "The system must not let the budgets of a programme's rounds in one financial year exceed the programme's budget for that year.",
+                "section": "4. Programme and round set-up",
+                "quote": "The system shall not allow the budget of the rounds in a programme in one financial year to exceed the programme's budget for that year."
+              },
+              {
+                "text": "A grants officer can copy a previous round as the starting point for a new one.",
+                "section": "4. Programme and round set-up",
+                "quote": "A grants officer shall be able to copy a previous round as the starting point for a new one."
+              },
+              {
+                "text": "A round may be open to all eligible applicants or invitation-only; in an invitation-only round only invited organisations can start an application.",
+                "section": "4. Programme and round set-up",
+                "quote": "for an invitation-only round, the system shall only let invited organisations start an application."
+              },
+              {
+                "text": "Applications are not accepted after the round's closing date and time, and an application in progress at closing cannot be submitted.",
+                "section": "4. Programme and round set-up",
+                "quote": "Applications shall not be accepted after a round's closing date and time, and an application that is being completed when the round closes shall not be submittable."
+              },
+              {
+                "text": "The programme manager can extend the closing date for a single applicant, recording the reason, and the extension appears in the round's audit history.",
+                "section": "4. Programme and round set-up",
+                "quote": "The programme manager shall be able to extend the closing date for a single applicant, recording the reason, and the extension shall be shown in the round's audit history."
+              },
+              {
+                "text": "A person can register an organisation by giving name, address, legal form, charity or company number if any, and details of at least two unrelated connected people.",
+                "section": "5.1 Registering an organisation",
+                "quote": "A person shall be able to register an organisation in the system by giving its name, address, legal form, charity or company number if it has one, and the details of at least two people connected with it who are not related to each other."
+              },
+              {
+                "text": "Where a charity or company number is given, the system checks it against the public register and shows the officer any differences in name and address.",
+                "section": "5.1 Registering an organisation",
+                "quote": "Where a charity or company number is given, the system shall check it against the public register and shall show the officer any difference between the registered name and address and those entered."
+              },
+              {
+                "text": "The system prevents registering an organisation whose charity or company number is already on another record and directs the person to request access to the existing record.",
+                "section": "5.1 Registering an organisation",
+                "quote": "The system shall prevent the registration of an organisation whose charity or company number is already held on another organisation record, and shall direct the person to request access to the existing record."
+              },
+              {
+                "text": "An organisation record can have several users, and existing users approve any request by a new user to join.",
+                "section": "5.1 Registering an organisation",
+                "quote": "An organisation record shall be able to have several users, and the organisation's existing users shall approve any request by a new user to join it."
+              },
+              {
+                "text": "If no remaining user can approve a request, a grants officer can add a user after verifying the person's connection with the organisation.",
+                "section": "5.1 Registering an organisation",
+                "quote": "If an organisation has no remaining users who can approve a request, a grants officer shall be able to add a user after verifying the person's connection with the organisation."
+              },
+              {
+                "text": "An organisation can upload its governing document, latest accounts, safeguarding policy and equality policy once, and the system attaches the current versions to each application automatically.",
+                "section": "5.2 Organisation documents",
+                "quote": "An organisation shall be able to upload its governing document, latest accounts, safeguarding policy and equality policy to its organisation record once, and the system shall attach the current versions to each application automatically."
+              },
+              {
+                "text": "The system records an expiry date for each organisation document and asks for a new version when one expires.",
+                "section": "5.2 Organisation documents",
+                "quote": "The system shall record an expiry date for each organisation document and shall ask the organisation to upload a new version when one expires."
+              },
+              {
+                "text": "Accounts are treated as expired 18 months after the end of the financial year they cover.",
+                "section": "5.2 Organisation documents",
+                "quote": "Accounts shall be treated as expired 18 months after the end of the financial year they cover."
+              },
+              {
+                "text": "The system must make changing bank details by email impossible.",
+                "section": "5.3 Bank details",
+                "quote": "The new system must make that impossible."
+              },
+              {
+                "text": "An organisation enters its bank details, and the system verifies the account name matches the organisation's name using the council's bank account verification service before the details can be used for payment.",
+                "section": "5.3 Bank details",
+                "quote": "An organisation shall enter its bank details in the system, and the system shall verify that the account name matches the organisation's name using the council's bank account verification service before the details can be used for a payment."
+              },
+              {
+                "text": "A change to bank details takes effect only after a grants officer confirms it by telephone with a connected person using a number already on record, and the system records who called and when.",
+                "section": "5.3 Bank details",
+                "quote": "A change to an organisation's bank details shall only take effect after a grants officer has confirmed it by telephone with a person connected with the organisation, using a telephone number already held on the record, and the system shall record who made the call and when."
+              },
+              {
+                "text": "No payment is released to bank details changed in the previous 10 working days until a finance officer has reviewed the change.",
+                "section": "5.3 Bank details",
+                "quote": "No payment shall be released to bank details that were changed in the previous 10 working days until a finance officer has reviewed the change."
+              },
+              {
+                "text": "Before starting an application the applicant answers the eligibility questions, and the system immediately says whether they are eligible and, if not, which answer made them ineligible.",
+                "section": "6.1 Eligibility check",
+                "quote": "Before starting an application, an applicant shall answer the round's eligibility questions, and the system shall tell them immediately whether they are eligible, and if not, which answer made them ineligible."
+              },
+              {
+                "text": "An ineligible applicant is shown the contact details of the grants team and of the local umbrella body.",
+                "section": "6.1 Eligibility check",
+                "quote": "An applicant who is not eligible shall be shown the contact details of the grants team and of the local umbrella body that can offer advice."
+              },
+              {
+                "text": "The system prevents an organisation applying to a round if it has an overdue monitoring report on any previous grant.",
+                "section": "6.1 Eligibility check",
+                "quote": "The system shall prevent an organisation from applying to a round if it has an overdue monitoring report on any previous grant."
+              },
+              {
+                "text": "An organisation must not hold more than one open application to the same round.",
+                "section": "6.1 Eligibility check",
+                "quote": "An organisation shall not hold more than one open application to the same round."
+              },
+              {
+                "text": "The application form saves answers automatically and the applicant can leave and return at any time before the round closes.",
+                "section": "6.2 Completing an application",
+                "quote": "The application form shall save the applicant's answers automatically as they are entered, and the applicant shall be able to leave and return to the application at any time before the round closes."
+              },
+              {
+                "text": "Several users of an organisation can work on an application but only one can edit at a time, and the system shows who is editing.",
+                "section": "6.2 Completing an application",
+                "quote": "Several users of the same organisation shall be able to work on an application, but only one shall be able to edit it at a time, and the system shall show who is editing."
+              },
+              {
+                "text": "The application includes a budget table listing each item, its cost and capital or revenue, and the system calculates the total and checks it equals the amount requested.",
+                "section": "6.2 Completing an application",
+                "quote": "The application shall include a budget table in which the applicant lists each item of expenditure, its cost and whether it is capital or revenue, and the system shall calculate the total and check that it equals the amount requested."
+              },
+              {
+                "text": "The system does not allow an application to request less than the round's minimum or more than its maximum grant.",
+                "section": "6.2 Completing an application",
+                "quote": "The system shall not allow an application to request less than the round's minimum or more than its maximum grant."
+              },
+              {
+                "text": "Before submitting, the applicant confirms a declaration that the information is true, and the system records the confirmer's name and the date and time.",
+                "section": "6.2 Completing an application",
+                "quote": "Before submitting, the applicant shall confirm a declaration that the information given is true, and the system shall record the name of the person who confirmed it and the date and time."
+              },
+              {
+                "text": "On submission the system emails the applicant an acknowledgement with a reference number and the date a decision is expected.",
+                "section": "6.2 Completing an application",
+                "quote": "When an application is submitted the system shall send the applicant an acknowledgement by email with a reference number and the date by which a decision is expected."
+              },
+              {
+                "text": "A grants officer must be able to complete and submit an application on behalf of an applicant who cannot apply online, recording that they did so and the applicant's confirmation of the declaration.",
+                "section": "6.3 Accessibility of the application process",
+                "quote": "A grants officer shall be able to complete and submit an application on behalf of an applicant who cannot apply online, recording that they did so and the applicant's confirmation of the declaration."
+              },
+              {
+                "text": "The Youth Voice fund application form must use plain language suitable for applicants aged 13 to 25 and allow a group of young people to apply with the support of a named adult.",
+                "section": "6.3 Accessibility of the application process",
+                "quote": "The Youth Voice fund application form shall use plain language suitable for applicants aged 13 to 25, and shall allow a group of young people to apply with the support of a named adult."
+              },
+              {
+                "text": "A grants officer must be able to allocate applications to assessors. The system must require two independent assessors for any application requesting more than 10,000.",
+                "section": "7.1 Allocating assessors",
+                "quote": "A grants officer shall be able to allocate applications to assessors, and the system shall require two independent assessors for any application requesting more than 10,000."
+              },
+              {
+                "text": "Before seeing an application an assessor must declare any interest in the applicant organisation, and an assessor who declares an interest must not be able to see or score it.",
+                "section": "7.1 Allocating assessors",
+                "quote": "Before an assessor can see an application, they shall declare whether they have any interest in the applicant organisation, and an assessor who declares an interest shall not be able to see or score the application."
+              },
+              {
+                "text": "The system must record every declaration of interest, including declarations of no interest, with the date and the person who made it.",
+                "section": "7.1 Allocating assessors",
+                "quote": "The system shall record every declaration of interest, including declarations of no interest, with the date and the person who made it."
+              },
+              {
+                "text": "External volunteer assessors must only see applications allocated to them and must not see bank details or other assessors' scores.",
+                "section": "7.1 Allocating assessors",
+                "quote": "External volunteer assessors shall only see the applications allocated to them and shall not see the organisation's bank details or the scores of other assessors."
+              },
+              {
+                "text": "An assessor must score each criterion on the round's scale and write a comment for each score, and the system must calculate the weighted total.",
+                "section": "7.2 Scoring and moderation",
+                "quote": "An assessor shall score each criterion on a scale defined for the round and shall write a comment for each score, and the system shall calculate the weighted total."
+              },
+              {
+                "text": "The system must flag an application for moderation where two assessors' weighted totals differ by more than 20% of the maximum score.",
+                "section": "7.2 Scoring and moderation",
+                "quote": "Where the weighted totals given by two assessors differ by more than 20% of the maximum score, the system shall flag the application for moderation."
+              },
+              {
+                "text": "The moderated score and the reason for any change must be recorded, and the assessors' original scores must be kept.",
+                "section": "7.2 Scoring and moderation",
+                "quote": "The moderated score and the reason for any change from the assessors' scores shall be recorded, and the assessors' original scores shall be kept."
+              },
+              {
+                "text": "A grants officer must carry out due diligence on every application recommended for funding before it goes to the decision-maker, recording the checks and outcome.",
+                "section": "7.2 Scoring and moderation",
+                "quote": "A grants officer shall carry out due diligence on every application recommended for funding before it goes to the decision-maker, recording the checks made and their outcome."
+              },
+              {
+                "text": "Due diligence includes checking accounts and governing document and, for grants over 25,000, a credit check.",
+                "section": "7.2 Scoring and moderation",
+                "quote": "Due diligence includes checking the organisation's accounts, its governing document and, for grants over 25,000, a credit check."
+              },
+              {
+                "text": "A grants officer can decide grants up to 5,000 under delegated authority.",
+                "section": "8.1 Decision-making authority",
+                "quote": "A grants officer can decide on grants of up to 5,000 under delegated authority."
+              },
+              {
+                "text": "The programme's grant panel decides grants from 5,001 to 25,000.",
+                "section": "8.1 Decision-making authority",
+                "quote": "The programme's grant panel decides on grants from 5,001 to 25,000."
+              },
+              {
+                "text": "The Cabinet member for communities decides grants from 25,001 to 100,000.",
+                "section": "8.1 Decision-making authority",
+                "quote": "The Cabinet member for communities decides on grants from 25,001 to 100,000."
+              },
+              {
+                "text": "Cabinet decides grants over 100,000.",
+                "section": "8.1 Decision-making authority",
+                "quote": "Cabinet decides on grants over 100,000."
+              },
+              {
+                "text": "The system must route each recommended application to the decision-maker required by the scheme of delegation, based on the total value over the grant's whole term.",
+                "section": "8.1 Decision-making authority",
+                "quote": "The system shall route each recommended application to the decision-maker required by the scheme of delegation, based on the total value of the grant over its whole term."
+              },
+              {
+                "text": "For multi-year Strategic Partnerships grants, the total over all years determines the decision-maker.",
+                "section": "8.1 Decision-making authority",
+                "quote": "For multi-year Strategic Partnerships grants, the total over all years determines the decision-maker."
+              },
+              {
+                "text": "A panel member with an interest must declare it before the panel meets, and the system must exclude them from the decision.",
+                "section": "8.1 Decision-making authority",
+                "quote": "A grant panel member who has an interest in an application shall declare it before the panel meets, and the system shall exclude them from the decision on that application."
+              },
+              {
+                "text": "The system must record each decision as approved, approved with conditions, or declined, with decision-maker, date, amount approved and reasons.",
+                "section": "8.2 Recording decisions",
+                "quote": "The system shall record each decision as approved, approved with conditions, or declined, with the decision-maker, the date, the amount approved and the reasons."
+              },
+              {
+                "text": "The total approved in a round must not exceed the round's budget, and the system must show the decision-maker the remaining budget before each decision.",
+                "section": "8.2 Recording decisions",
+                "quote": "The total approved in a round shall not exceed the round's budget, and the system shall show the decision-maker the remaining budget before each decision."
+              },
+              {
+                "text": "Every applicant must be told the decision by email within five working days of the decision, and declined applicants must be given the assessors' comments as feedback.",
+                "section": "8.2 Recording decisions",
+                "quote": "Every applicant shall be told the decision on their application by email within five working days of the decision, and declined applicants shall be given the assessors' comments as feedback."
+              },
+              {
+                "text": "Decisions on grants over 25,000 must be published on the council's website showing organisation, amount and purpose.",
+                "section": "8.2 Recording decisions",
+                "quote": "Decisions on grants over 25,000 shall be published on the council's website, showing the organisation, the amount and the purpose."
+              },
+              {
+                "text": "Each ward member must be able to see their remaining annual allocation and recommend a grant to an eligible organisation for a project in their ward.",
+                "section": "8.3 Ward Member Grants",
+                "quote": "Each ward member shall be able to see their remaining allocation for the year and recommend a grant to an eligible organisation for a project in their ward."
+              },
+              {
+                "text": "A ward member must not be able to recommend a grant to an organisation in which they have a declared interest in the register of members' interests.",
+                "section": "8.3 Ward Member Grants",
+                "quote": "A ward member shall not be able to recommend a grant to an organisation in which they have declared an interest in the council's register of members' interests."
+              },
+              {
+                "text": "A grants officer must check every Ward Member Grant recommendation for eligibility and approve or reject it; a rejected recommendation returns the amount to the member's allocation.",
+                "section": "8.3 Ward Member Grants",
+                "quote": "A grants officer shall check every Ward Member Grant recommendation for eligibility and shall approve or reject it, and a rejected recommendation shall return the amount to the member's allocation."
+              },
+              {
+                "text": "Ward Member Grants must not be recommended in the six weeks before a local election.",
+                "section": "8.3 Ward Member Grants",
+                "quote": "Ward Member Grants shall not be recommended in the six weeks before a local election."
+              },
+              {
+                "text": "When a grant is approved, the system must generate a grant agreement from the programme template including amount, purpose, conditions, payment schedule and monitoring requirements.",
+                "section": "9.1 Issuing an agreement",
+                "quote": "the system shall generate a grant agreement from the template for the programme, including the amount, the purpose, any conditions set by the decision-maker, the payment schedule and the monitoring requirements."
+              },
+              {
+                "text": "The recipient must sign the agreement electronically through the system, with two people connected with the organisation signing for grants over 5,000.",
+                "section": "9.1 Issuing an agreement",
+                "quote": "The grant recipient shall sign the grant agreement electronically through the system, and the agreement shall be signed by two people connected with the organisation for grants over 5,000."
+              },
+              {
+                "text": "No payment may be made until the agreement is signed by the recipient and countersigned by the council.",
+                "section": "9.1 Issuing an agreement",
+                "quote": "No payment shall be made on a grant until the grant agreement has been signed by the recipient and countersigned by the council."
+              },
+              {
+                "text": "A grant offer must lapse if the agreement is not signed within a reasonable time, and the amount must be returned to the round's budget.",
+                "section": "9.1 Issuing an agreement",
+                "quote": "An offer of a grant shall lapse if the agreement is not signed within a reasonable time, and the amount shall be returned to the round's budget."
+              },
+              {
+                "text": "Grants up to 10,000 are paid in a single payment after the agreement is signed; grants over 10,000 are paid in instalments per the payment schedule.",
+                "section": "9.2 Payment schedules",
+                "quote": "Grants up to 10,000 shall be paid in a single payment after the agreement is signed, and grants over 10,000 shall be paid in instalments set out in the payment schedule."
+              },
+              {
+                "text": "For Strategic Partnerships grants, instalments after the first are released only once the previous quarter's monitoring report has been accepted.",
+                "section": "9.2 Payment schedules",
+                "quote": "instalments after the first shall only be released once the previous quarter's monitoring report has been accepted."
+              },
+              {
+                "text": "When a payment is due and conditions are met, the system must create a payment request with grant reference, amount, cost centre and the recipient's verified bank details.",
+                "section": "10. Payments",
+                "quote": "the system shall create a payment request containing the grant reference, the amount, the cost centre and the recipient's verified bank details."
+              },
+              {
+                "text": "A finance officer must review each payment request and release it to the finance system, and the system must prevent the officer who approved the grant from releasing its payment.",
+                "section": "10. Payments",
+                "quote": "A finance officer shall review each payment request and release it to the finance system, and the system shall prevent the officer who approved the grant from releasing its payment."
+              },
+              {
+                "text": "The system must record the payment date and finance system reference when Finance confirms payment.",
+                "section": "10. Payments",
+                "quote": "The system shall record the payment date and the finance system reference when Finance confirms that a payment has been made."
+              },
+              {
+                "text": "The system must automatically stop a payment request if the recipient's registration shows it as removed, dissolved or in insolvency.",
+                "section": "10. Payments",
+                "quote": "The system shall stop a payment request automatically if the recipient organisation's charity or company registration shows it as removed, dissolved or in insolvency."
+              },
+              {
+                "text": "A recipient must be able to request a variation through the system, explaining what and why.",
+                "section": "11. Variations",
+                "quote": "A recipient shall be able to request a variation to their grant through the system, explaining what they want to change and why."
+              },
+              {
+                "text": "A variation changing the grant amount is decided by the decision-maker required for the new total amount.",
+                "section": "11. Variations",
+                "quote": "A variation that changes the amount of the grant shall be decided by the decision-maker who would be required for the new total amount."
+              },
+              {
+                "text": "A variation moving less than 10% of the grant between budget items without changing the total is decided by a grants officer.",
+                "section": "11. Variations",
+                "quote": "A variation that moves less than 10% of the grant between budget items, without changing the total, shall be decided by a grants officer."
+              },
+              {
+                "text": "Every variation must be recorded against the grant agreement, and the system must keep both the original signed agreement and the varied agreement.",
+                "section": "11. Variations",
+                "quote": "Every variation shall be recorded against the grant agreement, and the system shall keep the agreement as originally signed as well as the agreement as varied."
+              },
+              {
+                "text": "Recipients of grants up to 5,000 submit a single end-of-grant report.",
+                "section": "12.1 Monitoring reports",
+                "quote": "Recipients of grants up to 5,000 submit a single end-of-grant report."
+              },
+              {
+                "text": "Recipients of grants from 5,001 to 25,000 submit a mid-point report and an end-of-grant report.",
+                "section": "12.1 Monitoring reports",
+                "quote": "Recipients of grants from 5,001 to 25,000 submit a mid-point report and an end-of-grant report."
+              },
+              {
+                "text": "Recipients of grants over 25,000 submit quarterly reports and an end-of-grant report with evidence of expenditure.",
+                "section": "12.1 Monitoring reports",
+                "quote": "Recipients of grants over 25,000 submit quarterly reports and an end-of-grant report with evidence of expenditure."
+              },
+              {
+                "text": "The system reminds the recipient 14 days before a monitoring report is due and again on the due date, and marks it overdue if not submitted within 14 days after the due date.",
+                "section": "12.1 Monitoring reports",
+                "quote": "The system shall remind the recipient of each monitoring report 14 days before it is due and again on the due date, and shall mark the report as overdue if it is not submitted within 14 days after the due date."
+              },
+              {
+                "text": "A grants officer reviews each monitoring report, records whether it is accepted, and may ask the recipient for more information.",
+                "section": "12.1 Monitoring reports",
+                "quote": "A grants officer shall review each monitoring report and record whether it is accepted, and may ask the recipient for more information."
+              },
+              {
+                "text": "Monitoring reports collect the outcome measures set for the round so outcomes can be reported across a programme.",
+                "section": "12.1 Monitoring reports",
+                "quote": "Monitoring reports shall collect the outcome measures set for the round, so that the council can report the outcomes achieved across all grants in a programme."
+              },
+              {
+                "text": "A grants officer can start a clawback, recording amount and reason, and the system sends a repayment request to the recipient.",
+                "section": "12.2 Clawback and closure",
+                "quote": "a grants officer shall be able to start a clawback, recording the amount to be recovered and the reason, and the system shall send a request for repayment to the recipient."
+              },
+              {
+                "text": "A clawback over 5,000 must be approved by the programme manager before the repayment request is sent.",
+                "section": "12.2 Clawback and closure",
+                "quote": "A clawback over 5,000 shall be approved by the programme manager before the request for repayment is sent."
+              },
+              {
+                "text": "A grant is closed when the end-of-grant report has been accepted and every payment and any clawback is completed.",
+                "section": "12.2 Clawback and closure",
+                "quote": "A grant shall be closed when the end-of-grant report has been accepted and every payment and any clawback has been completed."
+              },
+              {
+                "text": "The system reports grants awarded and paid by programme, round, ward and organisation for any period.",
+                "section": "13. Reporting",
+                "quote": "The system shall report, for any period, the grants awarded and paid by programme, round, ward and organisation."
+              },
+              {
+                "text": "The system shows for any organisation all applications and grants across all programmes.",
+                "section": "13. Reporting",
+                "quote": "The system shall show, for any organisation, every application it has made and every grant it has received from the council across all programmes."
+              },
+              {
+                "text": "The system reports applications received, approved and declined per round, with decline reasons, by ward and equality information.",
+                "section": "13. Reporting",
+                "quote": "The system shall report the applications received, approved and declined in each round, with the reasons for declining, by ward and by the equality information applicants provided."
+              },
+              {
+                "text": "Each ward member can see grants awarded in their ward under all programmes.",
+                "section": "13. Reporting",
+                "quote": "Each ward member shall be able to see the grants awarded in their ward under all programmes."
+              },
+              {
+                "text": "Auditors can see every record, including declarations of interest, decisions, and bank detail changes and verification, without changing anything.",
+                "section": "13. Reporting",
+                "quote": "Auditors shall be able to see every record in the system, including declarations of interest, decisions, bank detail changes and their verification, without being able to change anything."
+              },
+              {
+                "text": "Applicant-facing parts must meet WCAG 2.2 AA and work on mobile phones as well as computers.",
+                "section": "14.1 Accessibility and usability",
+                "quote": "The applicant-facing parts of the system shall meet the WCAG 2.2 AA standard and shall work on mobile phones as well as on computers."
+              },
+              {
+                "text": "A first-time applicant with documents to hand must be able to complete an application for a grant under 1,000 in no more than 30 minutes.",
+                "section": "14.1 Accessibility and usability",
+                "quote": "The application process for a grant under 1,000 shall be completable in no more than 30 minutes by a first-time applicant who has their organisation documents to hand."
+              },
+              {
+                "text": "The system must be available at least 99.5% of the time, with no planned maintenance in the last 48 hours before a round closes.",
+                "section": "14.2 Availability and performance",
+                "quote": "The system shall be available at least 99.5% of the time, and in the last 48 hours before a round closes it shall have no planned maintenance."
+              },
+              {
+                "text": "The system must support at least 500 concurrent applicants without any page taking more than three seconds to load.",
+                "section": "14.2 Availability and performance",
+                "quote": "The system shall support at least 500 applicants working on applications at the same time without a page taking more than three seconds to load."
+              },
+              {
+                "text": "Council users sign in with single sign-on; applicants and external assessors sign in with email, password and a second factor.",
+                "section": "14.3 Security and data protection",
+                "quote": "Council users shall sign in with the council's single sign-on, and applicants and external assessors shall sign in with an email address, a password and a second factor."
+              },
+              {
+                "text": "A grants officer can remove mistakenly included personal data about applicants' service users without deleting the rest of the application.",
+                "section": "14.3 Security and data protection",
+                "quote": "shall be removable by a grants officer without deleting the rest of the application."
+              },
+              {
+                "text": "Records of approved grants are retained seven years after closure and declined applications two years after the decision, then deleted.",
+                "section": "14.3 Security and data protection",
+                "quote": "The system shall retain records of approved grants for seven years after the grant is closed and records of declined applications for two years after the decision, and shall then delete them."
+              },
+              {
+                "text": "Equality information is optional, kept separately from the application, and not visible to assessors or decision-makers.",
+                "section": "14.3 Security and data protection",
+                "quote": "Equality information given by applicants shall be optional, shall be kept separately from the application, and shall not be visible to assessors or decision-makers."
+              },
+              {
+                "text": "Every change to a record is logged with user, date/time and before and after values, and the audit record cannot be edited or deleted by any user.",
+                "section": "14.4 Audit",
+                "quote": "Every action that changes a record in the system shall be recorded with the user, the date and time, and the value before and after the change, and the audit record shall not be editable or deletable by any user."
+              },
+              {
+                "text": "Grants from the three financial years before go-live are migrated with organisation, amount, programme and status.",
+                "section": "15. Data migration",
+                "quote": "Grants made in the three financial years before go-live shall be migrated into the system with their organisation, amount, programme and status, so that reports of funding to an organisation are complete."
+              },
+              {
+                "text": "Before migration, apparent duplicate organisation records are presented to a grants officer to decide on merging.",
+                "section": "15. Data migration",
+                "quote": "Before migration, organisation records that appear to refer to the same organisation shall be presented to a grants officer for a decision on whether to merge them."
+              },
+              {
+                "text": "In-progress Strategic Partnerships grants are migrated with agreements, payment schedules and monitoring reports.",
+                "section": "15. Data migration",
+                "quote": "Strategic Partnerships grants that are in progress at go-live shall be migrated with their agreements, payment schedules and monitoring reports, so that they can be managed in the system from go-live."
+              },
+              {
+                "text": "The system must allow programme-specific rules to be applied to the programme concerned without affecting other programmes.",
+                "section": "Appendix A. Programme-specific rules",
+                "quote": "The system must allow these rules to be applied for the programme concerned without affecting other programmes."
+              },
+              {
+                "text": "A Neighbourhood Fund application records the neighbourhood served from the council's list, and the system adds the round's priority weighting to the weighted score of applications from priority neighbourhoods.",
+                "section": "A.1 Neighbourhood Fund",
+                "quote": "the system shall add the priority weighting set for the round to the weighted score of applications from priority neighbourhoods."
+              },
+              {
+                "text": "An organisation may not receive more than one Neighbourhood Fund grant in the same financial year.",
+                "section": "A.1 Neighbourhood Fund",
+                "quote": "An organisation shall not receive more than one Neighbourhood Fund grant in the same financial year."
+              },
+              {
+                "text": "A Strategic Partnerships agreement states that years two and three funding is subject to the annual budget, and the system requires the programme manager to confirm each year's funding before its first instalment is released.",
+                "section": "A.2 Strategic Partnerships",
+                "quote": "the system shall require the programme manager to confirm each year's funding before its first instalment is released."
+              },
+              {
+                "text": "Each Strategic Partnerships grant has a named relationship manager and the system records a note of each quarterly meeting.",
+                "section": "A.2 Strategic Partnerships",
+                "quote": "Each Strategic Partnerships grant shall have a named relationship manager, and the system shall record a note of each quarterly meeting against the grant."
+              },
+              {
+                "text": "Small Sparks grants range from 100 to 1,500. Groups without a bank account in their own name may be paid through a sponsoring organisation.",
+                "section": "A.3 Small Sparks",
+                "quote": "Small Sparks grants range from 100 to 1,500, and groups without a bank account in their own name may be paid through a sponsoring organisation."
+              },
+              {
+                "text": "Where a Small Sparks grant is paid through a sponsor, the system records the sponsor, verifies the sponsor's bank details as for a recipient, and requires the sponsor to sign the grant agreement as well as the group.",
+                "section": "A.3 Small Sparks",
+                "quote": "the system shall record the sponsor, verify the sponsor's bank details in the same way as a recipient's, and require the sponsor to sign the grant agreement as well as the group."
+              },
+              {
+                "text": "A Small Sparks decision must be made within ten working days of submission, and the system alerts the programme manager about any application still undecided after eight working days.",
+                "section": "A.3 Small Sparks",
+                "quote": "A decision on a Small Sparks application shall be made within ten working days of submission, and the system shall alert the programme manager about any application still undecided after eight working days."
+              },
+              {
+                "text": "Youth Voice assessors may be youth council members aged 16 or over, and the system records that an assessor is a youth panel member and the name of the supporting youth worker.",
+                "section": "A.4 Youth Voice",
+                "quote": "Assessors for the Youth Voice fund may be members of the youth council aged 16 or over, and the system shall record that an assessor is a youth panel member and the name of the supporting youth worker."
+              },
+              {
+                "text": "An Arts in the Open grant must not be paid until the applicant has uploaded the events team's event permission, and the system records the permission reference.",
+                "section": "A.5 Arts in the Open",
+                "quote": "An Arts in the Open grant shall not be paid until the applicant has uploaded the event permission from the council's events team, and the system shall record the permission reference."
+              },
+              {
+                "text": "If an Arts in the Open event is cancelled because of bad weather, the recipient may keep costs already incurred. The system allows a grants officer to record a partial clawback of the remainder when an event is cancelled for bad weather.",
+                "section": "A.5 Arts in the Open",
+                "quote": "the recipient may keep costs already incurred, and the system shall allow a grants officer to record a partial clawback of the remainder."
+              },
+              {
+                "text": "Winter Warmth grants may only be approved for activities taking place between 1 November and 31 March. The Winter Warmth end-of-grant report is due by 30 April.",
+                "section": "A.6 Winter Warmth",
+                "quote": "Winter Warmth grants shall only be approved for activities that take place between 1 November and 31 March, and the end-of-grant report shall be due by 30 April."
+              }
+            ],
+            "questions": [
+              {
+                "text": "In §4 'Create a funding round', should assessment criteria weightings be expressed as percentages or points, and must they total a fixed amount such as 100%?",
+                "section": "4. Programme and round set-up",
+                "quote": "A grants officer shall be able to create a round for a programme, recording its opening and closing date and time, its budget, the minimum and maximum grant that can be requested, the eligibility questions, the application questions and the assessment criteria with their weightings."
+              },
+              {
+                "text": "In §4 'Round budgets must not exceed programme annual budget', what are Harbour City Council's financial year start and end dates, and how should a round that spans two financial years be allocated to each year?",
+                "section": "4. Programme and round set-up",
+                "quote": "The system shall not allow the budget of the rounds in a programme in one financial year to exceed the programme's budget for that year."
+              },
+              {
+                "text": "In §4 'Invitation-only rounds', how are organisations invited (by officer selection, import, link, or email)? Who may send invitations, and are invited organisations notified?",
+                "section": "4. Programme and round set-up",
+                "quote": "for an invitation-only round, the system shall only let invited organisations start an application."
+              },
+              {
+                "text": "In §5.1 'Register an organisation', what does 'not related to each other' mean: should it cover family, household, business, financial or all of these relationships, and how will the system verify it?",
+                "section": "5.1 Registering an organisation",
+                "quote": "A person shall be able to register an organisation in the system by giving its name, address, legal form, charity or company number if it has one, and the details of at least two people connected with it who are not related to each other."
+              },
+              {
+                "text": "In §5.1 'Multiple users per organisation with approval of new users', must a new user be approved by any existing user, all existing users, a majority, or a designated approver?",
+                "section": "5.1 Registering an organisation",
+                "quote": "An organisation record shall be able to have several users, and the organisation's existing users shall approve any request by a new user to join it."
+              },
+              {
+                "text": "In §5.3 'Enter and verify organisation bank details', which bank account verification service does the council use, and what is its interface, availability, cost and response time?",
+                "section": "5.3 Bank details",
+                "quote": "An organisation shall enter its bank details in the system, and the system shall verify that the account name matches the organisation's name using the council's bank account verification service before the details can be used for a payment."
+              },
+              {
+                "text": "In §5.3 'Hold payments to recently changed bank details pending finance review', what happens if the finance officer rejects the change, and does early approval lift the hold immediately or must the 10-day period still elapse?",
+                "section": "5.3 Bank details",
+                "quote": "No payment shall be released to bank details that were changed in the previous 10 working days until a finance officer has reviewed the change."
+              },
+              {
+                "text": "In §6.1 'Block applications from organisations with overdue monitoring reports', what is the definition of overdue: is there a grace period, must the report be accepted by an officer, or is submission by the due date sufficient?",
+                "section": "6.1 Eligibility check",
+                "quote": "The system shall prevent an organisation from applying to a round if it has an overdue monitoring report on any previous grant."
+              }
+            ]
+          },
+          "diagnostics": {
+            "documentChars": 35075,
+            "sections": 53,
+            "statements": 189,
+            "droppedUnverified": 0,
+            "unreadSections": 0,
+            "mergeDone": 1,
+            "wholeMode": 1,
+            "outputTokenCap": 16384,
+            "calls": 6,
+            "reused": 0,
+            "sourceStatements": 107,
+            "structuredRequirements": 115,
+            "ambiguities": 432,
+            "questionCandidates": 24,
+            "questionsGenerated": 24,
+            "setAsideUnanswerable": 0,
+            "setAsideSameOutcome": 1,
+            "overCap": 15,
+            "fallback": 0,
+            "questionsAsked": 8,
+            "secondRoundOpen": 423,
+            "secondRoundGenerated": 24,
+            "secondRoundAsked": 8,
+            "secondRoundRepeats": 0,
+            "secondRoundFailed": 0,
+            "questionsFailed": 0
+          },
+          "score": {
+            "labelled": 106,
+            "extracted": 107,
+            "matched": 105,
+            "repeats": 1,
+            "requirementRecall": 0.9905660377358491,
+            "requirementPrecision": 0.9813084112149533,
+            "labelledSections": 31,
+            "coveredSections": 31,
+            "sectionCoverage": 1,
+            "missedSections": [],
+            "questions": 8,
+            "worthAsking": 7,
+            "questionPrecision": 0.875,
+            "ambiguities": 17,
+            "ambiguitiesRaised": 2,
+            "ambiguityRecall": 0.11764705882352941,
+            "missedRequirements": ["R103"],
+            "missedAmbiguities": [
+              "A1",
+              "A2",
+              "A3",
+              "A4",
+              "A5",
+              "A6",
+              "A7",
+              "A8",
+              "A10",
+              "A11",
+              "A12",
+              "A13",
+              "A14",
+              "A16",
+              "A17"
+            ],
+            "unmatchedExtracted": [
+              "Small Sparks grants range from 100 to 1,500. Groups without a bank account in their own name may be paid through a sponsoring organisation."
+            ],
+            "quoted": 107,
+            "quotesVerified": 107,
+            "quoteAccuracy": 1
+          },
+          "judge": {
+            "invalid": 0,
+            "ungraded": 0
+          },
+          "costUsd": 1.2195068,
+          "judgeCostUsd": 0.065336,
+          "unpricedCalls": 0,
+          "inputTokens": 114268,
+          "completionTokens": 112447,
+          "seconds": 440.437
+        }
+      ],
+      "summary": {
+        "metrics": {
+          "requirementRecall": {
+            "mean": 0.9799061933695769,
+            "min": 0.9491525423728814,
+            "max": 1,
+            "n": 3
+          },
+          "requirementPrecision": {
+            "mean": 0.9671237023799062,
+            "min": 0.9545454545454546,
+            "max": 0.9813084112149533,
+            "n": 3
+          },
+          "sectionCoverage": {
+            "mean": 0.9743589743589745,
+            "min": 0.9230769230769231,
+            "max": 1,
+            "n": 3
+          },
+          "questionPrecision": {
+            "mean": 0.6666666666666666,
+            "min": 0.375,
+            "max": 0.875,
+            "n": 3
+          },
+          "ambiguityRecall": {
+            "mean": 0.06699346405228758,
+            "min": 0,
+            "max": 0.11764705882352941,
+            "n": 3
+          },
+          "quoteAccuracy": {
+            "mean": 1,
+            "min": 1,
+            "max": 1,
+            "n": 3
+          }
+        },
+        "extractedPerDocument": 77,
+        "questionsPerDocument": 8,
+        "usdPerDocument": 0.9030147666666668,
+        "inputTokensPerDocument": 81797.66666666667,
+        "completionTokensPerDocument": 83336.66666666667,
+        "secondsPerDocument": 332.91766666666666,
+        "failures": 0,
+        "readings": 3,
+        "reusedReadings": 0,
+        "questionTally": {
+          "rounds": 3,
+          "failedRounds": 0,
+          "asked": 24,
+          "ambiguitiesFound": 3,
+          "ambiguitiesLabelled": 47,
+          "setAsideUnanswerable": 0,
+          "setAsideSameOutcome": 2,
+          "overCap": 46
+        }
+      },
+      "byItem": [
+        {
+          "itemId": "docunderstanding-01-clinic-booking",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": 0.9491525423728814,
+                "min": 0.9491525423728814,
+                "max": 0.9491525423728814,
+                "n": 1
+              },
+              "requirementPrecision": {
+                "mean": 0.9655172413793104,
+                "min": 0.9655172413793104,
+                "max": 0.9655172413793104,
+                "n": 1
+              },
+              "sectionCoverage": {
+                "mean": 0.9230769230769231,
+                "min": 0.9230769230769231,
+                "max": 0.9230769230769231,
+                "n": 1
+              },
+              "questionPrecision": {
+                "mean": 0.375,
+                "min": 0.375,
+                "max": 0.375,
+                "n": 1
+              },
+              "ambiguityRecall": {
+                "mean": 0.08333333333333333,
+                "min": 0.08333333333333333,
+                "max": 0.08333333333333333,
+                "n": 1
+              },
+              "quoteAccuracy": {
+                "mean": 1,
+                "min": 1,
+                "max": 1,
+                "n": 1
+              }
+            },
+            "extractedPerDocument": 58,
+            "questionsPerDocument": 8,
+            "usdPerDocument": 0.6777837000000001,
+            "inputTokensPerDocument": 56470,
+            "completionTokensPerDocument": 62692,
+            "secondsPerDocument": 272.29,
+            "failures": 0,
+            "readings": 1,
+            "reusedReadings": 0,
+            "questionTally": {
+              "rounds": 1,
+              "failedRounds": 0,
+              "asked": 8,
+              "ambiguitiesFound": 1,
+              "ambiguitiesLabelled": 12,
+              "setAsideUnanswerable": 0,
+              "setAsideSameOutcome": 0,
+              "overCap": 16
+            }
+          }
+        },
+        {
+          "itemId": "docunderstanding-02-freight-claims",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": 1,
+                "min": 1,
+                "max": 1,
+                "n": 1
+              },
+              "requirementPrecision": {
+                "mean": 0.9545454545454546,
+                "min": 0.9545454545454546,
+                "max": 0.9545454545454546,
+                "n": 1
+              },
+              "sectionCoverage": {
+                "mean": 1,
+                "min": 1,
+                "max": 1,
+                "n": 1
+              },
+              "questionPrecision": {
+                "mean": 0.75,
+                "min": 0.75,
+                "max": 0.75,
+                "n": 1
+              },
+              "ambiguityRecall": {
+                "mean": 0,
+                "min": 0,
+                "max": 0,
+                "n": 1
+              },
+              "quoteAccuracy": {
+                "mean": 1,
+                "min": 1,
+                "max": 1,
+                "n": 1
+              }
+            },
+            "extractedPerDocument": 66,
+            "questionsPerDocument": 8,
+            "usdPerDocument": 0.8117538000000001,
+            "inputTokensPerDocument": 74655,
+            "completionTokensPerDocument": 74871,
+            "secondsPerDocument": 286.026,
+            "failures": 0,
+            "readings": 1,
+            "reusedReadings": 0,
+            "questionTally": {
+              "rounds": 1,
+              "failedRounds": 0,
+              "asked": 8,
+              "ambiguitiesFound": 0,
+              "ambiguitiesLabelled": 18,
+              "setAsideUnanswerable": 0,
+              "setAsideSameOutcome": 1,
+              "overCap": 15
+            }
+          }
+        },
+        {
+          "itemId": "docunderstanding-03-community-grants",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": 0.9905660377358491,
+                "min": 0.9905660377358491,
+                "max": 0.9905660377358491,
+                "n": 1
+              },
+              "requirementPrecision": {
+                "mean": 0.9813084112149533,
+                "min": 0.9813084112149533,
+                "max": 0.9813084112149533,
+                "n": 1
+              },
+              "sectionCoverage": {
+                "mean": 1,
+                "min": 1,
+                "max": 1,
+                "n": 1
+              },
+              "questionPrecision": {
+                "mean": 0.875,
+                "min": 0.875,
+                "max": 0.875,
+                "n": 1
+              },
+              "ambiguityRecall": {
+                "mean": 0.11764705882352941,
+                "min": 0.11764705882352941,
+                "max": 0.11764705882352941,
+                "n": 1
+              },
+              "quoteAccuracy": {
+                "mean": 1,
+                "min": 1,
+                "max": 1,
+                "n": 1
+              }
+            },
+            "extractedPerDocument": 107,
+            "questionsPerDocument": 8,
+            "usdPerDocument": 1.2195068,
+            "inputTokensPerDocument": 114268,
+            "completionTokensPerDocument": 112447,
+            "secondsPerDocument": 440.437,
+            "failures": 0,
+            "readings": 1,
+            "reusedReadings": 0,
+            "questionTally": {
+              "rounds": 1,
+              "failedRounds": 0,
+              "asked": 8,
+              "ambiguitiesFound": 2,
+              "ambiguitiesLabelled": 17,
+              "setAsideUnanswerable": 0,
+              "setAsideSameOutcome": 1,
+              "overCap": 15
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
