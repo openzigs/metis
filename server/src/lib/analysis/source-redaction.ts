@@ -650,6 +650,8 @@ export const RUN_WIDE_OPEN_METADATA_KEYS: ReadonlySet<string> = new Set([
   "startedWithDefaults",
   "enhancementRequested",
   "enhancement",
+  // #2548 — a flag: web research was asked for and withheld (#2506).
+  "webResearchWithheld",
   "structuredRunId",
   "structuredExtractionFailure",
   "promotionBlocked",
@@ -699,6 +701,8 @@ function redactRunRecords(
  * (the run's narrative) are emptied when they cannot see the run as a whole,
  * as are its run-wide records' text from a code pass (#2448, `redactRunRecords`).
  * Nothing is removed, so the result keeps its shape and its counts.
+ * #2548 — and `restrictedView` counts what was hidden from this reader (set only
+ * when something was), so the page can say once, at the top, why.
  */
 export function redactAnalysisSnapshot<T extends AnalysisSnapshot>(
   snapshot: T,
@@ -728,29 +732,40 @@ export function redactAnalysisSnapshot<T extends AnalysisSnapshot>(
         }
       : listed;
   const capability = redactDocumentCoverage(snapshot.capability, analysisId, guard);
-  return {
+  // #2548 — how many rows become the placeholder, so the page can say once why.
+  let hiddenRows = 0;
+  const hide = <R>(row: R, visible: boolean, placeholder: (r: R) => R): R => {
+    if (visible) return row;
+    hiddenRows += 1;
+    return placeholder(row);
+  };
+  const redacted: T = {
     ...snapshot,
+    // #2554 — a run hidden as a whole is said once, as `restrictedView.narrative`
+    // below; the route derives `runRestricted` from it, so the two cannot drift.
     ...(seesRun
       ? { metadata, capability }
-      : // #2554 — and says so, so the page offers no run-wide action the server refuses.
-        { ...redactRunRecords({ ...snapshot, capability }, metadata), runRestricted: true }),
+      : redactRunRecords({ ...snapshot, capability }, metadata)),
     agents: snapshot.agents.map((a) => ({
       ...a,
       ...(seesRun ? {} : { summary: null, notes: [] }),
-      findings: a.findings.map((f) => (sees(sources.findings, f.id) ? f : restrictedFinding(f))),
+      findings: a.findings.map((f) => hide(f, sees(sources.findings, f.id), restrictedFinding)),
     })),
     requirements: snapshot.requirements.map((r) =>
-      sees(sources.requirements, r.id) ? r : restrictedRequirement(r),
+      hide(r, sees(sources.requirements, r.id), restrictedRequirement),
     ),
     crossDocFindings: snapshot.crossDocFindings
       ? {
           ...snapshot.crossDocFindings,
           findings: snapshot.crossDocFindings.findings.map((f) =>
-            sees(sources.crossDocFindings, f.id) ? f : restrictedCrossDocFinding(f),
+            hide(f, sees(sources.crossDocFindings, f.id), restrictedCrossDocFinding),
           ),
         }
       : snapshot.crossDocFindings,
   };
+  return seesRun && hiddenRows === 0
+    ? redacted
+    : { ...redacted, restrictedView: { narrative: !seesRun, rows: hiddenRows } };
 }
 
 /** A row resting on exactly one document: how a single document is checked. */

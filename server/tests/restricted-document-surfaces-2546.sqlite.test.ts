@@ -529,9 +529,12 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           id: REQ,
           title: RESTRICTED_SOURCE_TITLE,
           analysisId: RUN,
+          // #2548 — the thread header says why, and links nowhere.
+          restricted: true,
         });
         const alice = await get("alice", `/api/discussions/threads?projectId=${P}`);
         expect(alice.body.data[0].requirement.title).toBe(SECRET);
+        expect(alice.body.data[0].requirement.restricted).toBeUndefined();
       });
     });
 

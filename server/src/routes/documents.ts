@@ -294,7 +294,15 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       const ingest = await handleIngest(document.id, actor.id);
       const refreshed = await prisma.document.findUnique({ where: { id: document.id } });
       const httpStatus = ingest.queued ? 202 : 201;
-      res.status(httpStatus).json(ok({ document: publicDocumentRow(refreshed), ingest }));
+      // #2548 — the same file under the same name is accepted, and said.
+      const duplicateOf = await readableDuplicate(actor.id, document);
+      res.status(httpStatus).json(
+        ok({
+          document: publicDocumentRow(refreshed),
+          ingest,
+          ...(duplicateOf ? { duplicateOf } : {}),
+        }),
+      );
     },
   );
 
@@ -367,11 +375,15 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       const ingest = await handleIngest(document.id, actor.id);
       const refreshed = await prisma.document.findUnique({ where: { id: document.id } });
       const httpStatus = ingest.queued ? 202 : 201;
-      res
-        .status(httpStatus)
-        .json(
-          ok({ document: publicDocumentRow(refreshed), ingest, source: { url: fetched.finalUrl } }),
-        );
+      const duplicateOf = await readableDuplicate(actor.id, document);
+      res.status(httpStatus).json(
+        ok({
+          document: publicDocumentRow(refreshed),
+          ingest,
+          source: { url: fetched.finalUrl },
+          ...(duplicateOf ? { duplicateOf } : {}),
+        }),
+      );
     },
   );
 
@@ -429,7 +441,14 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       const ingest = await handleIngest(document.id, actor.id);
       const refreshed = await prisma.document.findUnique({ where: { id: document.id } });
       const httpStatus = ingest.queued ? 202 : 201;
-      res.status(httpStatus).json(ok({ document: publicDocumentRow(refreshed), ingest }));
+      const duplicateOf = await readableDuplicate(actor.id, document);
+      res.status(httpStatus).json(
+        ok({
+          document: publicDocumentRow(refreshed),
+          ingest,
+          ...(duplicateOf ? { duplicateOf } : {}),
+        }),
+      );
     },
   );
 
@@ -510,6 +529,9 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       where: { id: documentId, projectId, deletedAt: null },
     });
     if (!document) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
+    // #2548 — deleting is managing it: a member it is restricted away from may
+    // not, as #2547 refuses them its approval (an admin keeps the bypass).
+    await refuseUnlessReader(actor.id, document, projectId, "document.delete");
     await knowledge.deleteDocument(documentId);
     audit({
       actor: { id: actor.id },
@@ -823,6 +845,51 @@ async function readableDocumentRows<
       ? { ...publicDocumentRow(row), access: documentAccessOf(row, true, names) }
       : { ...restrictedDocumentRow(publicDocumentRow(row)), access: documentAccessOf(row, false) },
   );
+}
+
+/**
+ * #2548 — an earlier live document of the project with the same name and the
+ * same content (checksum) as `doc`, which `userId` may read: the upload is kept
+ * (a second copy may be meant) and the page warns. One the uploader cannot read
+ * is never named, nor its existence confirmed: an upload is not a probe of a
+ * restricted document's content.
+ */
+async function findReadableDuplicate(
+  userId: string,
+  doc: { id: string; projectId: string; filename: string; checksum: string },
+): Promise<{ id: string; uploadedAt: Date } | null> {
+  const same = await prisma.document.findMany({
+    where: {
+      projectId: doc.projectId,
+      filename: doc.filename,
+      checksum: doc.checksum,
+      deletedAt: null,
+      id: { not: doc.id },
+    },
+    orderBy: [{ uploadedAt: "asc" }, { id: "asc" }],
+    select: { id: true, uploadedAt: true, aclSubjects: true },
+  });
+  if (same.length === 0) return null;
+  const sees = await documentVisibilityFor(userId, same);
+  const first = same.find(sees);
+  return first ? { id: first.id, uploadedAt: first.uploadedAt } : null;
+}
+
+/**
+ * {@link findReadableDuplicate}, never failing the request: the document is
+ * already stored by then, so a lookup that fails names nothing (fail closed)
+ * and the upload is answered as stored.
+ */
+async function readableDuplicate(
+  userId: string,
+  doc: { id: string; projectId: string; filename: string; checksum: string },
+): Promise<{ id: string; uploadedAt: Date } | null> {
+  try {
+    return await findReadableDuplicate(userId, doc);
+  } catch (err) {
+    log.warn("duplicate upload lookup failed", { documentId: doc.id, error: String(err) });
+    return null;
+  }
 }
 
 /** One row (or none) as `userId` may see it: see {@link readableDocumentRows}. */

@@ -127,6 +127,8 @@ describe("documents routes — indexing errorMessage (#98)", () => {
       workspaceId: "ws-a",
       workspace: { deletedAt: null, members: [{ id: "member-row" }] },
     });
+    // #2548 — an upload looks for an earlier copy of the same file: none here.
+    document.findMany.mockResolvedValue([]);
   });
 
   it("still 404s a caller outside the project's workspace before any row is read", async () => {

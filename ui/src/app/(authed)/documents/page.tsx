@@ -21,6 +21,7 @@ import {
 import { documentsApi, projectsApi, type DocumentRow, type Project } from "@/lib/projects-api";
 import { ApiError } from "@/lib/api-client";
 import { isUnreadableDocument } from "@/lib/document-access";
+import { documentStatusLabel } from "@/lib/project-pipeline";
 import { PageHeader } from "@/components/ui/page-header";
 import { DocumentName } from "@/components/projects/document-name";
 import { RestrictedBadge } from "@/components/projects/restricted-badge";
@@ -103,7 +104,8 @@ export default function DocumentsTopLevelPage() {
         ),
       },
       { key: "project", header: "Project", cell: (row) => row.projectName },
-      { key: "status", header: "Status", cell: (row) => row.status },
+      // #2548 — the project's Documents page's label: "awaiting review", not "ready".
+      { key: "status", header: "Status", cell: (row) => documentStatusLabel(row) },
       {
         key: "spec",
         header: "Spec",

@@ -461,6 +461,14 @@ export interface EnhancedUsageSummary {
   rows: EnhancedUsageRow[];
 }
 
+/** What `POST /projects/:id/documents` (and its `/url` and `/text` forms) answers. */
+export interface DocumentUploadResult {
+  document: DocumentRow;
+  ingest: { status: string; chunkCount: number };
+  /** #2548 — the earliest live copy of the same file, same name, the uploader can read. */
+  duplicateOf?: { id: string; uploadedAt: string };
+}
+
 export const documentsApi = {
   list: (projectId: string, params?: { limit?: number; offset?: number }) =>
     apiFetch<DocumentListPage>(`/projects/${projectId}/documents`, { params }),
@@ -475,13 +483,17 @@ export const documentsApi = {
     apiFetch<void>(`/projects/${projectId}/documents/${documentId}`, {
       method: "DELETE",
     }),
-  /** Multipart upload — bypasses `apiFetch`'s JSON encoding. */
+  /**
+   * Multipart upload — bypasses `apiFetch`'s JSON encoding. #2548 —
+   * `duplicateOf` names an earlier copy of the same file under the same name
+   * the uploader can read: the upload is kept, and the page warns.
+   */
   upload: async (
     projectId: string,
     file: File,
     /** #2555 — restrict the document from the start: it is created with this list. */
     aclSubjects: AclSubject[] = [],
-  ): Promise<{ document: DocumentRow; ingest: { status: string; chunkCount: number } }> => {
+  ): Promise<DocumentUploadResult> => {
     const fd = new FormData();
     if (aclSubjects.length > 0) fd.append("aclSubjects", JSON.stringify(aclSubjects));
     fd.append("file", file);
@@ -506,27 +518,23 @@ export const documentsApi = {
         payload?.error?.code,
       );
     }
-    return payload?.data as {
-      document: DocumentRow;
-      ingest: { status: string; chunkCount: number };
-    };
+    return payload?.data as DocumentUploadResult;
   },
   /** Issue #132 — fetch a public URL on the server, then ingest it. */
   createFromUrl: (projectId: string, body: { url: string; filename?: string }) =>
-    apiFetch<{
-      document: DocumentRow;
-      ingest: { status: string; chunkCount: number };
-      source: { url: string };
-    }>(`/projects/${projectId}/documents/url`, { method: "POST", body }),
+    apiFetch<DocumentUploadResult & { source: { url: string } }>(
+      `/projects/${projectId}/documents/url`,
+      { method: "POST", body },
+    ),
   /** Issue #132 — paste raw text directly into the project. */
   createFromText: (
     projectId: string,
     body: { filename: string; content: string; mimeType?: string },
   ) =>
-    apiFetch<{
-      document: DocumentRow;
-      ingest: { status: string; chunkCount: number };
-    }>(`/projects/${projectId}/documents/text`, { method: "POST", body }),
+    apiFetch<DocumentUploadResult>(`/projects/${projectId}/documents/text`, {
+      method: "POST",
+      body,
+    }),
   /** Epic #724 — toggle spec tag on a document (for spec-checking scan mode). */
   toggleSpec: (projectId: string, documentId: string, isSpec: boolean) =>
     apiFetch<DocumentRow>(`/projects/${projectId}/documents/${documentId}/spec`, {

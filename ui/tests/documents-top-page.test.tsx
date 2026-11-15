@@ -92,6 +92,20 @@ describe("<DocumentsTopLevelPage />", () => {
     expect(screen.getByText(/3 documents visible/)).toBeInTheDocument();
   });
 
+  it("#2548 — calls a quarantined document 'awaiting review', as the project's page does", async () => {
+    documentsListMock.mockImplementation(async (projectId: string) => ({
+      items:
+        projectId === "p1" ? [{ ...doc("d1", "p1", "alpha-1.md"), indexState: "quarantined" }] : [],
+      total: projectId === "p1" ? 1 : 0,
+      limit: 100,
+      offset: 0,
+    }));
+    renderPage();
+    const row = await screen.findByTestId("documents-top-row-d1");
+    expect(row).toHaveTextContent("awaiting review");
+    expect(row).not.toHaveTextContent(/\bready\b/);
+  });
+
   it("filters by project when the dropdown changes", async () => {
     renderPage();
     await waitFor(() => expect(screen.getByTestId("documents-top-table")).toBeInTheDocument());

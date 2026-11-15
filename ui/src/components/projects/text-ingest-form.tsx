@@ -10,6 +10,7 @@ import { useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { ApiError } from "@/lib/api-client";
 import { documentsApi, type DocumentRow } from "@/lib/projects-api";
+import { duplicateUploadWarning } from "@/components/projects/document-uploader";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -29,7 +30,11 @@ export function TextIngestForm({ projectId, onIngested }: Props) {
     mutationFn: () => documentsApi.createFromText(projectId, { filename, content }),
     onSuccess: (data) => {
       setError(null);
-      setStatus(`Saved ${data.document.filename} (${data.document.status})`);
+      // #2548 — the same content under the same name is kept, and said.
+      const duplicate = duplicateUploadWarning(data.duplicateOf);
+      setStatus(
+        `Saved ${data.document.filename} (${data.document.status})${duplicate ? `. ${duplicate}` : ""}`,
+      );
       setContent("");
       onIngested?.(data.document);
     },

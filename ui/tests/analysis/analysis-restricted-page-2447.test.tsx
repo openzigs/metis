@@ -107,11 +107,13 @@ const { COMPLETED } = vi.hoisted(() => {
           errorMessage: null,
           summary: "s",
           findings: [
+            // #2548 — both ambiguous: only the one the viewer can see offers Review.
             finding("f-hidden", "Restricted", {
               body: "This draws on sources you don't have access to, so its content is hidden.",
+              derivation: "ambiguous",
               restricted: true,
             }),
-            finding("f-open", "Cart keeps items"),
+            finding("f-open", "Cart keeps items", { derivation: "ambiguous" }),
           ],
         },
       ],
@@ -124,6 +126,8 @@ const { COMPLETED } = vi.hoisted(() => {
       ],
       crossDocFindings: null,
       sourceRequirements: [],
+      // #2548 — the server's count of what it hid from this viewer.
+      restrictedView: { narrative: false, rows: 2 },
     },
   };
 });
@@ -267,5 +271,38 @@ describe("Analysis page — what the viewer cannot see a source of (#2447)", () 
     await user.click(await screen.findByRole("tab", { name: /^Findings/ }));
     await screen.findByText("Cart keeps items");
     expect(screen.getAllByTestId("deep-dive-action")).toHaveLength(1);
+    // #2548 — nor a Review of an ambiguous one.
+    expect(screen.getAllByTestId("derivation-badge-review-button")).toHaveLength(1);
+  });
+
+  it("#2548 — says once, at the top of the run, why results read Restricted", async () => {
+    render(<AnalysisPage />, { wrapper: makeWrapper({ initialUser: userAs("coordinator") }) });
+    expect(await screen.findByTestId("change-request-restricted-notice")).toHaveTextContent(
+      "This analysis read documents you can't see",
+    );
+    // The narrative is not hidden here: the Outcome says nothing of it.
+    expect(screen.queryByTestId("analysis-outcome-restricted")).toBeNull();
+  });
+
+  it("#2548 — keeps the Outcome heading, with the reason, when the server hid the narrative", async () => {
+    const { analysisApi } = await import("@/lib/analysis-api");
+    const synthesis = {
+      ...COMPLETED.agentResults[0]!,
+      id: "ar-synthesis",
+      agentKey: "synthesis",
+      summary: null,
+      findings: [],
+    };
+    vi.mocked(analysisApi.get).mockResolvedValue({
+      ...COMPLETED,
+      agentResults: [...COMPLETED.agentResults, synthesis],
+      restrictedView: { narrative: true, rows: 2 },
+    } as never);
+    try {
+      render(<AnalysisPage />, { wrapper: makeWrapper({ initialUser: userAs("coordinator") }) });
+      expect(await screen.findByTestId("analysis-outcome-restricted")).toHaveTextContent("Outcome");
+    } finally {
+      vi.mocked(analysisApi.get).mockResolvedValue(COMPLETED as never);
+    }
   });
 });

@@ -33,6 +33,30 @@ function renderUploader() {
 }
 
 describe("DocumentUploader — additional branches", () => {
+  it("#2548 — warns on an upload the project already held, and says nothing otherwise", async () => {
+    const doc = { id: "d2", filename: "brief.md", status: "ready" };
+    mockUpload
+      .mockResolvedValueOnce({
+        document: doc,
+        ingest: { status: "ready", chunkCount: 1 },
+        duplicateOf: { id: "d1", uploadedAt: "2026-11-01T09:00:00.000Z" },
+      })
+      .mockResolvedValueOnce({ document: doc, ingest: { status: "ready", chunkCount: 1 } });
+    renderUploader();
+    const input = screen.getByTestId("upload-dropzone").querySelector("input")!;
+    fireEvent.change(input, {
+      target: { files: [new File(["x"], "brief.md", { type: "text/markdown" })] },
+    });
+    expect(await screen.findByTestId("upload-duplicate")).toHaveTextContent(
+      "This project already has this file under the same name",
+    );
+    fireEvent.change(input, {
+      target: { files: [new File(["y"], "other.md", { type: "text/markdown" })] },
+    });
+    await waitFor(() => expect(screen.getAllByTestId("upload-status-done")).toHaveLength(2));
+    expect(screen.getAllByTestId("upload-duplicate")).toHaveLength(1);
+  });
+
   it("rejects empty file (size=0)", async () => {
     renderUploader();
     const input = screen.getByTestId("upload-dropzone").querySelector("input")!;

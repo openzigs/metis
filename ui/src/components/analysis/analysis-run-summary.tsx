@@ -9,6 +9,10 @@
  * ready document, so an empty selection reads "all N documents", never "0".
  * #2185 — that count leaves out the connectors' code rows: see
  * `defaultRunDocumentCount` (`lib/project-pipeline.ts`).
+ *
+ * #2548 — and when it reads every document, it says how many restricted from
+ * the user it leaves out: a run reads with its starter's access (#2506).
+ *
  * #2555 — and it says how many of them are still awaiting review
  * (`runAwaitingReviewCount`): "uses all 3 documents" counted one an analyst
  * could not tell was unapproved.
@@ -19,6 +23,8 @@ interface Props {
   docCount: number;
   /** Number of documents the run reads when none is selected (`defaultRunDocumentCount`). */
   availableDocCount: number;
+  /** #2548 — ready documents restricted from the user (`restrictedRunDocumentCount`). */
+  restrictedDocCount?: number;
   /**
    * True when the loaded document list is only its first page, so
    * `availableDocCount` undercounts: the number is dropped rather than shown wrong.
@@ -47,18 +53,32 @@ function documentsLabel(
   return `all ${plural(availableDocCount)}`;
 }
 
+/** #2548 — the restricted documents a run with none ticked does not read, or null. */
+export function restrictedLeftOutLabel(
+  docCount: number,
+  restrictedDocCount: number,
+  listIsPartial: boolean,
+): string | null {
+  if (docCount > 0 || restrictedDocCount === 0) return null;
+  const n = listIsPartial ? `At least ${plural(restrictedDocCount)}` : plural(restrictedDocCount);
+  return `${n} you don't have access to ${restrictedDocCount === 1 ? "is" : "are"} left out.`;
+}
+
 export function AnalysisRunSummary({
   docCount,
   availableDocCount,
+  restrictedDocCount = 0,
   listIsPartial = false,
   hasRequirements,
   awaitingReviewCount = 0,
 }: Props): React.ReactElement {
+  const leftOut = restrictedLeftOutLabel(docCount, restrictedDocCount, listIsPartial);
   const awaiting = awaitingReviewCount > 0 ? ` (${awaitingReviewCount} awaiting review)` : "";
   return (
     <p className="text-xs text-muted-foreground" data-testid="analysis-run-summary">
       This run uses {documentsLabel(docCount, availableDocCount, listIsPartial)}
       {awaiting} + requirements provided: {hasRequirements ? "yes" : "no"}.
+      {leftOut ? <span data-testid="analysis-run-summary-restricted"> {leftOut}</span> : null}
     </p>
   );
 }

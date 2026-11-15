@@ -456,14 +456,11 @@ export const NO_WEB_SEARCH_PROVIDER_NOTICE =
 
 /**
  * #2506 — stated when a run a person started may rest on a file or document
- * only some of the project can read: its requirements would become search
- * queries sent to an outside service, so web research does not run at all.
- * The whole run's reads decide, not only the document pass's: a later pass's
- * findings can seed the list, and each rests on what the passes before it
- * read (fail closed).
+ * only some of the project can read (`@metis/shared`, #2548). The whole run's
+ * reads decide, not only the document pass's: a later pass's findings can seed
+ * the list, and each rests on what the passes before it read (fail closed).
  */
-export const RESTRICTED_READ_WEB_RESEARCH_NOTICE =
-  "Web research was skipped: this analysis read restricted files or documents with the access of the person who ran it, and nothing drawn from them is sent to an outside search service.";
+export { RESTRICTED_READ_WEB_RESEARCH_NOTICE } from "@metis/shared";
 
 /**
  * #864 — whether a real web search backend is configured. The stub is what

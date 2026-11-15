@@ -3522,6 +3522,9 @@ export class AnalysisOrchestrator {
           reviewRequired: 0,
           notice: RESTRICTED_READ_WEB_RESEARCH_NOTICE,
         },
+        // #2548 — `webResearch` is hidden from a reader who cannot see the
+        // whole run; this flag is not, so their settings line says "skipped".
+        webResearchWithheld: true,
       });
     } else if (input.enableWebResearch && structured.requirements.length > 0) {
       const augmenter = new WebResearchAugmenter({

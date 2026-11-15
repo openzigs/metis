@@ -24,7 +24,12 @@
  * a correct "Ten requirements were derived" into "0 requirements were derived",
  * the empty-but-successful presentation #1104 removed. `outcomeRequirementCount`
  * makes that call.
+ *
+ * #2548 — a viewer who cannot see the run as a whole is sent no summary (the
+ * narrative rests on everything the run read). The section stays, saying why,
+ * so the Summary does not silently lose its Outcome for them.
  */
+import { RESTRICTED_OUTCOME_BODY } from "@metis/shared";
 
 interface OutcomeAgent {
   agentKey: string;
@@ -111,9 +116,12 @@ export function AnalysisOutcomeCard({
   status,
   agentResults,
   requirementCount,
+  narrativeHidden = false,
 }: {
   status: string;
   agentResults: readonly OutcomeAgent[];
+  /** #2548 — the server hid the run's narrative from this viewer (`restrictedView.narrative`). */
+  narrativeHidden?: boolean;
   /**
    * Issue #994 — the requirement rows stored for this run, from
    * `outcomeRequirementCount`; omit when they are not the summary's set.
@@ -121,7 +129,25 @@ export function AnalysisOutcomeCard({
   requirementCount?: number;
 }): React.ReactElement | null {
   if (status !== "completed") return null;
-  const raw = agentResults.find((a) => a.agentKey === "synthesis")?.summary?.trim();
+  const synthesis = agentResults.find((a) => a.agentKey === "synthesis");
+  if (narrativeHidden && synthesis) {
+    return (
+      <section
+        data-testid="analysis-outcome-restricted"
+        aria-labelledby="analysis-outcome-heading"
+        className="rounded border border-dashed border-border bg-muted/20 p-4"
+      >
+        <h4
+          id="analysis-outcome-heading"
+          className="mb-2 text-sm font-semibold uppercase tracking-wide text-muted-foreground"
+        >
+          Outcome
+        </h4>
+        <p className="text-sm text-muted-foreground">{RESTRICTED_OUTCOME_BODY}</p>
+      </section>
+    );
+  }
+  const raw = synthesis?.summary?.trim();
   if (!raw) return null;
   const summary =
     requirementCount === undefined ? raw : reconcileRequirementCount(raw, requirementCount);

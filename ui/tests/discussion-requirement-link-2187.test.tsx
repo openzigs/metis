@@ -7,6 +7,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { RESTRICTED_SOURCE_BODY } from "@metis/shared";
 import { makeWrapper } from "./test-utils";
 
 vi.mock("@/lib/socket-client", () => ({ closeSocket: vi.fn(), useSocket: () => null }));
@@ -209,6 +210,23 @@ describe("the thread page names its requirement (#2187)", () => {
     const link = await screen.findByRole("link", { name: READ_AT.title });
     expect(link).toHaveAttribute("href", requirementHref("p-1", READ_AT));
     expect(screen.getByTestId("discussion-requirement")).toHaveTextContent("About requirement:");
+  });
+
+  it("#2548 — says why a restricted requirement reads 'Restricted', and links nowhere", async () => {
+    listThreadsMock.mockResolvedValue([
+      thread({
+        requirementId: "req-1",
+        requirement: { id: "req-1", title: "Restricted", analysisId: "an-1", restricted: true },
+      }),
+    ]);
+    renderWith(<DiscussionThreadPage />);
+    expect(await screen.findByTestId("discussion-requirement-restricted")).toHaveTextContent(
+      RESTRICTED_SOURCE_BODY,
+    );
+    expect(screen.getByTestId("discussion-requirement")).toHaveTextContent(
+      "About requirement: Restricted",
+    );
+    expect(screen.queryByRole("link", { name: "Restricted" })).toBeNull();
   });
 
   it("shows no requirement line for an unattached thread", async () => {

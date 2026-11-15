@@ -102,6 +102,22 @@ describe("TextIngestForm", () => {
     expect(onIngested).toHaveBeenCalled();
   });
 
+  it("#2548 — says when the project already had this content under this name", async () => {
+    const user = userEvent.setup();
+    createFromText.mockResolvedValueOnce({
+      document: { filename: "note.md", status: "ready" },
+      duplicateOf: { id: "d-earlier", uploadedAt: "2026-11-01T09:00:00.000Z" },
+    });
+    renderForm();
+    await user.type(screen.getByTestId("text-ingest-content"), "Hello world");
+    await user.click(screen.getByTestId("text-ingest-submit"));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Saved note\.md.*already has this file under the same name/i),
+      ).toBeInTheDocument(),
+    );
+  });
+
   it("shows API error on failure", async () => {
     const user = userEvent.setup();
     createFromText.mockRejectedValueOnce(new ApiError(413, "Content too large"));

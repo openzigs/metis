@@ -10,7 +10,7 @@
  * its project), live, and not rejected or deferred: a rejected requirement is
  * not part of the change, a deferred one not part of this change.
  */
-import type { PortfolioNotChecked } from "@metis/shared";
+import { ALL_REQUIREMENTS_RESTRICTED_MESSAGE, type PortfolioNotChecked } from "@metis/shared";
 import { AppError } from "../../middleware/error-handler.js";
 import { prisma } from "../prisma.js";
 import { readerChangeRequestTitles, sourcelessRunTitle } from "./change-request.js";
@@ -130,13 +130,18 @@ export function restrictedNotChecked(source: ChangeRequestSource): PortfolioNotC
   ];
 }
 
-/** A change request with no requirement to check is a 400, said in words. */
+/**
+ * A change request with no requirement to check is a 400, said in words.
+ * #2548 — when the reader's access left every one out, the words say that.
+ */
 export function assertHasRequirements(source: ChangeRequestSource): void {
   if (source.requirements.length === 0) {
     throw new AppError(
       400,
       "NO_REQUIREMENTS",
-      "This change request has no draft or approved requirements to check yet.",
+      source.restrictedLeftOut > 0
+        ? ALL_REQUIREMENTS_RESTRICTED_MESSAGE
+        : "This change request has no draft or approved requirements to check yet.",
     );
   }
 }

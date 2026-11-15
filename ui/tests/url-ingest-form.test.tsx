@@ -122,6 +122,30 @@ describe("UrlIngestForm", () => {
     expect(onIngested).toHaveBeenCalled();
   });
 
+  it("#2548 — says when the project already had this content under this name", async () => {
+    createFromUrl.mockResolvedValueOnce({
+      document: { filename: "page.md", status: "ready" },
+      duplicateOf: { id: "d-earlier", uploadedAt: "2026-11-01T09:00:00.000Z" },
+    });
+    renderForm();
+    setUrl("https://example.com/docs/page.md");
+    submitForm();
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Imported page\.md.*already has this file under the same name/i),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("says nothing of a copy when there is none", async () => {
+    createFromUrl.mockResolvedValueOnce({ document: { filename: "page.md", status: "ready" } });
+    renderForm();
+    setUrl("https://example.com/docs/page.md");
+    submitForm();
+    await waitFor(() => expect(screen.getByText(/Imported page\.md/i)).toBeInTheDocument());
+    expect(screen.queryByText(/already has this file/i)).toBeNull();
+  });
+
   it("calls API with valid http URL", async () => {
     createFromUrl.mockResolvedValueOnce({
       document: { filename: "doc.md", status: "processing" },

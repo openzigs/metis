@@ -420,6 +420,11 @@ export interface AnalysisEnhancementPatch {
   /** Issue #1058 — set on a failed extraction; `null` clears it on a good one. */
   structuredExtractionFailure?: StructuredExtractionFailure | null;
   webResearch?: WebResearchResult;
+  /**
+   * #2548 — web research was asked for and not run: the run read restricted
+   * material (#2506). A flag only, kept for every reader (the settings line).
+   */
+  webResearchWithheld?: true;
   /** Epic #202 (#216) — promotion-gating state from the approval checkpoints. */
   promotionBlocked?: PromotionBlockedState;
   /** #256 — coarse promotion outcome; written in the same patch as the marker. */
@@ -586,6 +591,7 @@ function applyEnhancementPatch(
     next.structuredExtractionFailure = patch.structuredExtractionFailure;
   }
   if (patch.webResearch !== undefined) next.webResearch = patch.webResearch;
+  if (patch.webResearchWithheld !== undefined) next.webResearchWithheld = patch.webResearchWithheld;
   if (patch.promotionBlocked !== undefined) next.promotionBlocked = patch.promotionBlocked;
   if (patch.promotionStatus !== undefined) next.promotionStatus = patch.promotionStatus;
   if (patch.retrieval !== undefined) next.retrieval = patch.retrieval;

@@ -60,6 +60,7 @@ vi.mock("@/lib/connectors-api", () => ({ repoConnectorsApi: { list: vi.fn() } })
 import { projectsApi, documentsApi } from "@/lib/projects-api";
 import { repoConnectorsApi } from "@/lib/connectors-api";
 import { ApiError } from "@/lib/api-client";
+import { DELETE_DOCUMENT_HINT, DELETE_RESTRICTED_HINT } from "@/lib/document-access";
 import ProjectDocumentsPage from "@/app/(authed)/projects/[id]/documents/page";
 
 const get = projectsApi.get as unknown as ReturnType<typeof vi.fn>;
@@ -271,5 +272,73 @@ describe("ProjectDocumentsPage", () => {
 
     await waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(callsBefore));
     await waitFor(() => expect(screen.getByText(/12 sections indexed/)).toBeInTheDocument());
+  });
+});
+
+describe("#2548 — Delete and the quarantine link on the project's Documents page", () => {
+  const hintOf = (el: HTMLElement) =>
+    el.closest("[data-hover-hint]")?.getAttribute("title") ?? null;
+  const rows = [
+    { id: "d-open", filename: "spec.md", status: "ready", chunkCount: 1, sizeBytes: 10 },
+    {
+      id: "d-hidden",
+      filename: "Restricted",
+      status: "processing",
+      indexState: "quarantined",
+      restricted: true,
+      chunkCount: 1,
+      sizeBytes: 10,
+    },
+    {
+      id: "d-review",
+      filename: "notes.md",
+      status: "processing",
+      indexState: "quarantined",
+      chunkCount: 1,
+      sizeBytes: 10,
+    },
+  ];
+  const renderAs = (role: "coordinator" | "admin") => {
+    get.mockResolvedValue({ id: "p1", name: "Proj", slug: "proj", status: "active" });
+    list.mockResolvedValue({ items: rows });
+    const Wrapper = makeWrapper({
+      initialUser: {
+        id: "u-1",
+        username: "u",
+        displayName: "U",
+        email: "u@example.test",
+        role,
+        permissions: [],
+      },
+    });
+    render(
+      <Wrapper>
+        <ProjectDocumentsPage />
+      </Wrapper>,
+    );
+  };
+
+  it("disables Delete with the permission it needs for a role without document.delete", async () => {
+    renderAs("coordinator");
+    const del = await screen.findByTestId("document-delete-d-open");
+    expect(del).toBeDisabled();
+    expect(hintOf(del)).toBe(DELETE_DOCUMENT_HINT);
+    expect(DELETE_DOCUMENT_HINT).toContain("document.delete");
+  });
+
+  it("offers Delete to a role with it, but not on a document restricted from the viewer", async () => {
+    renderAs("admin");
+    expect(await screen.findByTestId("document-delete-d-open")).toBeEnabled();
+    const hidden = screen.getByTestId("document-delete-d-hidden");
+    expect(hidden).toBeDisabled();
+    expect(hintOf(hidden)).toBe(DELETE_RESTRICTED_HINT);
+  });
+
+  it("links a readable quarantined document to the queue, never a restricted one", async () => {
+    renderAs("admin");
+    expect(await screen.findByTestId("document-quarantine-link-d-review")).toBeInTheDocument();
+    expect(screen.queryByTestId("document-quarantine-link-d-hidden")).toBeNull();
+    // Both still say they await review, as the top-level Documents page does.
+    expect(screen.getByTestId("document-row-d-hidden")).toHaveTextContent("awaiting review");
   });
 });

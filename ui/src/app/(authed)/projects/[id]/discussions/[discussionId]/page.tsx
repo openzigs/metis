@@ -11,6 +11,7 @@
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { RESTRICTED_SOURCE_BODY } from "@metis/shared";
 import { useAuth } from "@/lib/auth-context";
 import { listThreads, requirementHref, type AiResponseMode } from "@/lib/discussions-api";
 import { DiscussionThreadView } from "@/components/chat/discussion-thread-view";
@@ -49,12 +50,25 @@ export default function DiscussionThreadPage() {
           requirement ? (
             <span data-testid="discussion-requirement">
               About requirement:{" "}
-              <Link
-                href={requirementHref(projectId, requirement)}
-                className="font-medium text-primary hover:underline"
-              >
-                {requirement.title}
-              </Link>
+              {requirement.restricted ? (
+                // #2548 — a placeholder links nowhere; say why it reads "Restricted".
+                <>
+                  <span className="font-medium">{requirement.title}</span>
+                  <span
+                    className="block text-xs text-muted-foreground"
+                    data-testid="discussion-requirement-restricted"
+                  >
+                    {RESTRICTED_SOURCE_BODY}
+                  </span>
+                </>
+              ) : (
+                <Link
+                  href={requirementHref(projectId, requirement)}
+                  className="font-medium text-primary hover:underline"
+                >
+                  {requirement.title}
+                </Link>
+              )}
             </span>
           ) : undefined
         }

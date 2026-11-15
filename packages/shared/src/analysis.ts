@@ -1670,6 +1670,43 @@ export const RESTRICTED_SOURCE_BODY =
   "This draws on sources you don't have access to, so its content is hidden.";
 
 /**
+ * #2548 — how much of a run its reader is shown as restricted: set by the
+ * server's redaction only when something is hidden from them, absent otherwise.
+ * Counts only, never what was hidden.
+ */
+export interface AnalysisRestrictedView {
+  /** The run's narrative (the outcome summary, each agent's notes) is hidden. */
+  narrative: boolean;
+  /** Findings, requirements and cross-document findings shown as the placeholder. */
+  rows: number;
+}
+
+/** #2548 — said once at the top of a run its reader cannot see all of. */
+export const RESTRICTED_RUN_NOTICE =
+  "This analysis read documents you can't see; results that may draw on them are hidden.";
+
+/**
+ * #2548 — why a change request has nothing for this reader to check when every
+ * requirement it holds rests on a source they cannot see. A count only. The
+ * server's 400 and the checks panel say this one sentence.
+ */
+export const ALL_REQUIREMENTS_RESTRICTED_MESSAGE =
+  "Every requirement of this change request draws on sources you don't have access to, so there is nothing you can check. Someone who can see them can run the check.";
+
+/** #2548 — the run's Outcome, when its reader cannot see the run as a whole. */
+export const RESTRICTED_OUTCOME_BODY =
+  "The outcome draws on documents you don't have access to, so it is hidden.";
+
+/**
+ * #2506 — stated when a run a person started may rest on a file or document
+ * only some of the project can read: its requirements would become search
+ * queries sent to an outside service, so web research does not run at all.
+ * #2548 — shared, so the run's settings line can say web research was skipped.
+ */
+export const RESTRICTED_READ_WEB_RESEARCH_NOTICE =
+  "Web research was skipped: this analysis read restricted files or documents with the access of the person who ran it, and nothing drawn from them is sent to an outside search service.";
+
+/**
  * Snapshot of an analysis returned by `GET /api/analyses/:id` and pushed over
  * Socket.IO when the run completes.
  */
@@ -1705,6 +1742,8 @@ export interface AnalysisSnapshot {
    * when the ledger could not be read.
    */
   ledgerUsage?: AnalysisLedgerUsage | null;
+  /** #2548 — what of this run its reader is shown as restricted; absent when nothing is. */
+  restrictedView?: AnalysisRestrictedView;
   errorMessage: string | null;
   /**
    * Issue #1143 — the agents whose result failed ({@link analysisFailedAgents}).
@@ -1728,7 +1767,8 @@ export interface AnalysisSnapshot {
    * #2554 — the reader cannot see every document this run read (#2447's
    * "run as a whole"): what rests on it is shown to them as "Restricted", and
    * run-wide actions (Regenerate, Cancel, resume) are refused them. Absent
-   * otherwise.
+   * otherwise. Set by the snapshot route from `restrictedView.narrative`, its
+   * one source, and never for an admin, whom those actions are not refused.
    */
   runRestricted?: true;
   metadata: Record<string, unknown> | null;

@@ -294,6 +294,8 @@ export function discussionsRouter(): Router {
                 id: requirement.id,
                 title: hidden.has(requirement.id) ? RESTRICTED_SOURCE_TITLE : requirement.title,
                 analysisId: requirement.analysisId,
+                // #2548 — so the thread's header says why, and links nowhere.
+                ...(hidden.has(requirement.id) ? { restricted: true as const } : {}),
               }
             : null,
       })),

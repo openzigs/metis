@@ -38,6 +38,8 @@ interface QueueItem {
   file: File;
   status: "queued" | "uploading" | "done" | "error";
   message?: string;
+  /** #2548 — the project already held this file under this name. */
+  warning?: string;
   document?: DocumentRow;
 }
 
@@ -82,6 +84,19 @@ export function uploadOutcomeMessage(ingest: { status: string; chunkCount: numbe
   }
   if (ingest.status === "failed") return "indexing failed — see the document list";
   return "indexing in the background — the document list shows progress";
+}
+
+/**
+ * #2548 — said on an upload the project already held under the same name with
+ * the same content: kept (a second copy may be meant), never silently.
+ */
+export function duplicateUploadWarning(
+  duplicateOf: { uploadedAt: string } | undefined,
+): string | null {
+  if (!duplicateOf) return null;
+  const when = new Date(duplicateOf.uploadedAt);
+  const since = Number.isNaN(when.getTime()) ? "" : ` (uploaded ${when.toLocaleString()})`;
+  return `This project already has this file under the same name${since}. This upload is a second copy: delete one if you didn't mean to add it twice.`;
 }
 
 export function DocumentUploader({ projectId, onUploaded }: Props) {
@@ -130,6 +145,7 @@ export function DocumentUploader({ projectId, onUploaded }: Props) {
                   status: "done",
                   document: result.document,
                   message: uploadOutcomeMessage(result.ingest),
+                  warning: duplicateUploadWarning(result.duplicateOf) ?? undefined,
                 }
               : q,
           ),
@@ -270,6 +286,11 @@ export function DocumentUploader({ projectId, onUploaded }: Props) {
                 <span className="ml-2 text-xs text-muted-foreground">
                   {(item.file.size / 1024).toFixed(1)} KB
                 </span>
+                {item.warning ? (
+                  <p role="status" className="text-xs text-warning" data-testid="upload-duplicate">
+                    {item.warning}
+                  </p>
+                ) : null}
               </div>
               <div className="flex items-center gap-2">
                 <span
