@@ -82,7 +82,8 @@ export class ProjectDocumentsPage {
     if (person) {
       await editor.getByLabel("Kind", { exact: true }).selectOption("user");
       await editor.getByLabel("Person", { exact: true }).fill(person);
-      await editor.getByRole("button", { name: new RegExp(`^${person}`) }).click();
+      // The option reads "<display name> @<username>"; a string name matches it as a substring.
+      await editor.getByRole("button", { name: person }).click();
       await expect(editor.getByTestId("acl-subjects")).toContainText(person);
     }
     await editor.getByRole("button", { name: "Save access list" }).click();
