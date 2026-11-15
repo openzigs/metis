@@ -86,6 +86,12 @@ vi.mock("../lib/analysis/index.js", () => ({
   loadFindingForDeepDive: vi.fn(),
 }));
 
+// #2554 — which checkpoints the caller may decide is pinned over a real
+// database in tests/restricted-checkpoints-2554.sqlite.test.ts; here every one.
+vi.mock("../lib/analysis/checkpoint-access.js", () => ({
+  checkpointRows: async () => [],
+  hiddenCheckpointIds: async () => new Set<string>(),
+}));
 vi.mock("../lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 vi.mock("../lib/ai/index.js", () => ({
   buildProvider: vi.fn(() => ({})),

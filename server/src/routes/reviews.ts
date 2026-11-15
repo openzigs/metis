@@ -31,7 +31,8 @@ import { requireAuth } from "../middleware/auth.js";
 import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
-import { userSourceReader } from "../lib/analysis/source-redaction.js";
+import { restrictedIds, userSourceReader } from "../lib/analysis/source-redaction.js";
+import { audit } from "../lib/audit/audit-service.js";
 import { redactReviewFor, redactReviewsFor } from "../lib/reviews/review-redaction.js";
 import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
 import { workspaceScopeWhere } from "../lib/auth/project-scope.js";
@@ -108,6 +109,39 @@ async function assertReviewAccess(req: Request, reviewId: string): Promise<void>
   }
 }
 
+/**
+ * #2554 — a review asks colleagues to sign off requirements, so its requester
+ * must be able to see each one: a requirement of `projectId` resting on a
+ * source they cannot see (#2447) is refused (403), as a checkpoint they cannot
+ * see is. It is listed to them as "Restricted", so the refusal names nothing
+ * new; audited as `review.create.denied`. An id of no requirement of the
+ * project is left to the item resolution, which answers 404.
+ */
+async function refuseRestrictedReviewItems(
+  userId: string,
+  projectId: string,
+  requirementIds: readonly string[],
+): Promise<void> {
+  if (requirementIds.length === 0) return;
+  const rows = await prisma.requirement.findMany({
+    where: { id: { in: [...new Set(requirementIds)] }, projectId, deletedAt: null },
+    select: { id: true, analysisId: true, sourceIds: true },
+  });
+  const restricted = await restrictedIds(userSourceReader(userId), rows);
+  if (restricted.size === 0) return;
+  audit({
+    actor: { id: userId },
+    action: "review.create.denied",
+    target: { type: "project", id: projectId },
+    metadata: { reason: "source-restricted", requirementIds: [...restricted] },
+  });
+  throw new AppError(
+    403,
+    "REVIEW_ITEM_RESTRICTED",
+    "Some of these requirements rest on a document you cannot read, so you cannot ask for a review of them. Leave them out, or ask one of its readers or an admin.",
+  );
+}
+
 function isReviewAdmin(role: RoleKey): boolean {
   return hasPermission(role, "review.admin");
 }
@@ -157,6 +191,11 @@ export function projectReviewsRouter(): Router {
           issues: parsed.error.flatten(),
         });
       }
+      await refuseRestrictedReviewItems(
+        userId,
+        projectId,
+        parsed.data.items.flatMap((i) => (i.requirementId ? [i.requirementId] : [])),
+      );
       // #2436 — the requester may name themselves only where the project allows
       // self-approval and they could approve directly (`requirement.approve`).
       const review = await createReviewRequest(userId, projectId, parsed.data, {

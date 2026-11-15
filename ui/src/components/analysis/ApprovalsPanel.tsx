@@ -95,6 +95,20 @@ interface ApprovalsPanelProps {
  * promotes it awaiting review, not approved (#2436). Said before the click,
  * not only in the toast after it.
  */
+/**
+ * #2554 — said on a checkpoint the viewer cannot see the entry of, in place of
+ * the decision the server would refuse them.
+ */
+export const RESTRICTED_CHECKPOINT_NOTICE =
+  "This checkpoint rests on a document you don't have access to, so you can't approve, reject or edit it. Ask one of its readers or an admin.";
+
+/** #2554 — why Approve all (and leave out the added) is not offered. */
+export function describeRestrictedPending(count: number): string {
+  const which =
+    count === 1 ? "one of these checkpoints rests" : `${count} of these checkpoints rest`;
+  return `Approve all isn't offered: ${which} on a document you don't have access to. Decide the others one by one.`;
+}
+
 export const HELD_FOR_REVIEW_NOTICE =
   "You edited this requirement, so approving it holds it for a colleague's review: it is saved awaiting review, not approved. An admin can allow self-approval in Project settings → Approval gate.";
 
@@ -598,7 +612,14 @@ function ApprovalCard({
         </div>
       )}
 
-      {!isResolved && (
+      {/* #2554 — no decision on what the viewer cannot see: the server refuses it. */}
+      {approval.restricted && (
+        <p data-testid="approval-restricted" className="text-xs text-muted-foreground">
+          {RESTRICTED_CHECKPOINT_NOTICE}
+        </p>
+      )}
+
+      {!isResolved && !approval.restricted && (
         <div className="space-y-2">
           {/* #1568 — what approving this one would do, said before it is done. */}
           {approval.noCodeEvidence && (
@@ -663,7 +684,7 @@ function ApprovalCard({
         <p className="text-xs text-muted-foreground">Note: {approval.reviewNote}</p>
       )}
 
-      {approval.status === "rejected" && (
+      {approval.status === "rejected" && !approval.restricted && (
         <div className="space-y-1">
           <Button
             size="sm"
@@ -1019,6 +1040,8 @@ export function ApprovalsPanel({
   const pending = items.filter((a) => a.status === "pending");
   const resolved = items.filter((a) => a.status !== "pending");
   const split = splitPendingByOrigin(pending);
+  // #2554 — a set decided at once is refused while any of it is restricted.
+  const restrictedPending = pending.filter((a) => a.restricted).length;
   const renderPending = (approval: ApprovalRequestPayload, i: number): React.ReactElement => (
     <ApprovalCard
       key={approval.id}
@@ -1091,15 +1114,21 @@ export function ApprovalsPanel({
             <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
               Pending ({pending.length})
             </p>
-            <ApproveAllPending
-              projectId={projectId}
-              analysisId={analysisId}
-              pendingCount={pending.length}
-              approvesAsDraft={approvesAsDraft}
-              openEdits={pending.filter((a) => drafts[a.id]).length}
-              heldCount={pending.filter(heldIfApproved).length}
-              onChange={() => query.refetch()}
-            />
+            {restrictedPending > 0 ? (
+              <p data-testid="approve-all-restricted" className="text-xs text-muted-foreground">
+                {describeRestrictedPending(restrictedPending)}
+              </p>
+            ) : (
+              <ApproveAllPending
+                projectId={projectId}
+                analysisId={analysisId}
+                pendingCount={pending.length}
+                approvesAsDraft={approvesAsDraft}
+                openEdits={pending.filter((a) => drafts[a.id]).length}
+                heldCount={pending.filter(heldIfApproved).length}
+                onChange={() => query.refetch()}
+              />
+            )}
           </div>
           {describeNoCodeEvidence(pending) && (
             <p
@@ -1132,13 +1161,15 @@ export function ApprovalsPanel({
                     <p className="text-sm font-medium">
                       Added by the analysis ({split.added.length})
                     </p>
-                    <LeaveOutAdded
-                      projectId={projectId}
-                      analysisId={analysisId}
-                      addedCount={split.added.length}
-                      openEdits={split.added.filter((a) => drafts[a.id]).length}
-                      onChange={() => query.refetch()}
-                    />
+                    {!split.added.some((a) => a.restricted) && (
+                      <LeaveOutAdded
+                        projectId={projectId}
+                        analysisId={analysisId}
+                        addedCount={split.added.length}
+                        openEdits={split.added.filter((a) => drafts[a.id]).length}
+                        onChange={() => query.refetch()}
+                      />
+                    )}
                   </div>
                   <p className="text-xs text-muted-foreground">
                     None of the ticked items asked for these. They are offered, not promoted: each

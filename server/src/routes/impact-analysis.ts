@@ -705,18 +705,24 @@ async function assertRequirementsReadable(
     }
   }
   await assertProjectsAccessible(actor, [...new Set(rows.map((r) => r.projectId))]);
-  // #2447 — a requirement resting on a source the caller cannot see is refused
-  // as an unreadable one is: the run would read its text for them.
+  // #2447 — a requirement resting on a source the caller cannot see is refused:
+  // the run would read its text for them. #2554 — with the not-found answer the
+  // other routes give such a requirement (its project is not the cause), and
+  // audited as the document refusal below is.
   const restricted = await restrictedIds(
     userSourceReader(actor.id),
     rows.filter((r) => !r.deletedAt),
   );
   if (restricted.size > 0) {
-    throw new AppError(
-      403,
-      "FORBIDDEN",
-      "You do not have access to one or more requested projects",
-    );
+    for (const id of restricted) {
+      audit({
+        actor: { id: actor.id },
+        action: "impact_analysis.requirement.denied",
+        target: { type: "requirement", id },
+        metadata: { reason: "source-restricted" },
+      });
+    }
+    throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
   }
 }
 
