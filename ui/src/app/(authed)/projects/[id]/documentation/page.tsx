@@ -239,7 +239,10 @@ export default function DocumentationPage(): React.ReactElement {
     queryKey: ["generated-docs", projectId],
     queryFn: () => apiFetch<GeneratedDoc[]>(`/projects/${projectId}/docs`),
     enabled: Boolean(projectId),
-    refetchInterval: (q) => indexingPollInterval(q.state.data),
+    // #2191 — the list is hidden while a document is open, and the detail
+    // polls that one; one poller, not two (the list read checks every
+    // document's legacy index server-side).
+    refetchInterval: (q) => (selectedDoc ? false : indexingPollInterval(q.state.data)),
   });
 
   // Fetch single doc detail

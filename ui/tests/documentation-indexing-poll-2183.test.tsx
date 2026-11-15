@@ -136,4 +136,50 @@ describe("DocumentationPage — a just-finished BRD's index", () => {
     });
     expect(detailReads()).toBe(settled);
   });
+
+  it("#2191 — while a document is open only its detail polls; the list resumes on Back", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: NOW });
+    const base = {
+      id: "doc_1",
+      title: "BRD",
+      scope: "full",
+      status: "ready",
+      autoUpdate: false,
+      generatedAt: iso(20_000),
+      createdAt: iso(1_000_000),
+      indexing: pending,
+    };
+    mockApiFetch.mockImplementation(async (path: string) => {
+      if (/\/docs\/doc_1$/.test(path)) return { ...base, content: "# BRD\n", versions: [] };
+      if (/\/docs$/.test(path)) return [base];
+      return [];
+    });
+    const reads = (re: RegExp) =>
+      mockApiFetch.mock.calls.filter(([p]) => re.test(String(p))).length;
+    const listReads = () => reads(/\/docs$/);
+    const detailReads = () => reads(/\/docs\/doc_1$/);
+    const Wrapper = makeWrapper({ withAuth: false });
+    render(
+      <Wrapper>
+        <DocumentationPage />
+      </Wrapper>,
+    );
+    fireEvent.click(await screen.findByTestId("doc-card-doc_1"));
+    await screen.findByTestId("doc-indexing-summary");
+
+    const listBefore = listReads();
+    const detailBefore = detailReads();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(INDEXING_POLL_MS * 3 + 100);
+    });
+    expect(detailReads()).toBeGreaterThanOrEqual(detailBefore + 3);
+    expect(listReads()).toBe(listBefore);
+
+    // Back on the list, the list polls again while the index is pending.
+    fireEvent.click(screen.getByRole("button", { name: /Back/ }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(INDEXING_POLL_MS * 2 + 100);
+    });
+    expect(listReads()).toBeGreaterThan(listBefore);
+  });
 });

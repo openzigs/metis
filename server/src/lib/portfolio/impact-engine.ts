@@ -91,9 +91,9 @@ const MAX_CALL_SITES = 10;
 const MAX_CONTRACT_ITEMS = 20;
 const MAX_SHARED_OBJECTS = 20;
 /** #1963 — links one product keeps, at most, of each edge kind. */
-const MAX_LINKS_PER_KIND = 5;
-/** #2183 — resources one link keeps, at most. */
-const MAX_LINK_RESOURCES = 10;
+export const MAX_LINKS_PER_KIND = 5;
+/** #2183 — resources one link keeps, at most. Bounds how far a stored link, and so the report's touches, can grow. */
+export const MAX_LINK_RESOURCES = 10;
 
 // ─── Result ─────────────────────────────────────────────────────────────────
 
@@ -919,8 +919,9 @@ function linkKey(l: ImpactLink): string {
  * #1963 — record a link on `target`, once, and at most `MAX_LINKS_PER_KIND` of
  * its kind. #2183 — a link already recorded gains the new one's resources (up
  * to `MAX_LINK_RESOURCES`), so a second table between the same repos is kept.
+ * Exported for unit testing (#2191).
  */
-function addLink(target: ProductImpact, link: ImpactLink): void {
+export function addLink(target: ProductImpact, link: ImpactLink): void {
   const sameKind = target.links.filter((l) => l.integrationKind === link.integrationKind);
   const known = sameKind.find((l) => linkKey(l) === linkKey(link));
   if (known) {
