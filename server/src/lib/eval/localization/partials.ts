@@ -6,7 +6,8 @@
  *
  *   <dir>/<corpus>/config.json                    the run's configuration (fingerprint)
  *   <dir>/<corpus>/<arm>/run-<n>/<item>.json      one score: corpus × arm × run × item
- *   <dir>/spend/<invocation>.json                 spend outside requirements (the table guard)
+ *   <dir>/spend/<invocation>.json                 spend outside requirements (the table guard,
+ *                                                 and the calls of a requirement still running)
  *
  * The configuration is written by the first slice and checked by every later
  * one: a changed arm configuration, model, run count or corpus refuses to
@@ -19,6 +20,7 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import type { AIProvider } from "../../ai/types.js";
 import type { LocalizationArm } from "./arms.js";
 import type { LocalizationCorpus, LocalizationItem } from "./corpus.js";
 import type { CostMeter } from "./cost.js";
@@ -179,6 +181,10 @@ export class PartialStore {
   /** Spend and unpriced calls this process recorded into requirement files. */
   private writtenUsd = 0;
   private writtenUnpriced = 0;
+  /** #2560 — the invocation whose other-spend file {@link refreshTrackedSpend} keeps current. */
+  private tracked?: { invocation: string; meter: CostMeter };
+  /** Whether this process has written its other-spend file, so a later $0 must overwrite it. */
+  private otherWritten = false;
 
   constructor(readonly dir: string) {}
 
@@ -311,6 +317,8 @@ export class PartialStore {
         await writeJsonAtomic(this.recordFile(corpus.name, score.arm, score.run, score.item), rec);
         this.writtenUsd += score.spentUsd;
         this.writtenUnpriced += score.unpricedCalls;
+        // The requirement's calls now live in its file: take them out of the other-spend file.
+        await this.refreshTrackedSpend();
       },
     };
   }
@@ -380,12 +388,48 @@ export class PartialStore {
   async recordOtherSpend(invocation: string, meter: CostMeter): Promise<void> {
     const spentUsd = Math.max(0, meter.spentUsd() - this.writtenUsd);
     const unpricedCalls = Math.max(0, meter.unpricedCalls() - this.writtenUnpriced);
-    if (spentUsd < 1e-9 && unpricedCalls === 0) return;
+    if (spentUsd < 1e-9 && unpricedCalls === 0 && !this.otherWritten) return;
     await writeJsonAtomic(path.join(this.dir, "spend", `${segment(invocation)}.json`), {
       spentUsd,
       unpricedCalls,
     });
+    this.otherWritten = true;
   }
+
+  /**
+   * #2560 review — keep `invocation`'s other-spend file current as `meter`
+   * spends: on every requirement recorded, and on every model call made
+   * through {@link recordingSpendPerCall}. A slice killed mid-requirement then
+   * loses only the call in flight, whose usage never arrived.
+   */
+  trackSpend(invocation: string, meter: CostMeter): void {
+    this.tracked = { invocation, meter };
+  }
+
+  /** Rewrite the tracked invocation's other-spend file; nothing when none is tracked. */
+  async refreshTrackedSpend(): Promise<void> {
+    if (this.tracked) await this.recordOtherSpend(this.tracked.invocation, this.tracked.meter);
+  }
+}
+
+/**
+ * #2560 review — the provider with the store's other-spend file rewritten after
+ * every `chat` call (wrap the METERED provider, so the call is on the meter
+ * first). The eval's model calls run one at a time, so the writes never race.
+ */
+export function recordingSpendPerCall(provider: AIProvider, store: PartialStore): AIProvider {
+  return new Proxy(provider, {
+    get(target, prop, receiver) {
+      if (prop === "chat") {
+        return async (...args: Parameters<AIProvider["chat"]>) => {
+          const res = await target.chat(...args);
+          await store.refreshTrackedSpend();
+          return res;
+        };
+      }
+      return Reflect.get(target, prop, receiver) as unknown;
+    },
+  });
 }
 
 /** The meter the cap reads: this invocation's spend on top of every earlier slice's. */

@@ -289,7 +289,10 @@ pnpm eval:localization --merge <dir> --md                       # the report; ru
 - **Partial files** live in `eval-results/localization-partials-<run>/`:
   `<corpus>/config.json` (the configuration), one `<corpus>/<arm>/run-<n>/<item>.json`
   per requirement score, and `spend/<invocation>.json` for spend outside requirements
-  (the table guard).
+  (the table guard, and the calls of a requirement still running). That file is
+  rewritten after every model call (#2560), so a slice killed mid-requirement keeps
+  every call that returned. Only the call in flight is lost, because its usage never
+  arrived.
 - **Resume.** `--resume <dir>` loads every score already recorded and runs only the
   missing ones, so a stop mid-slice re-runs nothing that finished. A3 and A3A share one
   agent pass per item and run in one invocation; when a resume scores them in different
@@ -712,6 +715,7 @@ pnpm eval:localization --merge <dir> --md
 | `A3A` (A3-alone) | the same pass as `A3` | the cited files alone, in first-cited order |
 | `A3N` (A3-nograph) | `list_files`, `read_file_slice` and `grep_files`; no seeded blocks | the cited files alone |
 | `A3P` (A3-primitives, #2327) | `A3A`'s, with `search_code_symbols`'s filters and `grep_files` (chat's search primitives) | the cited files alone |
+| `A20` (explorer, #2560) | `grep_files`, `list_files`, whole-file `read_file_slice`, `search_code_graph`, filtered `search_code_symbols`; the seeded blocks as hints | the cited files alone (below) |
 
 - **One pass per item and repository.** The pass uses the orchestrator's own functions
   (`extractNewRequirementCandidates`, `assembleAgenticPassSeeds`, `buildAgenticPassPrompt`,
@@ -738,6 +742,90 @@ pnpm eval:localization --merge <dir> --md
   materialized layout before Prisma loads, and refuses any other database.
 - **DeepSeek pricing.** A `deepseek-flash` run needs `MODEL_PRICES` set. Without a price,
   the first call is unpriced, and an unpriced call stops the run.
+
+### The explorer arm (#2560), 2026-11-15
+
+The owner asked whether METIS's impact analysis would find the code a change touches as well as
+Claude Code does if it worked more like Claude Code. `A20` is that pass. Its citations are
+scored alone, as `A3A`'s are, and it is paired with `A3A` (`--reference A3A`). Production code is
+unchanged.
+
+- **Tools:** `grep_files`, `list_files`, `read_file_slice` with a 1,000-line cap per call
+  (`createReadFileSliceTool`; production keeps 200), `search_code_graph`, and
+  `search_code_symbols` with its filters. There is no `search_knowledge`.
+- **Prompt:** production's, except the investigation steps say to explore first. The seeded
+  blocks are still sent, but the steps call them hints to confirm or discard
+  (`explorerSystemMessage` in `server/src/lib/eval/localization/agent-pass.ts`). If the model
+  answers before calling any tool, the answer is sent back once with `EXPLORER_NUDGE`. Without
+  that nudge, Sonnet answered the first Miniflux item in one turn from the seeds, which is
+  `A3A`'s pass under another name.
+- **Bounds:** up to 30 turns, no token budget and no deadline. The transcript is compacted at
+  64k tokens (production compacts at 16k). The cap is $1 per item: it is checked before every
+  model call, across the item's per-repository passes, and a pass that reaches it stops with no
+  answer.
+
+```bash
+pnpm eval:materialize localization-02-fixture-portfolio   # and localization-01-miniflux-heldout
+pnpm eval:localization --corpus localization-02-fixture-portfolio --arms A0,A3A,A20 \
+  --reference A3A --runs 1 --budget 15.5 --embed --items 0:5    # then 5:10, 10:15 with --resume <dir>
+pnpm eval:localization --corpus localization-01-miniflux-heldout --arms A0,A3A,A20 \
+  --reference A3A --runs 2 --budget 15.5 --embed --items 0:3 --resume <dir>   # … 21:24, 3 items a call
+pnpm eval:localization --merge <dir> --arms A0,A3A,A20 --reference A3A --md
+```
+
+The run used `claude-sonnet-5-5` for both arms, with A0 beside them. Miniflux got 2 runs and the
+fixture portfolio 1; a second fixture run did not fit the $20 cap.
+
+| Metric | Miniflux A3A | Miniflux A20 | Δ A20 − A3A (95% CI) | Fixture A3A | Fixture A20 | Δ |
+|---|---:|---:|---:|---:|---:|---:|
+| Recall@5 | 0.66 | 0.85 | **+0.186 [0.09, 0.30]**, p < 0.001 | 0.87 | 0.80 | −0.067 [−0.20, 0.00] |
+| Recall@10 | 0.69 | 0.91 | **+0.216 [0.10, 0.36]** | 1.00 | 0.93 | −0.067 |
+| Edit precision | 0.52 | 0.52 | −0.003 [−0.12, +0.13] | 0.24 | 0.23 | −0.017 |
+| MRR | 0.72 | 0.88 | **+0.165 [0.04, 0.32]**, p = 0.005 | 0.73 | 0.70 | −0.033 |
+| Turns / tool calls per pass | 3.3 / 7.1 | 4.2 / 12.5 | | 2.2 / 4.4 | 3.0 / 8.2 | |
+| Cost per item | $0.082 | $0.120 | +46% | $0.132 | $0.139 | +6% |
+| Wall time per item | 28 s | 35 s | | 54 s | 59 s | |
+
+Pooled over the 39 held-out items, A20 − A3A is Recall@5 **+0.089 [0.00, 0.17]** (p = 0.039),
+Recall@10 **+0.107 [0.02, 0.20]**, MRR **+0.089 [0.01, 0.19]**, and edit precision −0.008
+[−0.08, +0.07]. Against A0, A20 reads Recall@5 +0.300 [0.20, 0.41] and A3A +0.212 [0.10, 0.32].
+
+- **Where the gain comes from.** A3A cited no answer file for four Miniflux items in both runs
+  (MF-4510, MF-4516, MF-4557, MF-4610). A20 found answer files for all four, reaching Recall@5
+  0.50 to 0.83 on them. Per item, A20's Recall@5 was higher on 11 Miniflux items, equal on 12,
+  and lower on one (MF-4554, 0.42 against 0.50).
+- **The fixture loss is one item.** On FX-13, one of A20's three per-repository passes ended
+  without a schema-valid answer: its final-answer retry came back empty with finish reason
+  `refusal`. None of the five graph files the other two passes cited was an answer file, so the
+  item scored 0. A20 equals A3A on Recall@5 on the other 14 fixture items.
+  The fixture's repositories hold 10 files, which leaves little to explore. A20 also cited more
+  files that are not in the graph there (124 of 186 resolved, against 128 of 147), and the
+  resolve step drops those.
+- **The long bounds were never used.** A20 averaged 4.2 turns per pass, against its 30-turn
+  cap. Its most expensive item cost $0.31 of the $1 cap, and its slowest took 129 s. The gain
+  comes from exploring before answering, not from a bigger budget.
+- **Recommendation.** Exploring first is worth its cost on a real repository. On Miniflux it
+  found about a fifth more of the files a change edits, at the same edit precision, for about
+  $0.04 and 7 s more per requirement. On a toy portfolio it neither helped nor hurt beyond one
+  unanswered pass. Today's pass uses about 3.3 turns of its 10-turn floor, and the larger
+  budget is not what helped. So the change to try in production is A20's
+  exploring steps, its one nudge and whole-file reads in the agentic code pass. Keep the
+  current turn floor, and try it behind a flag with the same paired run, as this issue required
+  (no production default changed here).
+- **Spend** (the run meter, which prices every call at the usage-ledger rates; the A3 passes do
+  not write `token_usages`, so the eval database's ledger table is empty for them):
+  - $13.76 recorded for the results above;
+  - $3.90 on a superseded first partials directory (the one-item smoke, then the fixture
+    portfolio and two Miniflux items before the nudge existed: fixture Recall@5 A3A 0.90, A20
+    0.87);
+  - $0.55 on three Miniflux items read with `--runs 1`, set aside to restart at `--runs 2`.
+
+  That is **$18.21 recorded** in all. Two slices hit the 10-minute shell timeout during a
+  16,000-token runaway answer, and the call in flight when each was killed was not recorded. At
+  Sonnet's $10 per million output tokens, each is about $0.16 of output plus its input, under
+  $0.50 for both. The total stays under the $20 pre-approval. These slices ran before the
+  partials recorded spend per model call. That change keeps a killed slice's finished calls,
+  but a call in flight is still lost.
 
 ### Rebuilding a corpus
 

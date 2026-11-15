@@ -17,6 +17,12 @@
  *   - `A3P` (A3-primitives, #2327): A3A's pass with chat's search primitives
  *     added (`search_code_symbols`'s filters, `grep_files`); the citations
  *     alone are the files. Paired with A3A, it says what the primitives add.
+ *   - `A20` (explorer, #2560): a Claude-Code-style pass. Exploration first
+ *     (`grep_files`, `list_files`, whole-file reads, then the graph and symbol
+ *     searches), the seeded blocks as hints only, up to 30 turns, no token
+ *     budget, and {@link EXPLORER_ITEM_CAP_USD} per item; the citations alone
+ *     are the files. Paired with A3A, it says whether exploring beats today's
+ *     pass by enough to pay for itself.
  *
  * The pass itself (database, clone, tools, agent loop) is injected as an
  * {@link AgentPass}, so this module is testable without a model or a database;
@@ -35,6 +41,9 @@ import { extractChangesByShape } from "../../impact-analysis/change-request.js";
 import {
   corpusFileSymbols,
   createA0Arm,
+  EXPLORER_MAX_TURNS,
+  EXPLORER_READ_MAX_LINES,
+  EXPLORER_TRANSCRIPT_TOKENS,
   mergeSeedings,
   requirementText,
   type AgentCitation,
@@ -60,7 +69,7 @@ export type {
 
 /** A3's variants. */
 export interface AgentVariant {
-  id: "A3" | "A3A" | "A3N" | "A3P";
+  id: "A3" | "A3A" | "A3N" | "A3P" | "A20";
   toolset: AgentToolset;
   /** Union the citations with A0's hybrid seeds (stored-link channel), or use them alone. */
   union: boolean;
@@ -71,7 +80,16 @@ export const AGENT_VARIANTS: Readonly<Record<AgentVariant["id"], AgentVariant>> 
   A3A: { id: "A3A", toolset: "graph", union: false },
   A3N: { id: "A3N", toolset: "files", union: false },
   A3P: { id: "A3P", toolset: "graph-primitives", union: false },
+  A20: { id: "A20", toolset: "explorer", union: false },
 };
+
+/**
+ * #2560 — the explorer's dollar cap per item, over all of the item's
+ * per-repository passes: set high enough not to bind (A3A costs about $0.10 an
+ * item), so the arm measures exploring, not the cap. A pass that reaches it
+ * stops with no answer.
+ */
+export const EXPLORER_ITEM_CAP_USD = 1;
 
 /** The arms that run an agent pass: the CLI materializes their corpus and database. */
 export const AGENT_ARM_IDS: ReadonlySet<string> = new Set(Object.keys(AGENT_VARIANTS));
@@ -134,6 +152,17 @@ interface SharedPass {
 /** One store per pass function: A3 and A3A built from the same deps share it. */
 const sharedPasses = new WeakMap<AgentPass, Map<string, Promise<SharedPass>>>();
 
+/** Each agent tool set as the arm's configuration names it: a new tool set fails typecheck until it has one. */
+const TOOLSET_LABELS: Record<AgentToolset, string> = {
+  graph:
+    "assembleAgenticCodeTools (search_code_graph, search_code_symbols, search_knowledge, read_file_slice, list_files) + seeded fused / affected-code / affected-schema blocks",
+  "graph-primitives":
+    "assembleAgenticCodeTools with search_code_symbols's fileGlob/symbolKind/language filters, plus grep_files (#2327) + seeded fused / affected-code / affected-schema blocks",
+  files:
+    "list_files, read_file_slice, grep_files (literal text search); no graph or symbol search, no seeded blocks",
+  explorer: `grep_files, list_files, read_file_slice (up to ${EXPLORER_READ_MAX_LINES} lines a call: whole files), search_code_graph, search_code_symbols (filters on); no search_knowledge; seeded fused / affected-code / affected-schema blocks offered as hints only (#2560)`,
+};
+
 /**
  * Build an A3 variant. Needs `deps.agentPass` (the CLI's materialized pass),
  * `deps.meter` (to price a pass another arm reuses) and `deps.provider` (the
@@ -160,6 +189,7 @@ export function createAgentArm(deps: ArmDeps, variant: AgentVariant): Localizati
     item: LocalizationItem,
     repo: string,
     run: number,
+    costCapUsd?: number,
   ): Promise<{ shared: SharedPass; reused: boolean }> {
     const key = [corpus.name, item.id, repo, run, variant.toolset].join("\u0000");
     const existing = store.get(key);
@@ -172,6 +202,7 @@ export function createAgentArm(deps: ArmDeps, variant: AgentVariant): Localizati
       repo,
       text: requirementText(item),
       toolset: variant.toolset,
+      ...(costCapUsd !== undefined ? { costCapUsd } : {}),
     }).then((result): SharedPass => ({
       id: randomUUID(),
       result,
@@ -184,12 +215,8 @@ export function createAgentArm(deps: ArmDeps, variant: AgentVariant): Localizati
     return { shared: await running, reused: false };
   }
 
-  const toolsetLabel =
-    variant.toolset === "graph"
-      ? "assembleAgenticCodeTools (search_code_graph, search_code_symbols, search_knowledge, read_file_slice, list_files) + seeded fused / affected-code / affected-schema blocks"
-      : variant.toolset === "graph-primitives"
-        ? "assembleAgenticCodeTools with search_code_symbols's fileGlob/symbolKind/language filters, plus grep_files (#2327) + seeded fused / affected-code / affected-schema blocks"
-        : "list_files, read_file_slice, grep_files (literal text search); no graph or symbol search, no seeded blocks";
+  const explorer = variant.toolset === "explorer";
+  const toolsetLabel = TOOLSET_LABELS[variant.toolset];
   return {
     id: variant.id,
     label:
@@ -197,14 +224,23 @@ export function createAgentArm(deps: ArmDeps, variant: AgentVariant): Localizati
       `${variant.union ? ", unioned with A0's hybrid seeds" : " alone"}` +
       `${variant.toolset === "files" ? ", file tools only (no graph)" : ""}` +
       `${variant.toolset === "graph-primitives" ? ", with chat's search primitives" : ""}` +
+      `${explorer ? ", from a Claude-Code-style exploring pass" : ""}` +
       ` (${provider.key}/${provider.model})`,
     configuration: {
       ...(a0 ? a0.configuration : {}),
       stage: variant.union
         ? "resolveChangeSeeds + stored-link channel fed by the agent's citations (#1754, #1755)"
         : "the agent's citations alone (#1755)",
-      agentPass:
-        "the orchestrator's agentic code pass: extractNewRequirementCandidates(text) as the requirements, the text as extraInstructions, buildAgenticPassPrompt, runAgentLoop at resolveAgenticMaxTurns (single pass, no escalation), one pass per repository",
+      agentPass: explorer
+        ? `the agentic code pass explore-first (#2560): extractNewRequirementCandidates(text) as the requirements, the text as extraInstructions, buildAgenticPassPrompt with explorerSystemMessage's steps, runAgentLoop at ${EXPLORER_MAX_TURNS} turns, no token budget, transcript compaction at ${EXPLORER_TRANSCRIPT_TOKENS} tokens, no deadline, one nudge to explore when it answers before any tool call; one pass per repository`
+        : "the orchestrator's agentic code pass: extractNewRequirementCandidates(text) as the requirements, the text as extraInstructions, buildAgenticPassPrompt, runAgentLoop at resolveAgenticMaxTurns (single pass, no escalation), one pass per repository",
+      ...(explorer
+        ? {
+            costCapPerItemUsd: EXPLORER_ITEM_CAP_USD,
+            costCap:
+              "checked before every model call, over the item's passes; a pass that reaches it stops with no answer (no citation)",
+          }
+        : {}),
       tools: toolsetLabel,
       citationRule:
         "seed-code-links-from-findings.ts: a cited file counts only when it is in the code graph",
@@ -237,8 +273,14 @@ export function createAgentArm(deps: ArmDeps, variant: AgentVariant): Localizati
       };
       let reusedCost: number | null = 0;
       let reusedSeconds = 0;
+      const itemStart = meter!.spentUsd();
       for (const repo of corpus.manifest.repos) {
-        const { shared, reused } = await pass(corpus, item, repo.name, run);
+        // #2560 — the explorer's cap is per item: each pass gets what the
+        // item's earlier passes left of it.
+        const cap = explorer
+          ? Math.max(0, EXPLORER_ITEM_CAP_USD - (meter!.spentUsd() - itemStart))
+          : undefined;
+        const { shared, reused } = await pass(corpus, item, repo.name, run, cap);
         turns += shared.result.turns;
         if (reused) {
           reusedSeconds += shared.seconds;
@@ -307,4 +349,9 @@ export function createA3NArm(deps: ArmDeps): LocalizationArm {
 /** A3P — A3A's pass with chat's search primitives; citations alone (#2327). */
 export function createA3PArm(deps: ArmDeps): LocalizationArm {
   return createAgentArm(deps, AGENT_VARIANTS.A3P);
+}
+
+/** A20 — the Claude-Code-style explorer; citations alone (#2560). */
+export function createA20Arm(deps: ArmDeps): LocalizationArm {
+  return createAgentArm(deps, AGENT_VARIANTS.A20);
 }

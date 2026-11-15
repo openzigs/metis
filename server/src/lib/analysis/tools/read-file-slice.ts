@@ -13,7 +13,8 @@ import { missingParamError } from "./arg-errors.js";
 import { isHiddenInClone } from "./code-access.js";
 import { redactSecrets } from "../../safety/secret-patterns.js";
 
-const MAX_LINES = 200;
+/** Lines per call: production's cap for every caller of {@link readFileSliceTool}. */
+export const MAX_LINES = 200;
 
 /** A repository-relative path as the index stores it: `/`-separated, no `./` or leading `/`. */
 function repoRelative(filePath: string): string {
@@ -47,6 +48,21 @@ const parameters: JSONSchema = {
   },
   required: ["filePath"],
 };
+
+/** The same schema, with the default end line that a cap of `maxLines` implies. */
+function parametersFor(maxLines: number): JSONSchema {
+  if (maxLines === MAX_LINES) return parameters;
+  return {
+    ...parameters,
+    properties: {
+      ...parameters.properties,
+      endLine: {
+        type: "number",
+        description: `1-based end line (inclusive). Defaults to startLine + ${maxLines - 1}.`,
+      },
+    },
+  };
+}
 
 function validateArgs(args: unknown): ReadFileSliceArgs | null {
   if (!args || typeof args !== "object") return null;
@@ -128,7 +144,11 @@ export async function readCloneFileLines(
   }
 }
 
-async function execute(args: unknown, context: ToolContext): Promise<ToolResult> {
+async function execute(
+  args: unknown,
+  context: ToolContext,
+  maxLines: number = MAX_LINES,
+): Promise<ToolResult> {
   const validated = validateArgs(args);
   if (!validated) {
     // #774 — a rejection the model can repair from: it names what arrived.
@@ -173,12 +193,12 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
 
   const lines = read.lines;
   const startLine = validated.startLine ?? 1;
-  let endLine = validated.endLine ?? startLine + MAX_LINES - 1;
+  let endLine = validated.endLine ?? startLine + maxLines - 1;
 
   // Enforce max lines per call
-  const capped = endLine - startLine + 1 > MAX_LINES;
+  const capped = endLine - startLine + 1 > maxLines;
   if (capped) {
-    endLine = startLine + MAX_LINES - 1;
+    endLine = startLine + maxLines - 1;
   }
 
   // Clamp to file length
@@ -213,10 +233,10 @@ async function execute(args: unknown, context: ToolContext): Promise<ToolResult>
   // (`capForModel`, #138), and a 200-line read is routinely longer than that
   // cap, so a hint after the lines would be cut away with them.
   const next = truncated
-    ? { startLine: clampedEnd + 1, endLine: Math.min(clampedEnd + MAX_LINES, lines.length) }
+    ? { startLine: clampedEnd + 1, endLine: Math.min(clampedEnd + maxLines, lines.length) }
     : undefined;
   const paging = next
-    ? `\n[Cut at ${MAX_LINES} lines per call: request lines ${next.startLine}-${next.endLine} next.]`
+    ? `\n[Cut at ${maxLines} lines per call: request lines ${next.startLine}-${next.endLine} next.]`
     : "";
 
   return {
@@ -248,5 +268,25 @@ export const readFileSliceTool: AgentTool = {
     "Read a range of lines from a file in the repository. Returns numbered lines. " +
     "Max 200 lines per call. Use search_code_graph first to identify relevant files and line ranges.",
   parameters,
-  execute,
+  execute: (args, context) => execute(args, context, MAX_LINES),
 };
+
+/**
+ * #2560 — `read_file_slice` with another per-call line cap, for the eval's
+ * explorer arm (A20), which may read a whole file in one call. Production
+ * offers only {@link readFileSliceTool}; every check (containment, symlink
+ * escape, hidden files, secret redaction) is the same code.
+ */
+export function createReadFileSliceTool(maxLines: number): AgentTool {
+  if (!Number.isInteger(maxLines) || maxLines < 1) {
+    throw new Error(`read_file_slice: maxLines must be a positive integer, not ${maxLines}`);
+  }
+  return {
+    name: readFileSliceTool.name,
+    description:
+      "Read a file, or a range of its lines, from the repository. Returns numbered lines. " +
+      `Omit startLine and endLine to read the whole file; max ${maxLines} lines per call.`,
+    parameters: parametersFor(maxLines),
+    execute: (args, context) => execute(args, context, maxLines),
+  };
+}

@@ -7,10 +7,13 @@ import type { runAgentLoop } from "../../analysis/agent-loop.js";
 import { buildAgenticPassPrompt } from "../../analysis/agentic-pass-context.js";
 import type { AgentTool } from "../../analysis/tools/types.js";
 import {
-  assertA3NClones,
+  assertClonesFor,
   citationsFromAnswer,
   citationsOfLoop,
   createMaterializedAgentPass,
+  EXPLORER_NUDGE,
+  explorerSystemMessage,
+  explorerTools,
   FILE_ONLY_TOOLS,
   filesOnlySystemMessage,
   NO_SEEDS,
@@ -18,6 +21,7 @@ import {
   type MaterializedAgentPassDeps,
 } from "./agent-pass.js";
 import { grepFilesTool } from "../../analysis/tools/grep-files.js";
+import { EXPLORER_MAX_TURNS, EXPLORER_TRANSCRIPT_TOKENS } from "./arm-core.js";
 import type { MaterializedState } from "./materialize.js";
 
 const answer = (findings: unknown[]) => JSON.stringify({ summary: "s", findings });
@@ -266,19 +270,260 @@ describe("createMaterializedAgentPass", () => {
     const missing = path.join(root, "gone");
     const two = state(root);
     two.repos.push({ ...two.repos[0]!, name: "s", cloneDir: missing });
-    await expect(assertA3NClones(new Map([["c", state(root)]]))).resolves.toBeUndefined();
+    await expect(assertClonesFor(new Map([["c", state(root)]]), "A3N")).resolves.toBeUndefined();
     await expect(
-      assertA3NClones(
+      assertClonesFor(
         new Map([
           ["c", two],
           ["d", state(path.join(root, "also-gone"))],
         ]),
+        "A3N",
       ),
     ).rejects.toThrow(
       /A3N needs every repository's clone[\s\S]*c\/s \(.*gone\): run pnpm eval:materialize c[\s\S]*d\/r \(.*also-gone\): run pnpm eval:materialize d/,
     );
     // The clone that is on disk is not listed.
-    await expect(assertA3NClones(new Map([["c", two]]))).rejects.not.toThrow(/c\/r /);
+    await expect(assertClonesFor(new Map([["c", two]]), "A3N")).rejects.not.toThrow(/c\/r /);
+  });
+
+  describe("the explorer pass (A20, #2560)", () => {
+    const searchCodeGraph = { name: "search_code_graph" } as AgentTool;
+    const searchCodeSymbols = { name: "search_code_symbols" } as AgentTool;
+    const explorerDeps = (overrides: Partial<MaterializedAgentPassDeps> = {}) =>
+      depsWith(root, {
+        explorerSearchTools: () => ({ searchCodeGraph, searchCodeSymbols }),
+        spentUsd: () => 0,
+        ...overrides,
+      });
+
+    it("explores with the file tools and the searches, the seeds as hints, 30 turns and no token budget", async () => {
+      const deps = explorerDeps();
+      const result = await createMaterializedAgentPass(deps)({
+        corpus: "c",
+        repo: "r",
+        text: "Change the total",
+        toolset: "explorer",
+        costCapUsd: 1,
+      });
+      expect(result.answered).toBe(true);
+      expect(result.citations).toHaveLength(1);
+      expect(deps.assembleSeeds).toHaveBeenCalled();
+      expect(deps.graphTools).not.toHaveBeenCalled();
+      const [, input, options] = deps.runLoop.mock.calls[0]!;
+      expect(input.tools.map((t: AgentTool) => t.name)).toEqual([
+        "grep_files",
+        "list_files",
+        "read_file_slice",
+        "search_code_graph",
+        "search_code_symbols",
+      ]);
+      expect(input.tools[2].description).toMatch(/whole file; max 1000 lines per call/);
+      expect(input.userMessage).toContain("AFFECTED");
+      expect(input.systemMessage).toMatch(/HINTS from a search, not an answer/);
+      expect(input.systemMessage).not.toContain("search_knowledge");
+      expect(options.maxTurns).toBe(EXPLORER_MAX_TURNS);
+      expect(options).not.toHaveProperty("maxTokens");
+      expect(options.transcriptCompaction).toMatchObject({
+        maxTranscriptTokens: EXPLORER_TRANSCRIPT_TOKENS,
+      });
+    });
+
+    it("sends an answer given before any tool call back once, to explore first", async () => {
+      const deps = explorerDeps();
+      await createMaterializedAgentPass(deps)({
+        corpus: "c",
+        repo: "r",
+        text: "t",
+        toolset: "explorer",
+      });
+      const [, , options] = deps.runLoop.mock.calls[0]!;
+      const state = { turnsUsed: 1, turnsLeft: 29, nudgesSent: 0 };
+      expect(options.continuation.maxNudges).toBe(1);
+      expect(options.continuation.nudge("{}", state)).toBe(EXPLORER_NUDGE);
+      options.onToolCall({ tool: "grep_files", args: {}, resultPreview: "" });
+      expect(options.continuation.nudge("{}", state)).toBeNull();
+    });
+
+    it("gives the production passes no nudge, no model caller and their token budget", async () => {
+      const deps = explorerDeps();
+      await createMaterializedAgentPass(deps)({
+        corpus: "c",
+        repo: "r",
+        text: "t",
+        toolset: "graph",
+      });
+      const [, , options] = deps.runLoop.mock.calls[0]!;
+      expect(options).not.toHaveProperty("continuation");
+      expect(options).not.toHaveProperty("callModel");
+      expect(options.maxTokens).toBeGreaterThan(0);
+    });
+
+    it("calls the model until the pass's cap is spent, then stops with no answer", async () => {
+      let spent = 0;
+      const chat = vi.fn(async () => {
+        spent += 0.4;
+        return { content: "x", model: "m" };
+      });
+      const runLoop = vi.fn(async (_p: unknown, _i: unknown, options: Record<string, unknown>) => {
+        const call = options.callModel as (m: unknown[], o: unknown) => Promise<unknown>;
+        const onToolCall = options.onToolCall as () => void;
+        // Bounded, so a cap that never fires fails the count below instead of hanging.
+        for (let turn = 0; turn < 10; turn++) {
+          await call([], {});
+          onToolCall();
+        }
+        return { finalResponse: answer([]), hasFinalAnswer: true, turnsUsed: 10, toolCalls: [] };
+      }) as unknown as typeof runAgentLoop;
+      const deps = explorerDeps({
+        provider: { ...provider, chat } as unknown as AIProvider,
+        spentUsd: () => spent,
+        runLoop,
+      });
+      const result = await createMaterializedAgentPass(deps)({
+        corpus: "c",
+        repo: "r",
+        text: "t",
+        toolset: "explorer",
+        costCapUsd: 1,
+      });
+      // 0.4, 0.8, 1.2: the third call crosses the cap, the fourth never starts.
+      expect(chat).toHaveBeenCalledTimes(3);
+      expect(result).toEqual({ citations: [], turns: 3, toolCalls: 3, answered: false });
+    });
+
+    it("stops with no answer when the cap is reached at the real loop's final-answer retry", async () => {
+      // The real runAgentLoop: its final-answer retry catches and degrades on
+      // any error, so the cap there must still end the pass with no answer.
+      const valid = JSON.stringify({
+        agentKey: "code",
+        summary: "s",
+        findings: [
+          {
+            category: "architecture",
+            severity: "medium",
+            title: "t",
+            body: "b",
+            tags: [],
+            citations: [{ filePath: "a.go", startLine: 1, endLine: 2 }],
+          },
+        ],
+        notes: [],
+      });
+      // Turn 1 answers before any tool call (the nudge sends it back), turn 2
+      // answers with prose, so the loop reaches its retry with $1.00 spent.
+      const replies = [valid, "no json"];
+      let spent = 0;
+      const chat = vi.fn(async () => {
+        spent += 0.5;
+        return { content: replies.shift() ?? "never", model: "m" };
+      });
+      const { runLoop: _stub, ...rest } = explorerDeps({
+        provider: { ...provider, chat } as unknown as AIProvider,
+        spentUsd: () => spent,
+      });
+      const result = await createMaterializedAgentPass(rest)({
+        corpus: "c",
+        repo: "r",
+        text: "t",
+        toolset: "explorer",
+        costCapUsd: 1,
+      });
+      expect(chat).toHaveBeenCalledTimes(2);
+      expect(result).toEqual({ citations: [], turns: 2, toolCalls: 0, answered: false });
+    });
+
+    it("reads the cap against what the meter had spent when the pass began", async () => {
+      let spent = 5;
+      const chat = vi.fn(async () => {
+        spent += 0.4;
+        return { content: "x", model: "m" };
+      });
+      const runLoop = vi.fn(async (_p: unknown, _i: unknown, options: Record<string, unknown>) => {
+        const call = options.callModel as (m: unknown[], o: unknown) => Promise<unknown>;
+        await call([], {});
+        return {
+          finalResponse: answer([]),
+          hasFinalAnswer: true,
+          turnsUsed: 1,
+          toolCalls: [],
+        };
+      }) as unknown as typeof runAgentLoop;
+      const deps = explorerDeps({
+        provider: { ...provider, chat } as unknown as AIProvider,
+        spentUsd: () => spent,
+        runLoop,
+      });
+      const result = await createMaterializedAgentPass(deps)({
+        corpus: "c",
+        repo: "r",
+        text: "t",
+        toolset: "explorer",
+        costCapUsd: 1,
+      });
+      expect(chat).toHaveBeenCalledTimes(1);
+      expect(result.answered).toBe(true);
+    });
+
+    it("rethrows a provider failure that is not the cap", async () => {
+      const runLoop = vi.fn(async () => {
+        throw new Error("provider down");
+      }) as unknown as typeof runAgentLoop;
+      await expect(
+        createMaterializedAgentPass(explorerDeps({ runLoop }))({
+          corpus: "c",
+          repo: "r",
+          text: "t",
+          toolset: "explorer",
+        }),
+      ).rejects.toThrow(/provider down/);
+    });
+
+    it("refuses to run without its clone, its search tools or the meter", async () => {
+      const missing = path.join(root, "absent");
+      const noClone = depsWith(missing, {
+        explorerSearchTools: () => ({ searchCodeGraph, searchCodeSymbols }),
+        spentUsd: () => 0,
+      });
+      const request = { corpus: "c", repo: "r", text: "t", toolset: "explorer" } as const;
+      await expect(createMaterializedAgentPass(noClone)(request)).rejects.toThrow(
+        /A20 needs the clone of c\/r/,
+      );
+      await expect(createMaterializedAgentPass(depsWith(root))(request)).rejects.toThrow(
+        /A20 needs the explorer's search tools and the run meter/,
+      );
+      expect(noClone.runLoop).not.toHaveBeenCalled();
+    });
+
+    it("names A20 in the clone preflight", async () => {
+      const missing = state(path.join(root, "nowhere"));
+      await expect(assertClonesFor(new Map([["c", missing]]), "A20")).rejects.toThrow(
+        /^A20 needs every repository's clone/,
+      );
+    });
+
+    it("explorerSystemMessage swaps in the exploring steps and refuses a changed prompt", () => {
+      const { systemMessage } = buildAgenticPassPrompt({
+        projectName: "p",
+        projectDescription: "d",
+        requirements: [{ id: "NR-1", text: "t" }],
+        seeds: NO_SEEDS,
+        fileToolsAvailable: true,
+      });
+      const explored = explorerSystemMessage(systemMessage);
+      expect(explored).toContain("grep_files");
+      expect(explored).not.toMatch(/search_knowledge|searching the code graph/);
+      expect(() => explorerSystemMessage("something else")).toThrow(/A20: the agentic code prompt/);
+    });
+
+    it("explorerTools puts the file tools first, then the searches", () => {
+      expect(explorerTools({ searchCodeGraph, searchCodeSymbols }).map((t) => t.name)).toEqual([
+        "grep_files",
+        "list_files",
+        "read_file_slice",
+        "search_code_graph",
+        "search_code_symbols",
+      ]);
+    });
   });
 
   it("refuses a corpus or a repository that is not materialized", async () => {

@@ -2,6 +2,7 @@ import { mkdtemp, readdir, rm, writeFile, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import type { AIProvider } from "../../ai/types.js";
 import { loadRecordedVectors } from "../recorded-vectors.js";
 import { createA0Arm, type LocalizationArm } from "./arms.js";
 import { loadLocalizationCorpus, type LocalizationCorpus } from "./corpus.js";
@@ -13,6 +14,7 @@ import {
   fingerprintDifferences,
   parseItemSlice,
   recordedArms,
+  recordingSpendPerCall,
   runFingerprint,
   seedBudget,
   sliceItemIds,
@@ -28,6 +30,7 @@ import {
   type LocalizationReport,
   type TableGuard,
 } from "./runner.js";
+import type { ItemRunScore } from "./scorer.js";
 import { EmbedCache, buildCorpusSearch, type CorpusSearch } from "./search.js";
 
 class FakeMeter implements CostMeter {
@@ -299,6 +302,45 @@ describe("slices merged (#1800)", () => {
     // A0's guard and A4's: $4, and no requirement spent anything.
     expect(spend.spentUsd).toBe(4);
     expect(spend.maxItemCostByArm.get("A4")).toBe(0);
+  });
+
+  it("records a running requirement's calls as they return, so a killed slice keeps them (#2560)", async () => {
+    const dir = await tempDir();
+    const meter = new FakeMeter();
+    const store = new PartialStore(dir);
+    store.trackSpend("inv", meter);
+    const checkpoint = await store.openForRun(corpus, runFingerprint(corpus, armsFor(meter), 1));
+    const item = corpus.manifest.items[0]!;
+    const provider = recordingSpendPerCall(
+      {
+        key: "fake",
+        model: "m",
+        chat: async () => {
+          meter.spent += 0.25;
+          return { content: "x", model: "m" };
+        },
+      } as unknown as AIProvider,
+      store,
+    );
+    const spent = async () => (await new PartialStore(dir).readRecordedSpend()).spentUsd;
+
+    // Two calls of a requirement that has not finished: a kill now keeps both.
+    await provider.chat([], {});
+    await provider.chat([], {});
+    expect(await spent()).toBe(0.5);
+    // Recorded, the requirement's calls move to its file and are not counted twice.
+    await checkpoint.record({
+      arm: "A4",
+      run: 1,
+      item: item.id,
+      // The spend accounting never reads the score.
+      score: {} as ItemRunScore,
+      spentUsd: 0.5,
+      unpricedCalls: 0,
+    });
+    expect(await spent()).toBe(0.5);
+    await provider.chat([], {});
+    expect(await spent()).toBe(0.75);
   });
 
   it("writes no spend file when nothing was spent outside requirements", async () => {

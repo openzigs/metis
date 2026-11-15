@@ -5,7 +5,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   AGENT_ARM_IDS,
   AGENT_VARIANTS,
+  createA20Arm,
   createA3AArm,
+  EXPLORER_ITEM_CAP_USD,
   createA3Arm,
   createA3NArm,
   resolveCitations,
@@ -492,5 +494,58 @@ describe("split agent passes on a resumed run (#1810, #1819)", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("A20 — the Claude-Code-style explorer (#2560)", () => {
+  it("is a model arm on its own pass, scoring its citations alone", async () => {
+    expect(MODEL_ARMS.has("A20")).toBe(true);
+    expect(AGENT_VARIANTS.A20).toEqual({ id: "A20", toolset: "explorer", union: false });
+    const meter = fakeMeter();
+    const agentPass = stubPass(meter, { r: [cite("b.go"), cite("a.go")] });
+    const arm = createA20Arm({ search, agentPass, meter, provider });
+    const out = await arm.localize(item, corpusOf(["r"]), { run: 1 });
+    expect(out.rankedFiles).toEqual(["r:b.go", "r:a.go"]);
+    expect(out.agent?.passGroup).toBe("explorer");
+    expect(arm.configuration).toMatchObject({
+      costCapPerItemUsd: EXPLORER_ITEM_CAP_USD,
+      stage: "the agent's citations alone (#1755)",
+    });
+    expect(String(arm.configuration.agentPass)).toMatch(/30 turns, no token budget/);
+    expect(String(arm.configuration.tools)).toMatch(/up to 1000 lines a call/);
+    expect(arm.label).toMatch(/Claude-Code-style/);
+  });
+
+  it("gives each pass what the item's earlier passes left of the per-item cap", async () => {
+    const meter = fakeMeter();
+    const agentPass = stubPass(meter, {}, { perPass: 0.375 });
+    await createA20Arm({ search, agentPass, meter, provider }).localize(
+      item,
+      corpusOf(["r", "s"]),
+      { run: 1 },
+    );
+    const caps = agentPass.mock.calls.map(([req]) => req.costCapUsd);
+    expect(caps).toEqual([EXPLORER_ITEM_CAP_USD, EXPLORER_ITEM_CAP_USD - 0.375]);
+    expect(agentPass.mock.calls[0]![0].toolset).toBe("explorer");
+  });
+
+  it("never offers a negative cap once the item is spent", async () => {
+    const meter = fakeMeter();
+    const agentPass = stubPass(meter, {}, { perPass: 1.5 });
+    await createA20Arm({ search, agentPass, meter, provider }).localize(
+      item,
+      corpusOf(["r", "s"]),
+      { run: 1 },
+    );
+    expect(agentPass.mock.calls.map(([req]) => req.costCapUsd)).toEqual([EXPLORER_ITEM_CAP_USD, 0]);
+  });
+
+  it("passes no cap to the other agent arms", async () => {
+    const meter = fakeMeter();
+    const agentPass = stubPass(meter, {});
+    await createA3AArm({ search, agentPass, meter, provider }).localize(item, corpusOf(["r"]), {
+      run: 1,
+    });
+    expect(agentPass.mock.calls[0]![0]).not.toHaveProperty("costCapUsd");
   });
 });
