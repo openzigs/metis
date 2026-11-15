@@ -5369,7 +5369,11 @@ with the analyst's instructions and its own statements, `SOURCE_EXTRACTION_CONCU
 flight, and the requirements are concatenated in document order. A requirement's `sourceIds`
 resolve only against its own batch. The uncited GtWR scan runs once, over every statement, with
 every batch's citations. A batch whose reply cannot be read fails the whole extraction, as the
-single call did, and no further batch is started.
+single call did: no further batch is started, and the calls still in flight are aborted. The
+model writes the set-level gaps (§5.2.6, and where the document is silent) per batch, so
+`reconcileBatchGaps` then runs once over the joined set with no model call: it keeps one copy of
+a gap later batches raised again (same field, near-identical wording), and drops a gap whose
+field another batch's statement names word for word. Rule hits (R7/R8/R9/TBD) are untouched.
 
 The question prompt (`QUESTION_SYSTEM_PROMPT`) shows each requirement's paragraphs and asks the
 model, per question, for `uncertainty` (`missing-knowledge` | `ambiguity` | `silence` |

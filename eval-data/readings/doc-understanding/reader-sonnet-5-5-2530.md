@@ -4,6 +4,8 @@ Model: **anthropic/claude-sonnet-5-5** · Judge: **anthropic/claude-sonnet-5-5**
 
 Commit: b18b0e7fcb29bc5275b2f6bc1f7c6856aee502f3 (uncommitted changes)
 
+Provenance: `b18b0e7f` was a local merge with #2529 that no remote branch holds. The same extraction code is in PR #2535 (https://github.com/openzigs/metis/pull/2535) at `eeb3cd7f4f8882c036d74c26433be52c893f2f72`. The PR's later review fixes (cancelling in-flight batches after a failure; reconciling set-level gaps across batches) were not part of this reading.
+
 ## Results (mean over documents and runs; [min–max] where they differ)
 
 | Arm | Requirement recall | Requirement precision | Section coverage | Question precision | Ambiguity recall | Quote accuracy | Requirements / doc | Questions / doc | $ / doc | Tokens in / out per doc | s / doc | Failures |

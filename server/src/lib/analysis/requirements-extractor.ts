@@ -199,37 +199,48 @@ export const SOURCE_EXTRACTION_BATCH_STATEMENTS = 20;
 
 /**
  * #2530 — the most batch calls in flight at once. One batch took 70 to 90
- * seconds on Sonnet 5.5, and the 61 KB corpus document is 18 batches: one at a
- * time, that is over 20 minutes before the analyst sees a question.
+ * seconds on Sonnet 5.5, and the 61 KB corpus document (04) is 227 statements
+ * on Sonnet 5.5, so 12 batches: one at a time, that is about 17 minutes before
+ * the analyst sees a question. (DeepSeek's 345 statements for it in #2271
+ * would be 18 batches.)
  */
 export const SOURCE_EXTRACTION_CONCURRENCY = 4;
 
 /**
  * `fn` over `items`, at most `limit` in flight, results in input order. Once
- * one call rejects no new item starts (its spend would be for nothing) and the
- * first rejection is the result. The pool in `portfolio/gap-engine.ts` does the
- * same, but importing it would bring Prisma into this module.
+ * one call rejects, no new item starts and `onFailure` runs (so the caller can
+ * abort the calls still in flight: their spend would be for nothing); the
+ * first rejection is the result, never a later one the abort caused.
+ *
+ * Not `portfolio/gap-engine.ts`'s pool, which importing would bring Prisma into
+ * this module, and which differs in one way: it also stops starting items after
+ * a rejection, but it has no `onFailure`, so the calls already in flight run to
+ * completion and are billed for a result that is thrown away.
  */
 async function mapWithConcurrency<T, R>(
   items: readonly T[],
   limit: number,
   fn: (item: T) => Promise<R>,
+  onFailure: () => void,
 ): Promise<R[]> {
   const out = new Array<R>(items.length);
   let next = 0;
-  let failed = false;
+  let failure: { err: unknown } | undefined;
   const worker = async (): Promise<void> => {
-    while (!failed && next < items.length) {
+    while (!failure && next < items.length) {
       const i = next++;
       try {
         out[i] = await fn(items[i]!);
       } catch (err) {
-        failed = true;
-        throw err;
+        if (failure) return;
+        failure = { err };
+        onFailure();
+        return;
       }
     }
   };
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  if (failure) throw failure.err;
   return out;
 }
 
@@ -254,6 +265,20 @@ export function batchSourceStatements(
 }
 
 /**
+ * #2530 review — a source-mode extraction was handed an input that is not
+ * {@link buildSourceExtractionInput} over its own statements. A programming
+ * error in the caller, raised before any model call: distinct from
+ * {@link RequirementsExtractionError} so the failure marker does not read as a
+ * failed provider call.
+ */
+export class SourceExtractionInputError extends Error {
+  constructor(detail: string) {
+    super(detail);
+    this.name = "SourceExtractionInputError";
+  }
+}
+
+/**
  * #2530 — the text `rawInput` carries before the statements: the
  * `extraInstructions` {@link buildSourceExtractionInput} was given. Every batch
  * call repeats it ahead of its own statements. Any other input would be repeated
@@ -262,7 +287,7 @@ export function batchSourceStatements(
 function sourceExtractionLead(rawInput: string, sources: readonly SourceStatement[]): string {
   const blocks = buildSourceExtractionInput(sources);
   if (!rawInput.endsWith(blocks)) {
-    throw new Error(
+    throw new SourceExtractionInputError(
       "A source-mode extraction's input must be buildSourceExtractionInput(sources, …) " +
         "over the same statements",
     );
@@ -449,6 +474,87 @@ export function attachUncitedQualityFlags(
   return added;
 }
 
+/** How much wording two batches' gaps on the same field must share to be one gap. */
+export const BATCH_GAP_DUPLICATE_THRESHOLD = 0.8;
+
+/** Lower-case, whitespace-collapsed: the form two gap fields are compared in. */
+const normalisedField = (field: string): string => field.toLowerCase().replace(/\s+/g, " ").trim();
+
+/** Jaccard overlap of two word sets; 0 when both are empty. */
+function overlap(a: ReadonlySet<string>, b: ReadonlySet<string>): number {
+  if (a.size === 0 && b.size === 0) return 0;
+  let shared = 0;
+  for (const w of a) if (b.has(w)) shared++;
+  return shared / (a.size + b.size - shared);
+}
+
+/**
+ * #2530 review — the set-level checks (ISO/IEC/IEEE 29148 §5.2.6, and gaps
+ * where the document is SILENT) are model-written, inside each batch's reply,
+ * over that batch's statements only. Once the batches are joined, this pass
+ * runs over the whole set, with no model call, and removes the two artefacts
+ * of asking per batch:
+ *
+ * - a gap a later batch raised again: same field (case and spacing aside) and
+ *   at least {@link BATCH_GAP_DUPLICATE_THRESHOLD} of its wording shared with
+ *   one an earlier batch kept. The earlier batch's copy stays.
+ * - a gap another batch's statements answer: every content word of its field
+ *   (two at least, so "actor" alone never matches) appears in one statement
+ *   of a different batch. Lexical and deliberately narrow: a gap whose answer
+ *   is worded differently is still asked, which costs a question; a looser
+ *   match would drop questions the document does not answer.
+ *
+ * Only model-written gaps are touched: a GtWR rule hit (`rule` set) is about
+ * its requirement's own source paragraph. Gaps within one batch are left as
+ * the model wrote them, since that call saw all of its statements. Returns how
+ * many gaps were removed, by cause.
+ */
+export function reconcileBatchGaps(
+  perBatch: readonly StructuredRequirement[][],
+  batches: readonly (readonly SourceStatement[])[],
+): { duplicates: number; answeredElsewhere: number } {
+  const statementWords = batches.map((batch) =>
+    batch.map((s) => contentWords(`${s.statement} ${s.quote}`)),
+  );
+  const kept: { batch: number; field: string; words: Set<string> }[] = [];
+  let duplicates = 0;
+  let answeredElsewhere = 0;
+  perBatch.forEach((requirements, b) => {
+    for (const requirement of requirements) {
+      requirement.ambiguities = requirement.ambiguities.filter((gap) => {
+        if (gap.rule) return true;
+        const field = normalisedField(gap.field);
+        const words = contentWords(`${gap.description} ${gap.suggestedQuestion}`);
+        if (
+          kept.some(
+            (k) =>
+              k.batch !== b &&
+              k.field === field &&
+              overlap(k.words, words) >= BATCH_GAP_DUPLICATE_THRESHOLD,
+          )
+        ) {
+          duplicates++;
+          return false;
+        }
+        const fieldWords = [...contentWords(gap.field)];
+        if (
+          fieldWords.length >= 2 &&
+          statementWords.some(
+            (statements, other) =>
+              other !== b && statements.some((sw) => fieldWords.every((w) => sw.has(w))),
+          )
+        ) {
+          answeredElsewhere++;
+          return false;
+        }
+        kept.push({ batch: b, field, words });
+        return true;
+      });
+    }
+  });
+  return { duplicates, answeredElsewhere };
+}
+
 /**
  * #1058 — structured extraction produced nothing usable. Distinct from an empty
  * result: the model was asked and its answer could not be read (or the call
@@ -515,6 +621,11 @@ export class RequirementsExtractor {
     const lead = batches.length > 1 ? sourceExtractionLead(rawInput, sources) : "";
     // #2296 — what the requirements cite, including paragraphs past the ceiling.
     const citedRefs = new Set<string>();
+    // #2530 review — one batch failing aborts the others in flight (and their
+    // re-prompts): the extraction is lost, so their replies would be billed for
+    // nothing. The caller's own cancellation still reaches every call.
+    const lost = new AbortController();
+    const batchSignal = signal ? AbortSignal.any([signal, lost.signal]) : lost.signal;
     const perBatch = await mapWithConcurrency(
       [...batches.entries()],
       SOURCE_EXTRACTION_CONCURRENCY,
@@ -527,10 +638,17 @@ export class RequirementsExtractor {
             statements: batch.length,
           });
         }
-        const rawReqs = await this.request(input, true, signal);
+        const rawReqs = await this.request(input, true, batchSignal);
         return this.toStructured(rawReqs, input, new Map(batch.map((s) => [s.ref, s])), citedRefs);
       },
+      () => lost.abort(),
     );
+    if (batches.length > 1) {
+      const removed = reconcileBatchGaps(perBatch, batches);
+      if (removed.duplicates + removed.answeredElsewhere > 0) {
+        log.info("Set-level gaps reconciled across batches", removed);
+      }
+    }
     const requirements = perBatch.flat();
     // #2275 — the GtWR rules scan EVERY statement, not only the cited ones: a
     // statement no requirement cites (the model left it out, or cited the wrong

@@ -308,6 +308,13 @@ describe("approvalsNoneMessage (#1355)", () => {
     );
   });
 
+  // #2530 review — refused before any call, so neither failed nor unreadable.
+  it("words an input refused before any call as METIS's own error", () => {
+    const text = approvalsNoneMessage(failedWith("invalid-input"), 0, "completed").text;
+    expect(text).toContain("METIS built the request wrongly and never sent it to the AI model");
+    expect(text).not.toContain("could not read");
+  });
+
   // PR #1409 review — no answer came back, so none was "unreadable".
   it("words a failed request as no answer, not an unreadable one", () => {
     const text = approvalsNoneMessage(failedWith("provider-error"), 2, "completed").text;

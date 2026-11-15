@@ -10,8 +10,10 @@ import {
   SOURCE_EXTRACTION_BATCH_STATEMENTS,
   SOURCE_EXTRACTION_CONCURRENCY,
   SOURCE_EXTRACTION_SUFFIX,
+  SourceExtractionInputError,
   batchSourceStatements,
   buildSourceExtractionInput,
+  reconcileBatchGaps,
 } from "../src/lib/analysis/requirements-extractor.js";
 import type { AIProvider, ChatResponse } from "../src/lib/ai/types.js";
 
@@ -1089,7 +1091,230 @@ describe("extract — source mode, a batch of statements at a time (#2530)", () 
     await expect(
       new RequirementsExtractor({ provider }).extract("Some other text", undefined, statements),
     ).rejects.toThrow(/buildSourceExtractionInput/);
+    // #2530 review — a typed error, so the failure marker is not "provider-error".
+    await expect(
+      new RequirementsExtractor({ provider }).extract("Some other text", undefined, statements),
+    ).rejects.toBeInstanceOf(SourceExtractionInputError);
     expect(provider.chat).not.toHaveBeenCalled();
+  });
+
+  /**
+   * #2530 review — a provider whose batch REQ-001 fails at once and whose
+   * other calls wait until their signal aborts (or 2 s). Counts the calls
+   * that saw an abort.
+   */
+  function failFirstHoldRest(): AIProvider & { abortedCalls: () => number } {
+    let aborted = 0;
+    const chat = vi.fn(
+      async (messages: Parameters<AIProvider["chat"]>[0], opts?: { signal?: AbortSignal }) => {
+        const first = labelsOf(messages[1]!.content)[0]!;
+        if (first === "REQ-001") throw new Error("upstream 503");
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, 2_000);
+          opts?.signal?.addEventListener("abort", () => {
+            clearTimeout(timer);
+            aborted++;
+            resolve();
+          });
+        });
+        if (opts?.signal?.aborted) {
+          throw Object.assign(new Error("aborted"), { name: "AbortError" });
+        }
+        return {
+          content: citing(first),
+          usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
+          model: "test-model",
+          provider: "offline-stub",
+        } as ChatResponse;
+      },
+    );
+    return { ...mockProvider(""), chat, abortedCalls: () => aborted } as AIProvider & {
+      abortedCalls: () => number;
+    };
+  }
+
+  it("aborts the batch calls still in flight once one has failed, and reports that failure", async () => {
+    const statements = many(9 * SOURCE_EXTRACTION_BATCH_STATEMENTS);
+    const provider = failFirstHoldRest();
+    const started = Date.now();
+    await expect(
+      new RequirementsExtractor({ provider }).extract(
+        buildSourceExtractionInput(statements),
+        undefined,
+        statements,
+      ),
+    ).rejects.toMatchObject({
+      name: "RequirementsExtractionError",
+      reason: "provider-error",
+      message: expect.stringContaining("upstream 503"),
+    });
+    // The other calls in flight were cancelled, not left to run 2 s each.
+    expect(provider.abortedCalls()).toBe(SOURCE_EXTRACTION_CONCURRENCY - 1);
+    expect(Date.now() - started).toBeLessThan(1_500);
+    expect(provider.chat).toHaveBeenCalledTimes(SOURCE_EXTRACTION_CONCURRENCY);
+  });
+
+  it("still passes the caller's own cancellation to every batch call", async () => {
+    const statements = many(45);
+    const seen: AbortSignal[] = [];
+    const provider = byBatch((first) => citing(first));
+    const inner = provider.chat;
+    provider.chat = vi.fn(async (messages: Parameters<AIProvider["chat"]>[0], opts) => {
+      if (opts?.signal) seen.push(opts.signal);
+      return inner(messages, opts);
+    });
+    const caller = new AbortController();
+    await new RequirementsExtractor({ provider }).extract(
+      buildSourceExtractionInput(statements),
+      caller.signal,
+      statements,
+    );
+    expect(seen).toHaveLength(3);
+    expect(seen.some((s) => s.aborted)).toBe(false);
+    caller.abort();
+    expect(seen.every((s) => s.aborted)).toBe(true);
+  });
+
+  describe("set-level gaps across batches (#2530 review)", () => {
+    type Gap = { field: string; description: string; suggestedQuestion: string };
+    /** A reply with one requirement citing `ref`, carrying `gaps`. */
+    const withGaps = (ref: string, gaps: Gap[]) =>
+      JSON.stringify({
+        requirements: [
+          {
+            title: `Requirement for ${ref}`,
+            description: `Rests on ${ref}.`,
+            sourceIds: [ref],
+            ambiguities: gaps,
+          },
+        ],
+      });
+    const APPROVER: Gap = {
+      field: "Approval actor",
+      description: "The document does not say who approves an order.",
+      suggestedQuestion: "Who approves an order?",
+    };
+
+    it("keeps a gap later batches raised again once, in the earliest batch", async () => {
+      const statements = many(45);
+      const provider = byBatch((first) =>
+        first === "REQ-016"
+          ? // The same gap, field cased and spaced differently, wording near-identical.
+            withGaps(first, [
+              {
+                ...APPROVER,
+                field: "approval  ACTOR",
+                description: "The document does not say who approves an order at all.",
+              },
+            ])
+          : withGaps(first, [APPROVER]),
+      );
+      const result = await new RequirementsExtractor({ provider }).extract(
+        buildSourceExtractionInput(statements),
+        undefined,
+        statements,
+      );
+      expect(result.requirements.map((r) => r.ambiguities.length)).toEqual([1, 0, 0]);
+      expect(result.totalAmbiguities).toBe(1);
+    });
+
+    it("keeps gaps that only share a field, and a gap one batch raised twice", async () => {
+      const statements = many(45);
+      const other: Gap = {
+        field: "Approval actor",
+        description: "Refunds name no approver distinct from the requester.",
+        suggestedQuestion: "Can a requester approve their own refund?",
+      };
+      const provider = byBatch((first) =>
+        first === "REQ-001"
+          ? JSON.stringify({
+              requirements: [
+                { title: "A", description: "A.", sourceIds: ["REQ-001"], ambiguities: [APPROVER] },
+                { title: "B", description: "B.", sourceIds: ["REQ-002"], ambiguities: [APPROVER] },
+              ],
+            })
+          : first === "REQ-016"
+            ? withGaps(first, [other])
+            : citing(first),
+      );
+      const result = await new RequirementsExtractor({ provider }).extract(
+        buildSourceExtractionInput(statements),
+        undefined,
+        statements,
+      );
+      expect(result.requirements.map((r) => r.ambiguities.length)).toEqual([1, 1, 1, 0]);
+    });
+
+    it("drops a gap another batch's statement answers, and keeps one only its own batch names", async () => {
+      const statements = many(45);
+      statements[40] = {
+        ...statements[40]!,
+        statement: "Order records are kept for a retention period of seven years.",
+        quote: "Order records are kept for a retention period of seven years.",
+      };
+      statements[2] = {
+        ...statements[2]!,
+        statement: "Invoices carry a payment term.",
+        quote: "Invoices carry a payment term.",
+      };
+      const retention: Gap = {
+        field: "Retention period",
+        description: "How long are order records kept?",
+        suggestedQuestion: "What is the retention period?",
+      };
+      const paymentTerm: Gap = {
+        field: "Payment term",
+        description: "The payment term's length is not stated.",
+        suggestedQuestion: "How many days is the payment term?",
+      };
+      // One content word: never matched against another batch's wording.
+      const actor: Gap = {
+        field: "Order",
+        description: "No actor is named.",
+        suggestedQuestion: "Who records the order?",
+      };
+      const provider = byBatch((first) =>
+        first === "REQ-001" ? withGaps(first, [retention, paymentTerm, actor]) : citing(first),
+      );
+      const result = await new RequirementsExtractor({ provider }).extract(
+        buildSourceExtractionInput(statements),
+        undefined,
+        statements,
+      );
+      expect(result.requirements[0]!.ambiguities.map((a) => a.field)).toEqual([
+        "Payment term",
+        "Order",
+      ]);
+    });
+
+    it("leaves GtWR rule hits alone and reports what it removed", () => {
+      const rule = {
+        field: "R7:fast",
+        description: "Vague term.",
+        suggestedQuestion: "",
+        rule: "R7" as const,
+      };
+      const req = (gap: Gap) => ({
+        id: "r",
+        title: "t",
+        description: "d",
+        type: "functional" as const,
+        stakeholders: [],
+        priority: "should-have" as const,
+        ambiguities: [gap],
+        evidenceNeeds: [],
+        rawSource: "",
+      });
+      const perBatch = [
+        [req(rule), req(APPROVER)],
+        [req(rule), req(APPROVER)],
+      ];
+      expect(reconcileBatchGaps(perBatch, [many(2), many(2)])).toEqual({
+        duplicates: 1,
+        answeredElsewhere: 0,
+      });
+      expect(perBatch[1]!.map((r) => r.ambiguities.length)).toEqual([1, 0]);
+    });
   });
 
   it("sends a list that fits one batch as given, in one call", async () => {

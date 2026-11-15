@@ -16,7 +16,10 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AIProvider } from "../src/lib/ai/types.js";
-import { RequirementsExtractionError } from "../src/lib/analysis/requirements-extractor.js";
+import {
+  RequirementsExtractionError,
+  SourceExtractionInputError,
+} from "../src/lib/analysis/requirements-extractor.js";
 
 // ── Durable approval row store (backs the real approval-checkpoint service) ──
 interface ApprovalRow {
@@ -177,6 +180,7 @@ vi.mock("../src/lib/analysis/requirements-extractor.js", async (importOriginal) 
   return {
     // The real error class: the orchestrator reads `reason` only off this type.
     RequirementsExtractionError: actual.RequirementsExtractionError,
+    SourceExtractionInputError: actual.SourceExtractionInputError,
     RequirementsExtractor: class {
       extract = extractMock;
     },
@@ -361,6 +365,16 @@ describe("#215 — orchestrator creates approval requests after extraction/clari
       await expect(run(orch, "ana-net")).rejects.toThrow("socket hang up");
       expect(persisted.enhancement.find((e) => "structuredExtractionFailure" in e)).toMatchObject({
         structuredExtractionFailure: { reason: "provider-error" },
+      });
+    });
+
+    // #2530 review — refused before any model call, so not a provider failure.
+    it("records an input the extractor refused as invalid-input, not a provider failure", async () => {
+      extractMock.mockRejectedValue(new SourceExtractionInputError("not the statements' own"));
+      const { orch } = makeOrchestrator();
+      await expect(run(orch, "ana-input")).rejects.toThrow("not the statements' own");
+      expect(persisted.enhancement.find((e) => "structuredExtractionFailure" in e)).toMatchObject({
+        structuredExtractionFailure: { reason: "invalid-input" },
       });
     });
 
