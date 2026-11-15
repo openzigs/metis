@@ -15,6 +15,7 @@
  *   pnpm eval:localization --merge <dir> --reference A12,A13   # + every arm paired with A12, then with A13 (#1806)
  *   pnpm eval:localization --arms A0,A3,A3A,A3N --shard 1/10   # #1755 analysis-agent citations (materialize first)
  *   pnpm eval:localization --arms A0,A3A,A7,A7O --reference A3A --items 0:4   # #1818 the shipped IMPACT_AGENT_SEEDS order
+ *   pnpm eval:localization --arms A0,A3A,A20 --reference A3A --embed --items 0:2  # #2560 the Claude-Code-style explorer
  *   pnpm eval:localization --merge <dir> --arms A0,A7,A7O --table-guard --embed --guard-steps 5
  *                                                # #1823 A7's table guard, 5 more steps per call
  *   pnpm eval:localization --embed               # embed missing vectors with the local model
@@ -507,12 +508,15 @@ async function agentPassFor(
   provider: AIProvider,
   corpora: readonly LocalizationCorpusName[],
   armIds: readonly string[],
+  /** #2560 — the run meter, which A20's per-item cap is read against. */
+  spentUsd: () => number,
 ): Promise<AgentPass> {
   const states = await materializedStates(corpora);
   const { assertA3NClones, createMaterializedAgentPass, withSearchPrimitives } =
     await import("../src/lib/eval/localization/agent-pass.js");
-  // #1819 — before any pass: A3N's file tools read only the clone.
+  // #1819 — before any pass: A3N's file tools read only the clone (#2560: A20's too).
   if (armIds.includes("A3N")) await assertA3NClones(states);
+  if (armIds.includes("A20")) await assertA3NClones(states, "A20");
   const { prisma } = await import("../src/lib/prisma.js");
   const { assembleAgenticCodeTools } = await import("../src/lib/analysis/orchestrator.js");
   const { assembleAgenticPassSeeds, resolveDatabaseAwareDecision } =
@@ -521,6 +525,7 @@ async function agentPassFor(
     await import("../src/lib/analysis/new-requirements.js");
   const { getKnowledgeService } = await import("../src/lib/rag/knowledge-service.js");
   const { createSearchSymbolsTool } = await import("../src/lib/analysis/tools/search-symbols.js");
+  const { searchCodeGraphTool } = await import("../src/lib/analysis/tools/search-code-graph.js");
   return createMaterializedAgentPass({
     provider,
     states,
@@ -550,6 +555,12 @@ async function agentPassFor(
           )
         : tools;
     },
+    // #2560 — A20: production's graph search and the filtered symbol search.
+    explorerSearchTools: () => ({
+      searchCodeGraph: searchCodeGraphTool,
+      searchCodeSymbols: createSearchSymbolsTool(undefined, { filters: true }),
+    }),
+    spentUsd,
     extractRequirements: (text) => extractNewRequirementCandidates(text),
   });
 }
@@ -951,7 +962,7 @@ async function main(): Promise<void> {
   // #1755 — the agent arms read the materialized corpora; a merge runs no pass.
   const agentPass =
     !mergeDir && provider && armIds.some((id) => AGENT_ARM_IDS.has(id))
-      ? await agentPassFor(provider, corpora, armIds)
+      ? await agentPassFor(provider, corpora, armIds, () => meter.spentUsd())
       : undefined;
   // #1818 — the A7 arms run "Evaluate new requirements" on the materialized corpora.
   const analysis =

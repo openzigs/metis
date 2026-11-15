@@ -18,6 +18,17 @@
  * `read_file_slice` and the eval-only `grep_files`, no seeded blocks, and the
  * prompt's investigation steps rewritten to name those tools; every other line
  * of the prompt is production's.
+ *
+ * #2560 — the `explorer` tool set (arm A20) asks whether a Claude-Code-style
+ * agent localizes better: exploration first, with `grep_files`, `list_files`,
+ * whole-file reads (up to {@link EXPLORER_READ_MAX_LINES} lines a call),
+ * `search_code_graph` and `search_code_symbols` (its filters on). The seeded
+ * blocks are still in the user message, but the steps call them hints to
+ * check, not answers. The loop runs up to {@link EXPLORER_MAX_TURNS} turns
+ * with NO token budget and a larger transcript ceiling
+ * ({@link EXPLORER_TRANSCRIPT_TOKENS}); what bounds it is a dollar cap per
+ * item (`costCapUsd`), checked before every model call. A pass stopped by the
+ * cap has no answer, and scores as no citation.
  */
 import { promises as fs } from "node:fs";
 import type { AIProvider } from "../../ai/types.js";
@@ -41,14 +52,26 @@ import {
   resolveAgenticMaxTurns,
   type AgenticPassSeeds,
 } from "../../analysis/agentic-pass-context.js";
+import { DEFAULT_TRANSCRIPT_COMPACTION } from "../../analysis/context-window-manager.js";
 import { listFilesTool } from "../../analysis/tools/list-files.js";
-import { readFileSliceTool } from "../../analysis/tools/read-file-slice.js";
+import {
+  createReadFileSliceTool,
+  readFileSliceTool,
+} from "../../analysis/tools/read-file-slice.js";
 import type { AgentTool, ToolContext } from "../../analysis/tools/types.js";
 import {
   citationTargets,
   DEFAULT_SEED_CONFIDENCE,
 } from "../../traceability/seed-code-links-from-findings.js";
-import type { AgentCitation, AgentPass, AgentPassRequest, AgentPassResult } from "./arm-core.js";
+import {
+  EXPLORER_MAX_TURNS,
+  EXPLORER_READ_MAX_LINES,
+  EXPLORER_TRANSCRIPT_TOKENS,
+  type AgentCitation,
+  type AgentPass,
+  type AgentPassRequest,
+  type AgentPassResult,
+} from "./arm-core.js";
 import { grepFilesTool } from "../../analysis/tools/grep-files.js";
 import type { MaterializedState } from "./materialize.js";
 
@@ -81,8 +104,38 @@ export interface MaterializedAgentPassDeps {
   graphTools: (cloneDir: string | undefined, primitives: boolean) => AgentTool[];
   /** `extractNewRequirementCandidates`. */
   extractRequirements: (text: string) => Promise<Array<{ id: string; text: string }>>;
+  /**
+   * #2560 — the explorer's (A20) search tools for a verified clone: production's
+   * `search_code_graph` and `search_code_symbols` with its filters on. The pass
+   * adds the file tools ({@link explorerTools}).
+   */
+  explorerSearchTools?: () => { searchCodeGraph: AgentTool; searchCodeSymbols: AgentTool };
+  /** #2560 — the run meter's dollars spent so far: what a pass's `costCapUsd` is read against. */
+  spentUsd?: () => number;
   /** `runAgentLoop`; a seam for tests. */
   runLoop?: typeof runAgentLoop;
+}
+
+/** #2560 — the explorer's tools, in the order the model is shown them. */
+export function explorerTools(search: {
+  searchCodeGraph: AgentTool;
+  searchCodeSymbols: AgentTool;
+}): AgentTool[] {
+  return [
+    grepFilesTool,
+    listFilesTool,
+    createReadFileSliceTool(EXPLORER_READ_MAX_LINES),
+    search.searchCodeGraph,
+    search.searchCodeSymbols,
+  ];
+}
+
+/** Thrown by the explorer's model caller once the pass's dollar cap is spent. */
+export class PassCostCapReached extends Error {
+  constructor(readonly capUsd: number) {
+    super(`the pass reached its $${capUsd.toFixed(2)} cap`);
+    this.name = "PassCostCapReached";
+  }
 }
 
 /** The seeds of a pass that starts from nothing (A3N). */
@@ -143,6 +196,36 @@ export function filesOnlySystemMessage(systemMessage: string): string {
   return systemMessage.replace(GRAPH_STEPS, FILE_STEPS);
 }
 
+const EXPLORER_STEPS = [
+  "- Explore the repository the way a developer does before making the change: start with grep_files for the names, phrases and identifiers the requirement implies, and list_files to learn the layout",
+  `- Use read_file_slice to read whole files (omit startLine and endLine; up to ${EXPLORER_READ_MAX_LINES} lines a call), not just snippets, so you see how the code around a hit works`,
+  "- Use search_code_graph and search_code_symbols (with fileGlob, symbolKind and language filters) when a literal search misses something named differently",
+  "- Any seeded or retrieved code context in the request is a set of HINTS from a search, not an answer: confirm or discard each hint by reading the code, and look beyond it",
+  "- Keep exploring until you can name every file the change would edit, then give your answer",
+].join("\n");
+
+/**
+ * #2560 — sent once when the explorer answers before calling any tool: on the
+ * first Miniflux items, Sonnet answered A20's first turn from the seeded blocks
+ * alone, which is A3A's pass under another label.
+ */
+export const EXPLORER_NUDGE =
+  "You answered without reading any code. The seeded context is only a hint. Explore first: grep_files for the names the requirement implies, read the files that matter in full with read_file_slice, and check what else the change would touch. Then give your final answer as JSON.";
+
+/**
+ * #2560 — A20's prompt: production's, with the investigation steps rewritten
+ * for exploration first. Throws when production's steps are not found, as
+ * {@link filesOnlySystemMessage} does.
+ */
+export function explorerSystemMessage(systemMessage: string): string {
+  if (!systemMessage.includes(GRAPH_STEPS)) {
+    throw new Error(
+      "A20: the agentic code prompt's investigation steps changed; update EXPLORER_STEPS in agent-pass.ts",
+    );
+  }
+  return systemMessage.replace(GRAPH_STEPS, EXPLORER_STEPS);
+}
+
 /**
  * The citations of an answer that could be code, in answer order, each with its
  * finding's confidence (clamped; {@link DEFAULT_SEED_CONFIDENCE} when absent),
@@ -191,6 +274,8 @@ async function existingDir(dir: string): Promise<string | undefined> {
  */
 export async function assertA3NClones(
   states: ReadonlyMap<string, Pick<MaterializedState, "repos">>,
+  /** #2560 — the arm the check is for: A20's file tools read only the clone too. */
+  arm = "A3N",
 ): Promise<void> {
   const missing: string[] = [];
   for (const [corpus, state] of states) {
@@ -204,7 +289,7 @@ export async function assertA3NClones(
   }
   if (missing.length > 0) {
     throw new Error(
-      `A3N needs every repository's clone, and these are not directories:\n  - ${missing.join("\n  - ")}`,
+      `${arm} needs every repository's clone, and these are not directories:\n  - ${missing.join("\n  - ")}`,
     );
   }
 }
@@ -226,13 +311,20 @@ export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): Ag
     }
     const project = await deps.loadProject(repo.projectId);
     const cloneDir = await existingDir(repo.cloneDir);
+    const explorer = request.toolset === "explorer";
     const graph = request.toolset !== "files";
     // #1810 — the file tools read only the clone. Without it every A3N call
     // fails, and the pass would score about 0 at full cost; the graph pass runs
-    // without a working tree, as production does.
-    if (!graph && cloneDir === undefined) {
+    // without a working tree, as production does. #2560 — A20 explores with the
+    // file tools first, so it needs the clone too.
+    if ((!graph || explorer) && cloneDir === undefined) {
       throw new Error(
-        `A3N needs the clone of ${request.corpus}/${request.repo}, and ${repo.cloneDir} is not a directory: run pnpm eval:materialize ${request.corpus}`,
+        `${explorer ? "A20" : "A3N"} needs the clone of ${request.corpus}/${request.repo}, and ${repo.cloneDir} is not a directory: run pnpm eval:materialize ${request.corpus}`,
+      );
+    }
+    if (explorer && (!deps.explorerSearchTools || !deps.spentUsd)) {
+      throw new Error(
+        "A20 needs the explorer's search tools and the run meter (explorerSearchTools, spentUsd)",
       );
     }
     const extracted = await deps.extractRequirements(request.text);
@@ -247,9 +339,11 @@ export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): Ag
           databaseAware: project.databaseAware,
         })
       : NO_SEEDS;
-    const tools = graph
-      ? deps.graphTools(cloneDir, request.toolset === "graph-primitives")
-      : [...FILE_ONLY_TOOLS];
+    const tools = explorer
+      ? explorerTools(deps.explorerSearchTools!())
+      : graph
+        ? deps.graphTools(cloneDir, request.toolset === "graph-primitives")
+        : [...FILE_ONLY_TOOLS];
     const prompt = buildAgenticPassPrompt({
       projectName: project.name,
       projectDescription: project.description,
@@ -257,31 +351,76 @@ export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): Ag
       seeds,
       fileToolsAvailable: cloneDir !== undefined,
     });
-    const systemMessage = graph
-      ? prompt.systemMessage
-      : filesOnlySystemMessage(prompt.systemMessage);
+    const systemMessage = explorer
+      ? explorerSystemMessage(prompt.systemMessage)
+      : graph
+        ? prompt.systemMessage
+        : filesOnlySystemMessage(prompt.systemMessage);
     const toolContext: ToolContext = {
       projectId: repo.projectId,
       connectorId: repo.connectorId,
       ...(cloneDir ? { cloneDir } : {}),
     };
     const native = resolveAnalysisNativeTools(deps.provider, model, tools);
-    const result = await runLoop(
-      deps.provider,
-      { systemMessage, userMessage: prompt.userMessage, tools, toolContext },
-      {
-        ...(native ? { native } : {}),
-        maxTurns: resolveAgenticMaxTurns(requirements.length),
-        maxTokens: agenticPassEffectiveBudget(resolveAgentTokenBudget(), seeds),
-        model,
-        promptCaching: { system: true, messages: true },
-        finalAnswerRetry: {
-          instruction: FINAL_ANSWER_INSTRUCTION,
-          isValidFinalAnswer: isSchemaValidFinalAnswer,
-          maxOutputTokens: resolveFinalAnswerMaxOutputTokens(model, deps.provider.key),
+    // #2560 — the explorer's bounds: a long turn cap, no token budget, a wider
+    // transcript, and a dollar cap checked before every model call.
+    let modelCalls = 0;
+    let toolCallsMade = 0;
+    const startedAt = explorer ? deps.spentUsd!() : 0;
+    const cap = request.costCapUsd;
+    const bounds: Parameters<typeof runAgentLoop>[2] = explorer
+      ? {
+          maxTurns: EXPLORER_MAX_TURNS,
+          transcriptCompaction: {
+            ...DEFAULT_TRANSCRIPT_COMPACTION,
+            maxTranscriptTokens: EXPLORER_TRANSCRIPT_TOKENS,
+          },
+          callModel: (messages, opts) => {
+            if (cap !== undefined && deps.spentUsd!() - startedAt >= cap) {
+              throw new PassCostCapReached(cap);
+            }
+            modelCalls += 1;
+            return deps.provider.chat(messages, opts);
+          },
+          onToolCall: () => {
+            toolCallsMade += 1;
+          },
+          // An answer before any tool call is the seeds restated, not
+          // exploration: send it back once to look first.
+          continuation: {
+            maxNudges: 1,
+            nudge: () => (toolCallsMade === 0 ? EXPLORER_NUDGE : null),
+          },
+        }
+      : {
+          maxTurns: resolveAgenticMaxTurns(requirements.length),
+          maxTokens: agenticPassEffectiveBudget(resolveAgentTokenBudget(), seeds),
+        };
+    let result: AgentLoopResult;
+    try {
+      result = await runLoop(
+        deps.provider,
+        { systemMessage, userMessage: prompt.userMessage, tools, toolContext },
+        {
+          ...(native ? { native } : {}),
+          ...bounds,
+          model,
+          promptCaching: { system: true, messages: true },
+          finalAnswerRetry: {
+            instruction: FINAL_ANSWER_INSTRUCTION,
+            isValidFinalAnswer: isSchemaValidFinalAnswer,
+            maxOutputTokens: resolveFinalAnswerMaxOutputTokens(model, deps.provider.key),
+          },
         },
-      },
-    );
+      );
+    } catch (err) {
+      // The cap stops the pass with no answer: scored as no citation, and the
+      // item's cost (at or past the cap) says why.
+      if (err instanceof PassCostCapReached) {
+        return { citations: [], turns: modelCalls, toolCalls: toolCallsMade, answered: false };
+      }
+      throw err;
+    }
     return {
       citations: citationsOfLoop(result),
       turns: result.turnsUsed,

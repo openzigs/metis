@@ -4091,7 +4091,10 @@ in `@metis/shared`); a `restricted` entry carries the project id and nothing els
   unioned with A0's seeds through the stored-link channel (`A3`), alone (`A3A`),
   or from a pass with file tools only (`A3N`, `grep_files` — production code since
   #2327 — no graph or symbol search); `A3P` (#2327) is `A3A`'s pass with chat's
-  search primitives added. `LocalizationArm.localize` now receives the run, so
+  search primitives added; `A20` (#2560) is an explore-first pass (file tools first,
+  whole-file reads through `createReadFileSliceTool`, the seeds as hints, 30 turns, no
+  token budget, a per-item dollar cap the pass checks before each model call through
+  `runAgentLoop`'s `callModel`). `LocalizationArm.localize` now receives the run, so
   two arms can read one pass and each report its cost (`ArmOutput.reusedCostUsd`).
   The arm contract, the agent-pass seam and A0 live in `arm-core.ts`, imported by
   both `arms.ts` (the registry) and `agent-arms.ts`, so the two do not import each

@@ -47,7 +47,30 @@ export type AgentToolset =
    */
   | "graph-primitives"
   /** `list_files`, `read_file_slice`, `grep_files`; no seeded blocks. */
-  | "files";
+  | "files"
+  /**
+   * #2560 — the Claude-Code-style explorer (A20): `grep_files`, `list_files`,
+   * whole-file `read_file_slice`, `search_code_graph`, `search_code_symbols`
+   * (filters on); the seeded blocks as hints only; a long turn cap, no token
+   * budget, a dollar cap per item.
+   */
+  | "explorer";
+
+/**
+ * #2560 — the explorer's turn cap: about the depth Claude Code works at, where
+ * production's pass averages 3.5 turns under a floor of 10.
+ */
+export const EXPLORER_MAX_TURNS = 30;
+
+/** #2560 — the explorer's `read_file_slice` cap per call: a whole source file, within reason. */
+export const EXPLORER_READ_MAX_LINES = 1000;
+
+/**
+ * #2560 — the explorer's transcript ceiling: four times production's 16k, so
+ * whole files read early are still in view late. Compaction still keeps the
+ * per-turn prompt bounded, so 30 turns do not cost quadratically.
+ */
+export const EXPLORER_TRANSCRIPT_TOKENS = 64_000;
 
 /** One agent pass: one requirement text against one repository of a corpus. */
 export interface AgentPassRequest {
@@ -56,6 +79,12 @@ export interface AgentPassRequest {
   /** The analyst's text, as the "Evaluate new requirements" box receives it. */
   text: string;
   toolset: AgentToolset;
+  /**
+   * #2560 — dollars this pass may spend: no model call starts once it has
+   * spent this much (the explorer's per-item cap, less what the item's earlier
+   * passes spent). Absent: no cap beyond the run's.
+   */
+  costCapUsd?: number;
 }
 
 /** A citation of the pass's final answer, with its finding's confidence. */
