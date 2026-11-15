@@ -200,6 +200,24 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       ).toBeUndefined();
     });
 
+    it("keeps the stored upload's answer when the duplicate lookup fails, naming nothing", async () => {
+      const real = db.document.findMany.bind(db.document);
+      const spy = vi
+        .spyOn(db.document, "findMany")
+        .mockImplementation(((args: { where?: { checksum?: unknown } }) =>
+          args?.where?.checksum !== undefined
+            ? Promise.reject(new Error("database unavailable"))
+            : real(args as never)) as never);
+      try {
+        const res = await upload("alice", "brief.md", "open brief");
+        expect(res.status, res.text).toBe(201);
+        expect(res.body.data.document.id).toBeTruthy();
+        expect(res.body.data.duplicateOf).toBeUndefined();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     // The pasted-text and URL routes create a checksummed document too: same rule.
     describe.each([
       ["POST /text", paste],

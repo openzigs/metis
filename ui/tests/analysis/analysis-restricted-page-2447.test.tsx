@@ -280,5 +280,29 @@ describe("Analysis page — what the viewer cannot see a source of (#2447)", () 
     expect(await screen.findByTestId("change-request-restricted-notice")).toHaveTextContent(
       "This analysis read documents you can't see",
     );
+    // The narrative is not hidden here: the Outcome says nothing of it.
+    expect(screen.queryByTestId("analysis-outcome-restricted")).toBeNull();
+  });
+
+  it("#2548 — keeps the Outcome heading, with the reason, when the server hid the narrative", async () => {
+    const { analysisApi } = await import("@/lib/analysis-api");
+    const synthesis = {
+      ...COMPLETED.agentResults[0]!,
+      id: "ar-synthesis",
+      agentKey: "synthesis",
+      summary: null,
+      findings: [],
+    };
+    vi.mocked(analysisApi.get).mockResolvedValue({
+      ...COMPLETED,
+      agentResults: [...COMPLETED.agentResults, synthesis],
+      restrictedView: { narrative: true, rows: 2 },
+    } as never);
+    try {
+      render(<AnalysisPage />, { wrapper: makeWrapper({ initialUser: userAs("coordinator") }) });
+      expect(await screen.findByTestId("analysis-outcome-restricted")).toHaveTextContent("Outcome");
+    } finally {
+      vi.mocked(analysisApi.get).mockResolvedValue(COMPLETED as never);
+    }
   });
 });
