@@ -198,8 +198,8 @@ export function documentAccessOf(
  *
  * Only active users who can open `projectId` are named (the audience the
  * people picker offers, `projectAudienceWhere`), so a list cannot be used to
- * look up someone outside the project by id. One query, and none when no
- * document names a user.
+ * look up someone outside the project by id. One audience lookup and one user
+ * read per 500 ids; none when no document names a user.
  */
 export async function aclUserNames(
   projectId: string,

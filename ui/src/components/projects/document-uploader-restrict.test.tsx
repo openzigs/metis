@@ -108,4 +108,13 @@ describe("DocumentUploader — Restrict to… (#2555)", () => {
     fireEvent.click(screen.getByTestId("acl-add"));
     expect(screen.queryByTestId("upload-restrict-lockout")).toBeNull();
   });
+
+  it("keeps warning with the panel collapsed, where the files are dropped", async () => {
+    renderUploader();
+    await restrictToAlice();
+    fireEvent.click(screen.getByTestId("upload-restrict-toggle"));
+    expect(screen.getByTestId("upload-restrict-toggle")).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("acl-subject-picker")).toBeNull();
+    expect(screen.getByTestId("upload-restrict-lockout")).toHaveTextContent(/not on this list/);
+  });
 });

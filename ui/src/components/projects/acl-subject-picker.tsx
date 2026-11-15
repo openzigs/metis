@@ -20,6 +20,13 @@ import { Label } from "@/components/ui/label";
 
 type PickKind = "user" | "role";
 
+/**
+ * The roles a document can be restricted to. Not `admin`: an admin reads every
+ * restricted document already (`isVisibleTo`), so adding it grants no one
+ * anything, and a list holding only it would make the document admin-only.
+ */
+export const ACL_PICKER_ROLES: readonly string[] = ROLE_KEYS.filter((key) => key !== "admin");
+
 /** The people who can open `projectId` whose name or username matches `term`. */
 export function searchProjectPeople(projectId: string, term: string): Promise<AclUserName[]> {
   return apiFetch<AclUserName[]>(
@@ -38,7 +45,7 @@ export function AclSubjectPicker(props: {
 }) {
   const [kind, setKind] = useState<PickKind>("user");
   const [term, setTerm] = useState("");
-  const [role, setRole] = useState<string>(ROLE_KEYS[0]);
+  const [role, setRole] = useState<string>(ACL_PICKER_ROLES[0] ?? "");
   const query = term.trim();
   const people = useQuery({
     queryKey: ["users", "acl-picker", props.projectId, query],
@@ -89,7 +96,7 @@ export function AclSubjectPicker(props: {
                 onChange={(e) => setRole(e.target.value)}
                 data-testid="acl-role-select"
               >
-                {ROLE_KEYS.map((key) => (
+                {ACL_PICKER_ROLES.map((key) => (
                   <option key={key} value={key}>
                     {key}
                   </option>
@@ -99,7 +106,7 @@ export function AclSubjectPicker(props: {
             <Button
               type="button"
               variant="outline"
-              disabled={isChosen("role", role)}
+              disabled={role === "" || isChosen("role", role)}
               onClick={() => props.onAdd({ kind: "role", value: role })}
               data-testid="acl-add"
             >

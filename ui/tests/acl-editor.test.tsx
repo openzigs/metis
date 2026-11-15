@@ -87,7 +87,7 @@ describe("AclEditor", () => {
 
   // #2555 — a role already on the list is not offered again.
   it("does not add a role twice", () => {
-    renderEditor([{ kind: "role", value: "admin" }]);
+    renderEditor([{ kind: "role", value: "coordinator" }]);
     fireEvent.change(screen.getByTestId("acl-kind-select"), { target: { value: "role" } });
     expect(screen.getByTestId("acl-add")).toBeDisabled();
   });

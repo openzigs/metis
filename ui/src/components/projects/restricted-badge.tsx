@@ -10,15 +10,28 @@
  * ("Readable by Alice Smith, the coordinator role and admins").
  */
 import type { AclSubject, AclUserName, DocumentAccess } from "@/lib/projects-api";
-import { aclSubjectLabel } from "@/lib/document-access";
+import { aclSubjectLabel, UNKNOWN_ACL_PERSON } from "@/lib/document-access";
 import { Badge } from "@/components/ui/badge";
 
-/** "Alice Smith, the coordinator role" — the subjects as the editor names them. */
+/**
+ * "Alice Smith, the coordinator role" — the subjects as the editor names them.
+ * People the server named no one for are counted once, after the rest ("2
+ * people not in this project"), not repeated.
+ */
 export function describeAclSubjects(
   subjects: AclSubject[],
   users?: readonly AclUserName[],
 ): string {
-  return subjects.map((s) => aclSubjectLabel(s, users)).join(", ");
+  const labels: string[] = [];
+  let unknown = 0;
+  for (const s of subjects) {
+    const label = aclSubjectLabel(s, users);
+    if (label === UNKNOWN_ACL_PERSON) unknown += 1;
+    else labels.push(label);
+  }
+  if (unknown === 1) labels.push(UNKNOWN_ACL_PERSON);
+  if (unknown > 1) labels.push(`${unknown} people not in this project`);
+  return labels.join(", ");
 }
 
 /**

@@ -248,17 +248,14 @@ export function DocumentUploader({ projectId, onUploaded }: Props) {
                 if (person) setPeople([...people.filter((p) => p.id !== person.id), person]);
               }}
             />
-            {aclLocksOut(restrictTo, user) ? (
-              <p
-                className="text-xs text-warning"
-                role="status"
-                data-testid="upload-restrict-lockout"
-              >
-                You are not on this list: you will not be able to read the files you add or change
-                who can. Add yourself or your role to keep access.
-              </p>
-            ) : null}
           </div>
+        ) : null}
+        {/* Beside the summary, open or collapsed: the files are dropped with the panel shut. */}
+        {aclLocksOut(restrictTo, user) ? (
+          <p className="text-xs text-warning" role="status" data-testid="upload-restrict-lockout">
+            You are not on this list: you will not be able to read the files you add or change who
+            can. Add yourself or your role to keep access.
+          </p>
         ) : null}
       </div>
       {items.length > 0 ? (

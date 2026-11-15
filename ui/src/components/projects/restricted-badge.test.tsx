@@ -77,6 +77,24 @@ describe("RestrictedBadge (#2547)", () => {
     expect(describeAclSubjects([])).toBe("");
   });
 
+  it("counts the people it cannot name once, instead of repeating them", () => {
+    const users = [{ id: "u1", username: "alice", displayName: "Alice Smith" }];
+    expect(
+      describeAclSubjects(
+        [
+          { kind: "user", value: "gone-1" },
+          { kind: "user", value: "u1" },
+          { kind: "user", value: "gone-2" },
+          { kind: "role", value: "reader" },
+        ],
+        users,
+      ),
+    ).toBe("Alice Smith, the reader role, 2 people not in this project");
+    expect(describeAclSubjects([{ kind: "user", value: "gone-1" }], users)).toBe(
+      "a person not in this project",
+    );
+  });
+
   // #2555 — the walkthrough's badge read "Readable by user cmurr3lo11r2nns9kfurops14".
   it("names a person by display name, from the people the server sent", () => {
     render(

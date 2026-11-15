@@ -200,7 +200,10 @@ describe("AclEditor — people by name (#2555)", () => {
     const roles = Array.from(
       (screen.getByTestId("acl-role-select") as HTMLSelectElement).options,
     ).map((o) => o.value);
-    expect(roles).toEqual(["admin", "coordinator", "developer", "reader"]);
+    // Not `admin`: an admin reads every restricted document already, so it
+    // grants nothing, and it is not the default an Add without a choice takes.
+    expect(roles).toEqual(["coordinator", "developer", "reader"]);
+    expect((screen.getByTestId("acl-role-select") as HTMLSelectElement).value).toBe("coordinator");
     // No search runs for a role.
     expect(apiFetch).not.toHaveBeenCalled();
   });
