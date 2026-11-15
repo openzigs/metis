@@ -8,7 +8,7 @@
  * here depends on how long anything takes.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, fireEvent } from "@testing-library/react";
+import { act, render, screen, waitFor, fireEvent } from "@testing-library/react";
 import type { SpecKitJobDto } from "@metis/shared";
 import { makeWrapper, TEST_USER } from "./test-utils";
 import type { AuthUser } from "@/lib/auth-types";
@@ -276,17 +276,18 @@ describe("Spec Kit page — a command as a background job (#1059)", () => {
 
   describe("#1583 — one toast per command", () => {
     /** The app-wide layer (`useGlobalJobToasts`) hearing the job's terminal event. */
+    const terminalEvent = (status: "completed" | "failed") => ({
+      kind: "spec-kit" as const,
+      jobId: "job-1",
+      projectId: "p1",
+      status,
+      ...(status === "failed"
+        ? { error: "The Spec Kit operation failed. Please try again." }
+        : { message: "Generated tasks.md (v1)." }),
+      ts: Date.now(),
+    });
     const globalLayerHears = (status: "completed" | "failed"): boolean =>
-      fireTerminalToast({
-        kind: "spec-kit",
-        jobId: "job-1",
-        projectId: "p1",
-        status,
-        ...(status === "failed"
-          ? { error: "The Spec Kit operation failed. Please try again." }
-          : { message: "Generated tasks.md (v1)." }),
-        ts: Date.now(),
-      });
+      fireTerminalToast(terminalEvent(status));
 
     it("a refused command says why once, without the generic failure toast (d-S7-1)", async () => {
       open();
@@ -328,6 +329,55 @@ describe("Spec Kit page — a command as a background job (#1059)", () => {
       await waitFor(() =>
         expect(socket.emit).toHaveBeenCalledWith("unsubscribe:job", { jobId: "job-1" }),
       );
+      expect(globalLayerHears("completed")).toBe(true);
+      expect(toastSuccess).toHaveBeenCalledWith("Generated tasks.md (v1).");
+    });
+
+    it("#2186 — announces an end whose event the claim swallowed, when the page is left before reading it", async () => {
+      const page = open();
+      await run("/speckit.tasks");
+      await waitFor(() => expect(progress()).toBeInTheDocument());
+      // The page's next read of the job is held in flight…
+      let answer!: () => void;
+      const held = new Promise<void>((resolve) => {
+        answer = resolve;
+      });
+      const pending = vi.fn();
+      m.getJob!.mockImplementation(async (_projectId: string, id: string) => {
+        pending();
+        await held;
+        return { job: server.jobs.get(id)! };
+      });
+      await waitFor(() => expect(pending).toHaveBeenCalled());
+      // …while the job ends, and its terminal event reaches the page and the
+      // global layer, which the page's claim keeps quiet…
+      patch("job-1", { status: "succeeded", result: { message: "Generated tasks.md (v1)." } });
+      const [, pageHears] = socket.on.mock.calls.find(([event]) => event === "job:lifecycle")!;
+      act(() => pageHears(terminalEvent("completed")));
+      expect(globalLayerHears("completed")).toBe(false);
+      // …and the page is left before the read answers.
+      page.unmount();
+      answer();
+      await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Generated tasks.md (v1)."));
+      expect(toastSuccess).toHaveBeenCalledTimes(1);
+      // The event, announced once, stays quiet when it is delivered again…
+      expect(globalLayerHears("completed")).toBe(false);
+      // …and the job, its outcome announced, is no longer watched, so a visit
+      // within SPEC_KIT_FRESH_RESULT_MS does not re-attach it and toast again.
+      expect(loadWatchedJobs("p1")).toEqual([]);
+    });
+
+    it("#2186 — gives the claim back when the job can no longer be read", async () => {
+      open();
+      await run("/speckit.tasks");
+      await waitFor(() => expect(progress()).toBeInTheDocument());
+      m.getJob!.mockRejectedValue(new ApiError(503, "Service unavailable"));
+      await waitFor(() =>
+        expect(screen.getByTestId("spec-kit-error")).toHaveTextContent(
+          "Lost contact with the server",
+        ),
+      );
+      // The job carries on on the server; its end is the global layer's to announce.
       expect(globalLayerHears("completed")).toBe(true);
       expect(toastSuccess).toHaveBeenCalledWith("Generated tasks.md (v1).");
     });

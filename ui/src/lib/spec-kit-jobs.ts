@@ -235,10 +235,14 @@ export interface SpecKitJobHooks {
   /**
    * Hear about the job as it happens (the page's `job:lifecycle` socket
    * events). `onEvent` makes the watch read the job at once instead of at its
-   * next timed read. Returns the unsubscribe. Optional: without it, or when no
-   * event ever arrives, the timed read alone watches the job.
+   * next timed read. Returns the unsubscribe, which the watch calls with
+   * `settled`: true when it ended with the job's own outcome (a result, or the
+   * job's error or cancellation) for the caller to announce, false when it
+   * ended without one (the page was left, or the job could not be read).
+   * Optional: without it, or when no event ever arrives, the timed read alone
+   * watches the job.
    */
-  subscribe?: (jobId: string, onEvent: () => void) => () => void;
+  subscribe?: (jobId: string, onEvent: () => void) => (settled: boolean) => void;
   intervalMs?: number;
   maxReadFailures?: number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -317,6 +321,7 @@ export async function watchSpecKitJob(
   // An event that arrives while a read is in flight is not lost: it is noted,
   // and the next wait ends at once.
   let eventPending = false;
+  let settled = false;
   let wake: (() => void) | null = null;
   const unsubscribe = hooks.subscribe?.(jobId, () => {
     eventPending = true;
@@ -345,6 +350,7 @@ export async function watchSpecKitJob(
         onUpdate?.(current);
         if (!isSpecKitJobActive(current.status)) {
           forgetWatchedJob(projectId, jobId);
+          settled = true;
           return settle(current);
         }
         current = null;
@@ -363,7 +369,7 @@ export async function watchSpecKitJob(
       }
     }
   } finally {
-    unsubscribe?.();
+    unsubscribe?.(settled);
   }
 }
 

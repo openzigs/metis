@@ -159,7 +159,7 @@ function ok<T>(data: T): { success: true; data: T } {
  * A string over its limit says the limit; anything else is the shared friendly
  * summary (`zodErrorToFriendly`), with the fields in `details`.
  */
-export function invalidBody(error: ZodError): AppError {
+function invalidBody(error: ZodError): AppError {
   const friendly = zodErrorToFriendly(error);
   const issue = error.issues.length === 1 ? error.issues[0]! : null;
   const tooLong =

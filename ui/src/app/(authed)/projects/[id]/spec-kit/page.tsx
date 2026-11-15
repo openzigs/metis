@@ -47,7 +47,12 @@ import {
 } from "@/lib/spec-kit-jobs";
 import { useSocket } from "@/lib/socket-client";
 import { joinJobRoom } from "@/lib/job-rooms";
-import { claimTerminalToast, releaseTerminalToast } from "@/lib/terminal-toast";
+import {
+  claimTerminalToast,
+  fireTerminalToast,
+  isTerminalJobStatus,
+  releaseTerminalToast,
+} from "@/lib/terminal-toast";
 import { analysisApi } from "@/lib/analysis-api";
 import { queryKeys } from "@/lib/query-keys";
 import { Button } from "@/components/ui/button";
@@ -433,7 +438,7 @@ export default function SpecKitPage() {
   const socket = useSocket();
   const socketRef = useRef(socket);
   socketRef.current = socket;
-  const followJob = (jobId: string, onEvent: () => void): (() => void) => {
+  const followJob = (jobId: string, onEvent: () => void): ((settled: boolean) => void) => {
     const live = socketRef.current;
     if (!live) return () => undefined;
     // #1583 — the page announces this job's outcome itself (its callbacks, in
@@ -442,17 +447,33 @@ export default function SpecKitPage() {
     // command toasted twice, and a refused one (a phase gate) added the
     // generic "The Spec Kit operation failed. Please try again." Claimed
     // before joining, so a replayed terminal event finds it claimed. Given
-    // back when the page is left mid-job: the page then announces nothing.
+    // back whenever the watch ends without the job's outcome — the page left
+    // mid-job, or the job no longer readable (#2186) — since the page then
+    // announces nothing. An outcome the watch did read is announced by the
+    // page's callbacks, so the claim is kept.
     const claimed = claimTerminalToast(jobId);
     const leave = joinJobRoom(live, jobId);
+    // #2186 — the terminal event the claim kept the app-wide layer from
+    // announcing. It has passed by the time the claim is given back, so it is
+    // handed to that layer then, or the outcome would never be announced.
+    let swallowed: JobLifecycleEvent | null = null;
     const onLifecycle = (event: JobLifecycleEvent): void => {
-      if (event.jobId === jobId) onEvent();
+      if (event.jobId !== jobId) return;
+      if (isTerminalJobStatus(event.status)) swallowed = event;
+      onEvent();
     };
     live.on("job:lifecycle" as never, onLifecycle as never);
-    return () => {
+    return (settled) => {
       leave();
       live.off("job:lifecycle" as never, onLifecycle as never);
-      if (claimed && hasLeftPage()) releaseTerminalToast(jobId);
+      if (!claimed || settled) return;
+      releaseTerminalToast(jobId);
+      if (!swallowed) return;
+      fireTerminalToast(swallowed);
+      // #2186 review — the outcome is announced, so the job is no longer this
+      // page's to pick up: kept in the watched list, a visit within
+      // SPEC_KIT_FRESH_RESULT_MS re-attached it and toasted it a second time.
+      forgetWatchedJob(projectId, jobId);
     };
   };
 

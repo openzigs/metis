@@ -127,6 +127,67 @@ describe("buildHandoffInstructions", () => {
     expect(h2.length).toBeLessThan(100);
   });
 
+  describe("#2186 — the headings never cost a requirement", () => {
+    /** `count` criteria of one 150-character sentence each: every heading name is clipped. */
+    const specOf = (count: number): string =>
+      `## Acceptance criteria\n${Array.from(
+        { length: count },
+        (_, i) =>
+          `- **AC-${i + 1}**: Criterion ${String(i + 1).padStart(2, "0")} ${"w".repeat(137)}`,
+      ).join("\n")}\n`;
+    const headings = (text: string): string[] =>
+      text
+        .split("\n\n")
+        .slice(1)
+        .map((b) => b.split("\n")[0]!);
+
+    it("keeps the full names while everything fits", () => {
+      const r = buildHandoffInstructions(["spec.md"], specOf(4));
+      expect(r.sent).toHaveLength(4);
+      expect(headings(r.text).every((h) => h.length === "### AC-1: ".length + 80)).toBe(true);
+    });
+
+    it("shortens the names before it leaves a requirement out", () => {
+      // At full width the 16th criterion would not fit.
+      const r = buildHandoffInstructions(["spec.md"], specOf(16));
+      expect(r).toMatchObject({ truncated: false, omitted: [], omittedCount: 0 });
+      expect(r.sent).toHaveLength(16);
+      const hs = headings(r.text);
+      expect(hs[0]).toBe(`### AC-1: Criterion 01 ${"w".repeat(26)}…`);
+      expect(hs.every((h) => /^### AC-\d+: Criterion \d\d w+…$/.test(h))).toBe(true);
+      expect(r.text.length).toBeLessThan(MAX_EXTRA_INSTRUCTIONS);
+    });
+
+    it("drops the names last, and pins what a spec past the 4096-character budget sends", () => {
+      const spec = specOf(26);
+      expect(spec.length).toBeGreaterThan(MAX_EXTRA_INSTRUCTIONS);
+      const r = buildHandoffInstructions(["spec.md"], spec);
+      // 23 sent; with every heading at full width (before #2186) only 15 were.
+      expect(r.sent).toHaveLength(23);
+      expect(r.omitted).toEqual(["AC-24", "AC-25", "AC-26"]);
+      expect(headings(r.text).every((h) => /^### AC-\d+$/.test(h))).toBe(true);
+      // Each requirement is still sent whole, under its label.
+      expect(r.text).toContain(`\nAC-23: Criterion 23 ${"w".repeat(137)}`);
+      expect(r.text.length).toBeLessThan(MAX_EXTRA_INSTRUCTIONS);
+    });
+
+    it("keeps the width that sends the most, though a narrower one lets a long criterion crowd out short ones", () => {
+      // Packing skips what does not fit and tries the next, so the bare labels
+      // let the near-cap AC-1 in and leave room for one short one; full-width
+      // names leave AC-1 out and send all twelve short ones.
+      const spec = `## Acceptance criteria\n- **AC-1**: Long ${"w".repeat(80)}. ${"x".repeat(3800)}\n${Array.from(
+        { length: 12 },
+        (_, i) => `- **AC-${i + 2}**: Short criterion ${i + 2}.`,
+      ).join("\n")}\n`;
+      const r = buildHandoffInstructions(["spec.md"], spec);
+      expect(r.sent).toHaveLength(12);
+      expect(r.omitted).toEqual(["AC-1"]);
+      // Ties go to the widest names: these are the full first sentences.
+      expect(headings(r.text)[0]).toBe("### AC-2: Short criterion 2.");
+      expect(r.text.length).toBeLessThan(MAX_EXTRA_INSTRUCTIONS);
+    });
+  });
+
   it("sends a requirement that ends one under the cap, and leaves out one that ends at it (#994 review)", () => {
     // The server flags `length >= MAX_EXTRA_INSTRUCTIONS` as truncated input, so a
     // structured handoff of exactly the cap must never be emitted.
@@ -139,7 +200,15 @@ describe("buildHandoffInstructions", () => {
     const under = withBody(MAX_EXTRA_INSTRUCTIONS - 1 - fixed);
     expect(under.text).toHaveLength(MAX_EXTRA_INSTRUCTIONS - 1);
     expect(under).toMatchObject({ sent: ["AC-1"], omitted: [], truncated: false });
-    const at = withBody(MAX_EXTRA_INSTRUCTIONS - fixed);
+    expect(under.text).toContain("\n\n### AC-1: Short.\n");
+    // #2186 — one that ends at the cap with its name is sent under its bare label…
+    const named = ": Short.".length;
+    const bare = withBody(MAX_EXTRA_INSTRUCTIONS - fixed);
+    expect(bare).toMatchObject({ sent: ["AC-1"], omitted: [], truncated: false });
+    expect(bare.text).toHaveLength(MAX_EXTRA_INSTRUCTIONS - named);
+    expect(bare.text).toContain("\n\n### AC-1\nAC-1: Short. ");
+    // …and one that ends at the cap even so is left out.
+    const at = withBody(MAX_EXTRA_INSTRUCTIONS - fixed + named);
     expect(at).toMatchObject({ sent: [], omitted: ["AC-1"], truncated: true });
     expect(at.text.length).toBeLessThan(MAX_EXTRA_INSTRUCTIONS);
   });

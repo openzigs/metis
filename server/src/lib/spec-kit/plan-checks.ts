@@ -49,7 +49,38 @@ const NOT_VISIBLE_RE =
  * called that a false claim.
  */
 const ABSENT_FROM_CONTEXT_RE =
-  /\bnot in the (?:retrieved |provided |given )?context\b|\b(?:cannot|can't|could not) find\b[^.\n]{0,80}\bin the (?:retrieved |provided |given )?(?:context|source)\b/i;
+  /\bnot in the (?:retrieved |provided |given )?context\b|\bnot (?:present|included|available) in the (?:retrieved |provided |given )?context\b|\b(?:cannot|can't|could not) find\b[^.\n]{0,80}\bin the (?:retrieved |provided |given )?(?:context|source)\b/i;
+
+/**
+ * #2186 — the subject of such a claim when it is the file's SOURCE rather than
+ * the file ("the source of x.go is not in the retrieved context", "could not
+ * find the body of x.go in the context", "x.go's source …"). Read up to the end
+ * of the absence phrase only, so a later clause ("…, so its source is unknown")
+ * does not turn a claim that the file is absent into one that its source was
+ * not shown. Bounded alternation, no nested quantifier.
+ *
+ * The `of`/`for` form counts only up to the first code span, where the noun
+ * takes that path as its object ("the source of `x.go`"): in "`x.go`, which
+ * holds the implementation of `Y`, is not in the context" the noun is about
+ * another symbol, and the file is still said to be absent. The possessive
+ * accepts a typographic apostrophe (U+2019) as well as `'`.
+ */
+const SOURCE_OF_RE =
+  /\b(?:source(?: code)?|body|contents?|implementation|definition|code) (?:of|for)\b/i;
+const SOURCE_POSSESSIVE_RE =
+  /(?:\bits|['\u2019]s) (?:source(?: code)?|body|contents?|implementation|definition|code)\b/i;
+/** The first backticked name in a sentence. */
+const FIRST_CODE_SPAN_RE = /`[^`\n]+`/;
+
+/** True when `sentence` says a FILE is absent from the context, not that its source was not shown. */
+function claimsFileAbsent(sentence: string): boolean {
+  const m = ABSENT_FROM_CONTEXT_RE.exec(sentence);
+  if (m === null) return false;
+  const subject = sentence.slice(0, m.index + m[0].length);
+  const span = FIRST_CODE_SPAN_RE.exec(subject);
+  const ofScope = span ? subject.slice(0, span.index + span[0].length) : subject;
+  return !SOURCE_OF_RE.test(ofScope) && !SOURCE_POSSESSIVE_RE.test(subject);
+}
 
 /** Sentences of `text`, split on `.`/`!`/`?` followed by space, or on a line break. */
 function sentences(text: string): string[] {
@@ -186,7 +217,7 @@ export async function findNotVisibleClaims(
     if (!NOT_VISIBLE_RE.test(sentence)) continue;
     // Absent from a context that lists it is always false; not shown is false
     // only for a file whose source was shown.
-    const absent = ABSENT_FROM_CONTEXT_RE.test(sentence);
+    const absent = claimsFileAbsent(sentence);
     claimedPaths.push(
       ...extractReferencedPaths(sentence).filter((p) => absent || sourceShown.has(p)),
     );

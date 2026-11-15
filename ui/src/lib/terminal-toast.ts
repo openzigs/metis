@@ -314,8 +314,9 @@ export function claimTerminalToast(jobId: string | null | undefined): boolean {
 /**
  * #1583 — give a claimed `jobId` back, so the global layer may toast it again.
  * For a surface that claimed a job while it watched it and stopped watching
- * before the end (the Spec Kit page, left mid-command): the job's outcome is
- * then nobody's to announce unless the claim is released.
+ * without reading its outcome (the Spec Kit page, left mid-command or, #2186,
+ * no longer able to read the job): the outcome is then nobody's to announce
+ * unless the claim is released.
  */
 export function releaseTerminalToast(jobId: string | null | undefined): void {
   if (jobId) toastedJobIds.delete(jobId);
