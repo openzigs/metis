@@ -1,0 +1,846 @@
+{
+  "generatedAt": "2026-11-14T23:06:21.354Z",
+  "model": "anthropic/deepseek-flash",
+  "judgeModel": "anthropic/deepseek-flash",
+  "runsRequested": 1,
+  "budgetUsd": 8,
+  "spentUsd": 0.622581168,
+  "judgeSpentUsd": 0.008968919999999998,
+  "unpricedCalls": 0,
+  "outputTokenCap": 21333,
+  "stopped": null,
+  "provenance": {
+    "commit": "a7ad8202f93dfb9e4a9937ba85ff301abc1098b0",
+    "dirty": false
+  },
+  "corpus": [
+    {
+      "id": "docunderstanding-01-clinic-booking",
+      "title": "Riverside Community Clinics: Online Appointment Booking, Functional Requirements Document",
+      "docxBytes": 17991,
+      "chars": 22129,
+      "sections": 26,
+      "chunks": 26,
+      "requirements": 59,
+      "labelledSections": 13,
+      "ambiguities": 12
+    },
+    {
+      "id": "docunderstanding-02-freight-claims",
+      "title": "Northgate Freight: Cargo Loss and Damage Claims Handling, Business Requirements Document",
+      "docxBytes": 17918,
+      "chars": 23478,
+      "sections": 36,
+      "chunks": 36,
+      "requirements": 63,
+      "labelledSections": 17,
+      "ambiguities": 18
+    },
+    {
+      "id": "docunderstanding-03-community-grants",
+      "title": "Harbour City Council: Community Grants Management System, Functional Requirements Document",
+      "docxBytes": 21643,
+      "chars": 35075,
+      "sections": 53,
+      "chunks": 54,
+      "requirements": 106,
+      "labelledSections": 31,
+      "ambiguities": 17
+    },
+    {
+      "id": "docunderstanding-04-library-lending",
+      "title": "Kestrel Vale Libraries: Membership and Lending Platform, Functional Requirements Document",
+      "docxBytes": 31269,
+      "chars": 60624,
+      "sections": 81,
+      "chunks": 82,
+      "requirements": 216,
+      "labelledSections": 45,
+      "ambiguities": 30
+    }
+  ],
+  "arms": [
+    {
+      "id": "R",
+      "label": "R — the document reader (readDocumentOnce): whole document, statements by section batch",
+      "configuration": {
+        "conversion": "parseDocument (docxToMarkdown)",
+        "reader": "readDocumentOnce (document-reader/reading-cache.ts) over readDocument (document-reader/reader.ts), mode chosen by the model's window",
+        "savedReadings": "read again every run, then saved (reread)",
+        "requirements": "statements labelled requirement, constraint or business-rule",
+        "extraction": "RequirementsExtractor in source mode over those statements (GtWR R7/R8/R9 and TBD rules on their paragraphs)",
+        "questions": "the dialog's first round: generateClarifyingQuestions in source mode, then selectQuestionsToAsk (unanswerable and same-outcome set aside, ranked, at most 8 asked); the open ambiguities as written when none is worth asking",
+        "questionModel": "the provider's Haiku tier where it serves one, else its model (tierModelFor, as the dialog's round 1)",
+        "model": "anthropic/deepseek-flash"
+      },
+      "records": [
+        {
+          "itemId": "docunderstanding-01-clinic-booking",
+          "armId": "R",
+          "run": 1,
+          "output": {
+            "requirements": [
+              {
+                "text": "The PMS remains the authoritative system of record for appointments.",
+                "section": "1. Background and business context",
+                "quote": "The PMS remains the system of record for appointments."
+              },
+              {
+                "text": "The portal should not reproduce the information governance risk identified in informal carer booking.",
+                "section": "1.3 How booking works today",
+                "quote": "The information governance lead has identified this as a risk that the portal should not reproduce."
+              },
+              {
+                "text": "Receptionists shall be able to see for any patient whether the patient has a portal account and whether it is locked.",
+                "section": "1.4 How booking will work",
+                "quote": "Receptionists shall be able to see, for any patient, whether the patient has a portal account and whether it is locked, so that they can direct the patient appropriately."
+              },
+              {
+                "text": "The portal shall not keep its own copy of the appointment book; every availability search and booking shall be made against the PMS.",
+                "section": "1.4 How booking will work",
+                "quote": "The portal shall not keep its own copy of the appointment book; every availability search and booking shall be made against the PMS."
+              },
+              {
+                "text": "Each site may choose which of its appointment types are offered online.",
+                "section": "2.1 In scope",
+                "quote": "Each site may choose which of its appointment types are offered online."
+              },
+              {
+                "text": "Patients must already be registered at one of the six clinics in order to use the portal.",
+                "section": "4. Patient access and identity",
+                "quote": "Patients must already be registered at one of the six clinics to use the portal."
+              },
+              {
+                "text": "A registered patient shall be able to create a portal account by verifying identity against PMS details using date of birth, surname, postcode and a one-time code sent to the mobile number held in the PMS.",
+                "section": "4. Patient access and identity",
+                "quote": "A registered patient shall be able to create a portal account by verifying their identity against the details held in the PMS, using their date of birth, surname, postcode and a one-time code sent to the mobile number held in the PMS."
+              },
+              {
+                "text": "If no mobile number is recorded in the PMS, the portal shall tell the patient to contact their clinic and shall not offer any other online identity verification route.",
+                "section": "4. Patient access and identity",
+                "quote": "If a patient has no mobile number recorded in the PMS, the portal shall tell the patient to contact their clinic and shall not offer any other way to verify their identity online."
+              },
+              {
+                "text": "A patient shall sign in with an email address and password, and the portal shall require a second factor on every sign-in from an unrecognised device.",
+                "section": "4. Patient access and identity",
+                "quote": "A patient shall sign in with an email address and password, and the portal shall require a second factor on every sign-in from a device it has not seen before."
+              },
+              {
+                "text": "The portal shall lock an account after five consecutive failed sign-in attempts and shall unlock it automatically after thirty minutes.",
+                "section": "4. Patient access and identity",
+                "quote": "The portal shall lock an account after five consecutive failed sign-in attempts and shall unlock it automatically after thirty minutes."
+              },
+              {
+                "text": "Front-desk staff will not be able to unlock accounts manually in the first release, deliberately to avoid creating a social engineering route.",
+                "section": "4. Patient access and identity",
+                "quote": "Front-desk staff will not be able to unlock accounts manually in the first release; this was discussed and deliberately left out to avoid creating a social engineering route."
+              },
+              {
+                "text": "A signed-in session shall end after a period of inactivity, and the patient shall be warned before it ends.",
+                "section": "4. Patient access and identity",
+                "quote": "A signed-in session shall end after a period of inactivity, and the patient shall be warned before it ends."
+              },
+              {
+                "text": "A carer shall be able to book, reschedule and cancel appointments for any dependant linked to their account.",
+                "section": "4.1 Carers and dependants",
+                "quote": "A carer shall be able to book, reschedule and cancel appointments for any dependant linked to their account."
+              },
+              {
+                "text": "A carer-dependant link shall only be created by front-desk staff after they check the carer's authority, and the portal shall not let a patient create such a link themselves.",
+                "section": "4.1 Carers and dependants",
+                "quote": "A link between a carer and a dependant shall only be created by front-desk staff after they have checked the carer's authority, and the portal shall not let a patient create such a link themselves."
+              },
+              {
+                "text": "A carer link for a dependant under sixteen shall end automatically on the dependant's sixteenth birthday, and the portal shall notify the carer thirty days beforehand.",
+                "section": "4.1 Carers and dependants",
+                "quote": "A carer link for a dependant under the age of sixteen shall end automatically on the dependant's sixteenth birthday, and the portal shall notify the carer thirty days beforehand."
+              },
+              {
+                "text": "Links for adult dependants, such as those with a lasting power of attorney, are reviewed periodically.",
+                "section": "4.1 Carers and dependants",
+                "quote": "Links for adult dependants, for example a patient with a lasting power of attorney in place, are reviewed periodically."
+              },
+              {
+                "text": "The portal shall show a patient only the appointment types marked as bookable online at the patient's registered site.",
+                "section": "5.1 Finding a slot",
+                "quote": "The portal shall show a patient only the appointment types that are marked as bookable online at the patient's registered site."
+              },
+              {
+                "text": "For physiotherapy follow-ups and travel health consultations, the portal shall also offer slots at the other sites that deliver those services.",
+                "section": "5.1 Finding a slot",
+                "quote": "For physiotherapy follow-ups and travel health consultations, the portal shall also offer slots at the other sites that deliver those services."
+              },
+              {
+                "text": "The portal shall show availability for the next four weeks and shall let the patient filter by site, clinician, day of the week and time of day.",
+                "section": "5.1 Finding a slot",
+                "quote": "The portal shall show availability for the next four weeks and shall let the patient filter by site, clinician, day of the week and time of day."
+              },
+              {
+                "text": "Availability shown in the portal shall reflect the PMS appointment book in near real time.",
+                "section": "5.1 Finding a slot",
+                "quote": "Availability shown in the portal shall reflect the PMS appointment book in near real time."
+              },
+              {
+                "text": "When a patient selects a slot, the portal shall place a five-minute hold on it so no other patient or staff member can book it while the booking is completed.",
+                "section": "5.1 Finding a slot",
+                "quote": "When a patient selects a slot, the portal shall place a hold on it for five minutes so that no other patient or staff member can book it while the patient completes the booking."
+              },
+              {
+                "text": "If the patient does not confirm within the hold period, the slot is released.",
+                "section": "5.1 Finding a slot",
+                "quote": "If the patient does not confirm within the hold period the slot is released."
+              },
+              {
+                "text": "A patient may not hold more than two future routine GP appointments at the same time across all sites.",
+                "section": "5.2 Booking rules",
+                "quote": "A patient shall not hold more than two future routine GP appointments at the same time across all sites."
+              },
+              {
+                "text": "The two-appointment limit does not apply to nurse reviews, immunisations or physiotherapy, which are often booked as a series.",
+                "section": "5.2 Booking rules",
+                "quote": "This limit does not apply to nurse reviews, immunisations or physiotherapy, which are often booked as a series."
+              },
+              {
+                "text": "The portal shall not allow a booking that starts less than two hours from the current time.",
+                "section": "5.2 Booking rules",
+                "quote": "The portal shall not allow a booking that starts less than two hours from the current time."
+              },
+              {
+                "text": "Childhood immunisation appointments may only be booked by a carer for a dependant whose age falls within the range set for that immunisation type in the PMS.",
+                "section": "5.2 Booking rules",
+                "quote": "Childhood immunisation appointments shall only be bookable by a carer for a dependant whose age is within the range set for that immunisation type in the PMS."
+              },
+              {
+                "text": "Before confirming a booking, the portal shall ask the patient to state the reason for the appointment in a free-text field of up to 200 characters, passed to the PMS with the booking.",
+                "section": "5.2 Booking rules",
+                "quote": "Before confirming a booking, the portal shall ask the patient to state the reason for the appointment in a free-text field of up to 200 characters, which shall be passed to the PMS with the booking."
+              },
+              {
+                "text": "Patients shall be told that the reason field is not monitored and that urgent problems must be telephoned in.",
+                "section": "5.2 Booking rules",
+                "quote": "Patients will be told that the field is not monitored and that urgent problems must be telephoned in."
+              },
+              {
+                "text": "The portal shall show a clear warning on every booking screen that it must not be used for urgent medical problems, with the clinic telephone number and the national urgent care number.",
+                "section": "5.2 Booking rules",
+                "quote": "The portal shall show a clear warning on every booking screen that it must not be used for urgent medical problems, with the telephone number of the clinic and the national urgent care number."
+              },
+              {
+                "text": "When a booking is confirmed, the portal shall write it to the PMS and shall show the patient a confirmation only after the PMS has accepted it.",
+                "section": "5.2 Booking rules",
+                "quote": "When a booking is confirmed, the portal shall write it to the PMS and shall show the patient a confirmation only after the PMS has accepted it."
+              },
+              {
+                "text": "If the PMS is unavailable, the booking should be handled appropriately.",
+                "section": "5.2 Booking rules",
+                "quote": "If the PMS is unavailable, the booking should be handled appropriately."
+              },
+              {
+                "text": "A patient shall be able to cancel an appointment through the portal up to two hours before its start time.",
+                "section": "5.3 Rescheduling and cancelling",
+                "quote": "A patient shall be able to cancel an appointment through the portal up to two hours before its start time."
+              },
+              {
+                "text": "A patient shall be able to move an appointment to another slot of the same appointment type, and the original slot shall only be released once the PMS has accepted the new booking.",
+                "section": "5.3 Rescheduling and cancelling",
+                "quote": "A patient shall be able to move an appointment to another slot of the same appointment type, and the original slot shall only be released once the new booking has been accepted by the PMS."
+              },
+              {
+                "text": "The portal shall ask a patient who cancels to choose a reason from a list maintained by the practice managers.",
+                "section": "5.3 Rescheduling and cancelling",
+                "quote": "The portal shall ask a patient who cancels to choose a reason from a list maintained by the practice managers."
+              },
+              {
+                "text": "Appointments booked by telephone shall be visible in the portal and shall be cancellable by the patient in the same way as appointments booked online.",
+                "section": "5.3 Rescheduling and cancelling",
+                "quote": "Appointments booked by telephone shall be visible in the portal and shall be cancellable by the patient in the same way as appointments booked online."
+              },
+              {
+                "text": "The portal must send every patient a text message reminder 48 hours before each appointment, whether it was booked online or by telephone.",
+                "section": "6. Reminders and notifications",
+                "quote": "The portal shall send each patient a reminder by text message 48 hours before every appointment, whether it was booked online or by telephone."
+              },
+              {
+                "text": "A reminder must let the patient cancel by replying to the message or following a link, without signing in.",
+                "section": "6. Reminders and notifications",
+                "quote": "A reminder shall let the patient cancel the appointment by replying to the message or by following a link, without signing in."
+              },
+              {
+                "text": "Cancelling through a reminder releases the slot in the same way as cancelling in the portal.",
+                "section": "6. Reminders and notifications",
+                "quote": "Cancelling through a reminder releases the slot in the same way as cancelling in the portal."
+              },
+              {
+                "text": "The portal must email a confirmation when an appointment is booked, moved or cancelled, to the email address on the account that made the change.",
+                "section": "6. Reminders and notifications",
+                "quote": "The portal shall send a confirmation by email when an appointment is booked, moved or cancelled, to the email address on the account that made the change."
+              },
+              {
+                "text": "Where a carer makes the change, the confirmation goes to the carer.",
+                "section": "6. Reminders and notifications",
+                "quote": "Where a carer makes the change, the confirmation goes to the carer."
+              },
+              {
+                "text": "Patients must be able to opt out of text reminders, and the choice must be recorded in the PMS so it also applies to PMS-sent reminders.",
+                "section": "6. Reminders and notifications",
+                "quote": "Patients shall be able to choose not to receive text reminders, and the choice shall be recorded in the PMS so that it also applies to reminders the PMS sends."
+              },
+              {
+                "text": "When an appointment is booked, moved or cancelled, an email notification is sent at the time of the change to the account holder who made the change.",
+                "section": "6. Reminders and notifications",
+                "quote": "| Appointment booked, moved or cancelled | Email | At the time of the change | The account holder who made the change |"
+              },
+              {
+                "text": "An upcoming appointment generates a text message 24 hours before the appointment to the patient, or to the carer for a dependant.",
+                "section": "6. Reminders and notifications",
+                "quote": "| Upcoming appointment | Text message | 24 hours before the appointment | The patient, or the carer for a dependant |"
+              },
+              {
+                "text": "For physiotherapy follow-up appointments on the day, a same-day text reminder is sent at 7am for appointments starting after 10am.",
+                "section": "6. Reminders and notifications",
+                "quote": "A same-day text reminder is sent at 7am for physiotherapy appointments starting after 10am."
+              },
+              {
+                "text": "A waiting list offer is sent by text message and email to the patient on the waiting list when a matching slot is released.",
+                "section": "6. Reminders and notifications",
+                "quote": "| Waiting list offer | Text message and email | When a matching slot is released | The patient on the waiting list |"
+              },
+              {
+                "text": "A patient who cannot find a suitable slot must be able to join a waiting list for a chosen appointment type and site, stating the days of the week and times of day they could attend.",
+                "section": "7. Waiting list",
+                "quote": "A patient who cannot find a suitable slot shall be able to join a waiting list for a chosen appointment type and site, stating the days of the week and times of day they could attend."
+              },
+              {
+                "text": "When a slot of that appointment type is released at that site within the patient's stated availability, the portal must offer it to waiting list patients in the order in which they joined.",
+                "section": "7. Waiting list",
+                "quote": "When a slot of that appointment type is released at that site within the patient's stated availability, the portal shall offer it to patients on the waiting list in the order in which they joined."
+              },
+              {
+                "text": "An offer must expire if not accepted within a short period, and the slot must then be offered to the next patient on the list.",
+                "section": "7. Waiting list",
+                "quote": "An offer shall expire if it is not accepted within a short period, and the slot shall then be offered to the next patient on the list."
+              },
+              {
+                "text": "A patient must be removed from a waiting list once they accept an offer, book a matching appointment themselves, or after 60 days, whichever comes first.",
+                "section": "7. Waiting list",
+                "quote": "A patient shall be removed from a waiting list once they accept an offer, book a matching appointment themselves, or after 60 days, whichever comes first."
+              },
+              {
+                "text": "Practice managers must be able to mark or unmark each appointment type at their own site as bookable online, with the change taking effect in the portal within fifteen minutes.",
+                "section": "8. Staff functions and reporting",
+                "quote": "Practice managers shall be able to mark or unmark each appointment type at their own site as bookable online, and the change shall take effect in the portal within fifteen minutes."
+              },
+              {
+                "text": "Front-desk staff must be able to see a list of the day's online bookings, cancellations and waiting list offers for their site, with the reason for appointment given by each patient.",
+                "section": "8. Staff functions and reporting",
+                "quote": "Front-desk staff shall be able to see a list of the day's online bookings, cancellations and waiting list offers for their site, with the reason for appointment given by each patient."
+              },
+              {
+                "text": "Front-desk staff must be able to suspend online booking for a single clinician for a date range, such as during unplanned leave, without changing the PMS rota.",
+                "section": "8. Staff functions and reporting",
+                "quote": "Front-desk staff shall be able to suspend online booking for a single clinician for a date range, for example during unplanned leave, without changing the PMS rota."
+              },
+              {
+                "text": "The portal must provide a monthly report per site showing the numbers of appointments booked, moved and cancelled online, reminders sent, and missed appointments for online and telephone bookings separately.",
+                "section": "8. Staff functions and reporting",
+                "quote": "The portal shall provide a monthly report for each site showing the number of appointments booked, moved and cancelled online, the number of reminders sent, and the number of missed appointments for online and telephone bookings separately."
+              },
+              {
+                "text": "The portal must be available at least 99.5% of the time in each calendar month, excluding planned maintenance announced at least five days in advance.",
+                "section": "9.1 Availability and performance",
+                "quote": "The portal shall be available at least 99.5% of the time in each calendar month, excluding planned maintenance announced at least five days in advance."
+              },
+              {
+                "text": "Availability searches must return results within three seconds for 95% of requests at peak load.",
+                "section": "9.1 Availability and performance",
+                "quote": "Availability searches shall return results within three seconds for 95% of requests at peak load."
+              },
+              {
+                "text": "The patient-facing portal must meet the WCAG 2.2 AA accessibility standard.",
+                "section": "9.2 Accessibility and language",
+                "quote": "The patient-facing portal shall meet the WCAG 2.2 AA accessibility standard."
+              },
+              {
+                "text": "The portal must be available in English and in the other languages most commonly spoken by registered patients, where possible.",
+                "section": "9.2 Accessibility and language",
+                "quote": "The portal shall be available in English and in the other languages most commonly spoken by registered patients, where possible."
+              },
+              {
+                "text": "The portal must store only the personal data needed to sign patients in and send reminders, and must read all other patient details from the PMS when needed.",
+                "section": "9.3 Privacy, security and data retention",
+                "quote": "The portal shall store only the personal data needed to sign patients in and to send reminders, and shall read all other patient details from the PMS when they are needed."
+              },
+              {
+                "text": "Every booking, change and cancellation made through the portal must be recorded in an audit log showing who made it, on whose behalf, and when.",
+                "section": "9.3 Privacy, security and data retention",
+                "quote": "Every booking, change and cancellation made through the portal shall be recorded in an audit log showing who made it, on whose behalf, and when."
+              },
+              {
+                "text": "Audit log entries must be kept for eight years and must not be editable by any user, including system administrators.",
+                "section": "9.3 Privacy, security and data retention",
+                "quote": "Audit log entries shall be kept for eight years and shall not be editable by any user, including system administrators."
+              },
+              {
+                "text": "Portal accounts unused for two years must be deleted, with the patient warned by email thirty days before deletion.",
+                "section": "9.3 Privacy, security and data retention",
+                "quote": "Portal accounts that have not been used for two years shall be deleted, and the patient shall be warned by email thirty days before deletion."
+              },
+              {
+                "text": "Deleting a portal account does not affect the patient's record in the PMS.",
+                "section": "9.3 Privacy, security and data retention",
+                "quote": "Deleting a portal account does not affect the patient's record in the PMS."
+              }
+            ],
+            "questions": [
+              {
+                "text": "In §1, which appointment data is the PMS authoritative for and what appointment data, if any, may the portal store?",
+                "section": "1. Background and business context",
+                "quote": "The PMS remains the system of record for appointments."
+              },
+              {
+                "text": "In §1.3, what exactly is the IG risk in informal carer booking that the portal must not reproduce—unverified authority, record visibility, booking without consent, or something else?",
+                "section": "1.3 How booking works today",
+                "quote": "The information governance lead has identified this as a risk that the portal should not reproduce."
+              },
+              {
+                "text": "In §1.4, does 'shall not keep its own copy' forbid all caching and read models, or permit a short-lived read-only cache to meet REQ-020's near real time availability?",
+                "section": "1.4 How booking will work",
+                "quote": "The portal shall not keep its own copy of the appointment book; every availability search and booking shall be made against the PMS."
+              },
+              {
+                "text": "In §4, what should happen when a one-time code expires, is undelivered, or is mis-entered—what expiry, resend cooldown, attempt limit and fallback apply?",
+                "section": "4. Patient access and identity",
+                "quote": "A registered patient shall be able to create a portal account by verifying their identity against the details held in the PMS, using their date of birth, surname, postcode and a one-time code sent to the mobile number held in the PMS."
+              },
+              {
+                "text": "In §4, what second factor should be used, and when does a device become 'seen before' so the second factor is not required?",
+                "section": "4. Patient access and identity",
+                "quote": "A patient shall sign in with an email address and password, and the portal shall require a second factor on every sign-in from a device it has not seen before."
+              },
+              {
+                "text": "In §4.1, what evidence must front-desk staff check before creating a carer link?",
+                "section": "4.1 Carers and dependants",
+                "quote": "A link between a carer and a dependant shall only be created by front-desk staff after they have checked the carer's authority, and the portal shall not let a patient create such a link themselves."
+              },
+              {
+                "text": "In §5.1, what maximum age of PMS data counts as 'near real time'?",
+                "section": "5.1 Finding a slot",
+                "quote": "Availability shown in the portal shall reflect the PMS appointment book in near real time."
+              },
+              {
+                "text": "In §5.2, what does 'routine GP appointment' include for the two-appointment limit—PMS appointment type, all GP appointments excluding urgent care, or something else?",
+                "section": "5.2 Booking rules",
+                "quote": "A patient shall not hold more than two future routine GP appointments at the same time across all sites."
+              }
+            ]
+          },
+          "diagnostics": {
+            "documentChars": 22129,
+            "sections": 26,
+            "statements": 159,
+            "droppedUnverified": 0,
+            "unreadSections": 0,
+            "mergeDone": 0,
+            "wholeMode": 0,
+            "outputTokenCap": 21333,
+            "calls": 6,
+            "reused": 0,
+            "sourceStatements": 62,
+            "structuredRequirements": 62,
+            "ambiguities": 30,
+            "questionsGenerated": 30,
+            "setAsideUnanswerable": 0,
+            "setAsideSameOutcome": 0,
+            "overCap": 22,
+            "fallback": 0,
+            "questionsAsked": 8
+          },
+          "score": {
+            "labelled": 59,
+            "extracted": 62,
+            "matched": 58,
+            "repeats": 2,
+            "requirementRecall": 0.9830508474576272,
+            "requirementPrecision": 0.9354838709677419,
+            "labelledSections": 13,
+            "coveredSections": 12,
+            "sectionCoverage": 0.9230769230769231,
+            "missedSections": ["2.2 Out of scope"],
+            "questions": 8,
+            "worthAsking": 6,
+            "questionPrecision": 0.75,
+            "ambiguities": 12,
+            "ambiguitiesRaised": 2,
+            "ambiguityRecall": 0.16666666666666666,
+            "missedRequirements": ["R47"],
+            "missedAmbiguities": ["A1", "A2", "A3", "A4", "A6", "A7", "A8", "A9", "A10", "A11"],
+            "unmatchedExtracted": [
+              "The PMS remains the authoritative system of record for appointments.",
+              "The portal should not reproduce the information governance risk identified in informal carer booking."
+            ],
+            "quoted": 62,
+            "quotesVerified": 62,
+            "quoteAccuracy": 1
+          },
+          "judge": {
+            "invalid": 0,
+            "ungraded": 0
+          },
+          "costUsd": 0.136553316,
+          "judgeCostUsd": 0.008968919999999998,
+          "unpricedCalls": 0,
+          "inputTokens": 43447,
+          "completionTokens": 107229,
+          "seconds": 450.397
+        },
+        {
+          "itemId": "docunderstanding-02-freight-claims",
+          "armId": "R",
+          "run": 1,
+          "output": null,
+          "diagnostics": {},
+          "score": null,
+          "judge": null,
+          "error": "reader: Structured requirements extraction failed (unparseable): Expected ',' or ']' after array element in JSON at position 70799 (line 1 column 70800)",
+          "costUsd": 0.127427604,
+          "judgeCostUsd": 0,
+          "unpricedCalls": 0,
+          "inputTokens": 46527,
+          "completionTokens": 100140,
+          "seconds": 427.545
+        },
+        {
+          "itemId": "docunderstanding-03-community-grants",
+          "armId": "R",
+          "run": 1,
+          "output": null,
+          "diagnostics": {},
+          "score": null,
+          "judge": null,
+          "error": "reader: Structured requirements extraction failed (unparseable): Expected ',' or ']' after array element in JSON at position 55425 (line 1 column 55426)",
+          "costUsd": 0.145454928,
+          "judgeCostUsd": 0,
+          "unpricedCalls": 0,
+          "inputTokens": 66424,
+          "completionTokens": 112321,
+          "seconds": 451.837
+        },
+        {
+          "itemId": "docunderstanding-04-library-lending",
+          "armId": "R",
+          "run": 1,
+          "output": null,
+          "diagnostics": {},
+          "score": null,
+          "judge": null,
+          "error": "reader: Structured requirements extraction failed (unparseable): Expected ',' or ']' after array element in JSON at position 35814 (line 1 column 35815)",
+          "costUsd": 0.20417639999999998,
+          "judgeCostUsd": 0,
+          "unpricedCalls": 0,
+          "inputTokens": 125256,
+          "completionTokens": 153729,
+          "seconds": 618.442
+        }
+      ],
+      "summary": {
+        "metrics": {
+          "requirementRecall": {
+            "mean": 0.9830508474576272,
+            "min": 0.9830508474576272,
+            "max": 0.9830508474576272,
+            "n": 1
+          },
+          "requirementPrecision": {
+            "mean": 0.9354838709677419,
+            "min": 0.9354838709677419,
+            "max": 0.9354838709677419,
+            "n": 1
+          },
+          "sectionCoverage": {
+            "mean": 0.9230769230769231,
+            "min": 0.9230769230769231,
+            "max": 0.9230769230769231,
+            "n": 1
+          },
+          "questionPrecision": {
+            "mean": 0.75,
+            "min": 0.75,
+            "max": 0.75,
+            "n": 1
+          },
+          "ambiguityRecall": {
+            "mean": 0.16666666666666666,
+            "min": 0.16666666666666666,
+            "max": 0.16666666666666666,
+            "n": 1
+          },
+          "quoteAccuracy": {
+            "mean": 1,
+            "min": 1,
+            "max": 1,
+            "n": 1
+          }
+        },
+        "extractedPerDocument": 62,
+        "questionsPerDocument": 8,
+        "usdPerDocument": 0.15340306199999998,
+        "inputTokensPerDocument": 70413.5,
+        "completionTokensPerDocument": 118354.75,
+        "secondsPerDocument": 487.05525,
+        "failures": 3,
+        "readings": 4,
+        "reusedReadings": 0,
+        "questionTally": {
+          "asked": 8,
+          "ambiguitiesFound": 2,
+          "ambiguitiesLabelled": 12,
+          "setAsideUnanswerable": 0,
+          "setAsideSameOutcome": 0,
+          "overCap": 22
+        }
+      },
+      "byItem": [
+        {
+          "itemId": "docunderstanding-01-clinic-booking",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": 0.9830508474576272,
+                "min": 0.9830508474576272,
+                "max": 0.9830508474576272,
+                "n": 1
+              },
+              "requirementPrecision": {
+                "mean": 0.9354838709677419,
+                "min": 0.9354838709677419,
+                "max": 0.9354838709677419,
+                "n": 1
+              },
+              "sectionCoverage": {
+                "mean": 0.9230769230769231,
+                "min": 0.9230769230769231,
+                "max": 0.9230769230769231,
+                "n": 1
+              },
+              "questionPrecision": {
+                "mean": 0.75,
+                "min": 0.75,
+                "max": 0.75,
+                "n": 1
+              },
+              "ambiguityRecall": {
+                "mean": 0.16666666666666666,
+                "min": 0.16666666666666666,
+                "max": 0.16666666666666666,
+                "n": 1
+              },
+              "quoteAccuracy": {
+                "mean": 1,
+                "min": 1,
+                "max": 1,
+                "n": 1
+              }
+            },
+            "extractedPerDocument": 62,
+            "questionsPerDocument": 8,
+            "usdPerDocument": 0.136553316,
+            "inputTokensPerDocument": 43447,
+            "completionTokensPerDocument": 107229,
+            "secondsPerDocument": 450.397,
+            "failures": 0,
+            "readings": 1,
+            "reusedReadings": 0,
+            "questionTally": {
+              "asked": 8,
+              "ambiguitiesFound": 2,
+              "ambiguitiesLabelled": 12,
+              "setAsideUnanswerable": 0,
+              "setAsideSameOutcome": 0,
+              "overCap": 22
+            }
+          }
+        },
+        {
+          "itemId": "docunderstanding-02-freight-claims",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "requirementPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "sectionCoverage": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "questionPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "ambiguityRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": null,
+            "questionsPerDocument": null,
+            "usdPerDocument": 0.127427604,
+            "inputTokensPerDocument": 46527,
+            "completionTokensPerDocument": 100140,
+            "secondsPerDocument": 427.545,
+            "failures": 1,
+            "readings": 1,
+            "reusedReadings": 0,
+            "questionTally": {
+              "asked": 0,
+              "ambiguitiesFound": 0,
+              "ambiguitiesLabelled": 0,
+              "setAsideUnanswerable": null,
+              "setAsideSameOutcome": null,
+              "overCap": null
+            }
+          }
+        },
+        {
+          "itemId": "docunderstanding-03-community-grants",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "requirementPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "sectionCoverage": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "questionPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "ambiguityRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": null,
+            "questionsPerDocument": null,
+            "usdPerDocument": 0.145454928,
+            "inputTokensPerDocument": 66424,
+            "completionTokensPerDocument": 112321,
+            "secondsPerDocument": 451.837,
+            "failures": 1,
+            "readings": 1,
+            "reusedReadings": 0,
+            "questionTally": {
+              "asked": 0,
+              "ambiguitiesFound": 0,
+              "ambiguitiesLabelled": 0,
+              "setAsideUnanswerable": null,
+              "setAsideSameOutcome": null,
+              "overCap": null
+            }
+          }
+        },
+        {
+          "itemId": "docunderstanding-04-library-lending",
+          "summary": {
+            "metrics": {
+              "requirementRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "requirementPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "sectionCoverage": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "questionPrecision": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "ambiguityRecall": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              },
+              "quoteAccuracy": {
+                "mean": null,
+                "min": null,
+                "max": null,
+                "n": 0
+              }
+            },
+            "extractedPerDocument": null,
+            "questionsPerDocument": null,
+            "usdPerDocument": 0.20417639999999998,
+            "inputTokensPerDocument": 125256,
+            "completionTokensPerDocument": 153729,
+            "secondsPerDocument": 618.442,
+            "failures": 1,
+            "readings": 1,
+            "reusedReadings": 0,
+            "questionTally": {
+              "asked": 0,
+              "ambiguitiesFound": 0,
+              "ambiguitiesLabelled": 0,
+              "setAsideUnanswerable": null,
+              "setAsideSameOutcome": null,
+              "overCap": null
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

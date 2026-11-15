@@ -44,6 +44,7 @@ import {
   UNRESTRICTED_RETRIEVAL,
   type GroundedSearchSource,
 } from "../../analysis/retrieval.js";
+import { MAX_QUESTIONS_PER_ROUND } from "../../analysis/question-selection.js";
 import { hasVerdict, requestStructuredVerdict } from "../../analysis/structured-verdict.js";
 import { REQUIREMENT_STATEMENT_KINDS } from "../../document-reader/prompts.js";
 import type { DocumentReading } from "../../document-reader/reader.js";
@@ -64,6 +65,7 @@ import {
   reduceReplySchema,
   type ReaderReply,
 } from "./prompts.js";
+import { askFirstRound, type FirstRound } from "./question-loop.js";
 import { createEvalReadingStore, type EvalReadingStore } from "./reading-store.js";
 
 /** One requirement an arm found. `quote` and `section` are absent where the arm gives none. */
@@ -85,6 +87,12 @@ export interface ArmOutput {
   questions: RaisedQuestion[];
   /** Counts that explain the output (chunks retrieved, sections read, calls made). */
   diagnostics: Record<string, number>;
+  /**
+   * #2271 — arm R: why its question round failed (`questions: …`), when it
+   * did. The reading's requirements still stand and are scored; its questions
+   * are not measured.
+   */
+  questionError?: string;
 }
 
 export interface ReadContext {
@@ -477,9 +485,15 @@ function readingFingerprint(r: DocumentReading): string {
  * #2230 — the production document reader: the whole document in every call,
  * the statements written a batch of sections at a time, each quote verified
  * against the source, then the cross-section pass. Its requirements are the
- * statements labelled requirement, constraint or business rule. It asks no
- * questions (the question loop is Phase 2 of the epic), so its question
- * metrics read empty.
+ * statements labelled requirement, constraint or business rule.
+ *
+ * #2271 — its questions are the first round an analysis asks about that
+ * reading (#2235, `question-loop.ts`): the extraction in source mode over
+ * those statements, then question generation and selection. Its requirements
+ * stay the reader's statements, so recall and precision read as #2255 and
+ * #2319 measured them. As in an analysis, where the enhancement is
+ * best-effort, a failed extraction or question call fails the question round
+ * alone (`questionError`, `questionsFailed: 1`), never the reading.
  *
  * #2319 — it reads as an analysis reads a stored document: through
  * `readDocumentOnce`, with a store. `reused` is 1 when the reading came from
@@ -503,7 +517,11 @@ export function createArmR(model: string, opts: ArmROptions = {}): DocArm {
         ? "reused from an earlier run of this invocation (--saved-readings)"
         : "read again every run, then saved (reread)",
       requirements: "statements labelled requirement, constraint or business-rule",
-      questions: "none (Phase 2)",
+      extraction:
+        "RequirementsExtractor in source mode over those statements, at the arm's model (GtWR R7/R8/R9 and TBD rules on their paragraphs); a failure fails the question round, not the reading",
+      questions: `the dialog's first round: generateClarifyingQuestions in source mode, then selectQuestionsToAsk (unanswerable and same-outcome set aside, ranked, at most ${MAX_QUESTIONS_PER_ROUND} asked); the open ambiguities as written when none is worth asking`,
+      questionModel:
+        "the provider's Haiku tier where it serves one, else its model (tierModelFor, as the dialog's round 1)",
       model,
     },
     async read(item, { provider }) {
@@ -524,6 +542,23 @@ export function createArmR(model: string, opts: ArmROptions = {}): DocArm {
       const fingerprint = readingFingerprint(reading);
       const reused = reading.reused !== undefined;
       if (!reused) lastRead.set(documentId, fingerprint);
+      // #2271 — asked whether or not the reading was reused: an analysis of a
+      // stored document extracts and asks again over the saved reading.
+      let round: FirstRound | undefined;
+      let questionError: string | undefined;
+      try {
+        round = await askFirstRound(
+          provider,
+          reading,
+          { documentId, filename: "source.docx" },
+          { model },
+        );
+      } catch (err) {
+        questionError = `questions: ${(err instanceof Error ? err.message : String(err))
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 300)}`;
+      }
       return {
         requirements: reading.statements
           .filter((s) => REQUIREMENT_STATEMENT_KINDS.has(s.kind))
@@ -532,7 +567,11 @@ export function createArmR(model: string, opts: ArmROptions = {}): DocArm {
             section: s.headingPath[s.headingPath.length - 1] ?? "",
             quote: s.quote,
           })),
-        questions: [],
+        questions: (round?.asked ?? []).map((q) => ({
+          text: q.question,
+          section: q.citation?.headingPath[q.citation.headingPath.length - 1] ?? "",
+          ...(q.citation ? { quote: q.citation.quote } : {}),
+        })),
         diagnostics: {
           documentChars: item.text.length,
           sections: reading.sections.length,
@@ -545,7 +584,10 @@ export function createArmR(model: string, opts: ArmROptions = {}): DocArm {
           calls: reading.calls,
           reused: reused ? 1 : 0,
           ...(reused ? { identicalToSaved: lastRead.get(documentId) === fingerprint ? 1 : 0 } : {}),
+          ...round?.diagnostics,
+          questionsFailed: questionError === undefined ? 0 : 1,
         },
+        ...(questionError !== undefined ? { questionError } : {}),
       };
     },
   };

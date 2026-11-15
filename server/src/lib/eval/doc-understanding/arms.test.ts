@@ -98,6 +98,51 @@ const EXTRACTION = JSON.stringify({
   ],
 });
 
+/**
+ * #2271 — arm R's question loop: the source-mode extraction makes one
+ * requirement of REQ-001 with an "unlock" ambiguity, and the question call
+ * asks about it.
+ */
+const LOOP_ROUTES: Array<[string, string | ((call: Call) => string)]> = [
+  [
+    "clarification session",
+    (call) =>
+      JSON.stringify({
+        questions: [
+          {
+            requirementId: /\(id: ([^)]+)\)/.exec(call.user)![1],
+            ambiguityField: "unlock",
+            uncertainty: "silence",
+            divergent: true,
+            impact: "high",
+            question: "When does a locked account unlock?",
+            context: "c",
+          },
+        ],
+      }),
+  ],
+  [
+    "Extract structured requirements",
+    JSON.stringify({
+      requirements: [
+        {
+          title: "Account lockout",
+          description: "Lock after five failures",
+          sourceIds: ["REQ-001"],
+          ambiguities: [{ field: "unlock", description: "no unlock rule", suggestedQuestion: "" }],
+        },
+      ],
+    }),
+  ],
+];
+
+/** The document reader's own calls, as against the extraction's and the questions'. */
+const readerCalls = (calls: Call[]) =>
+  calls.filter(
+    (c) =>
+      c.system.includes("from beginning to end") || c.system.includes("combining the statements"),
+  );
+
 describe("arm A — today's document agent", () => {
   it("retrieves chunks, runs the document agent and extracts from its requirement texts", async () => {
     const { provider, calls } = routedProvider([
@@ -367,6 +412,7 @@ describe("helpers", () => {
         }),
       ],
       ["combining the statements", JSON.stringify({ duplicates: [], crossReferences: [] })],
+      ...LOOP_ROUTES,
     ]);
     const [arm] = buildDocArms(["R"], "claude-sonnet-5-5");
     const out = await arm!.read(ITEM, { provider, concurrency: 1 });
@@ -382,13 +428,35 @@ describe("helpers", () => {
         quote: "A patient shall hold at most two future appointments.",
       },
     ]);
-    expect(out.questions).toEqual([]);
-    expect(out.diagnostics).toMatchObject({ droppedUnverified: 1, wholeMode: 1, calls: 2 });
-    expect(calls).toHaveLength(2);
+    // #2271 — the first round's question, cited to the paragraph it is about.
+    expect(out.questions).toEqual([
+      {
+        text: "When does a locked account unlock?",
+        section: "1. Access",
+        quote: "The portal shall lock an account after five failed attempts.",
+      },
+    ]);
+    expect(out.diagnostics).toMatchObject({
+      droppedUnverified: 1,
+      wholeMode: 1,
+      calls: 2,
+      sourceStatements: 2,
+      structuredRequirements: 1,
+      questionsGenerated: 1,
+      questionsAsked: 1,
+      setAsideUnanswerable: 0,
+      setAsideSameOutcome: 0,
+      overCap: 0,
+    });
+    // Two reader calls, then the extraction, then the questions.
+    expect(calls).toHaveLength(4);
+    expect(readerCalls(calls)).toHaveLength(2);
+    expect(calls[2]!.user).toContain("[REQ-002]");
+    expect(arm!.configuration.questions).toMatch(/selectQuestionsToAsk/);
   });
 
   describe("#2319 — R reads through readDocumentOnce with a store", () => {
-    const READER_ROUTES: Array<[string, string]> = [
+    const READER_ROUTES: Array<[string, string | ((call: Call) => string)]> = [
       [
         "from beginning to end",
         JSON.stringify({
@@ -409,6 +477,7 @@ describe("helpers", () => {
         }),
       ],
       ["combining the statements", JSON.stringify({ duplicates: [], crossReferences: [] })],
+      ...LOOP_ROUTES,
     ];
 
     it("by default reads the document again every run, and saves the reading", async () => {
@@ -417,7 +486,7 @@ describe("helpers", () => {
       const arm = createArmR("m", { store });
       const first = await arm.read(ITEM, { provider, concurrency: 1 });
       const second = await arm.read(ITEM, { provider, concurrency: 1 });
-      expect(calls).toHaveLength(4);
+      expect(readerCalls(calls)).toHaveLength(4);
       expect([first.diagnostics.reused, second.diagnostics.reused]).toEqual([0, 0]);
       expect(second.diagnostics).not.toHaveProperty("identicalToSaved");
       expect(store.readings()).toHaveLength(1);
@@ -428,13 +497,18 @@ describe("helpers", () => {
       expect(arm.configuration.savedReadings).toMatch(/read again every run/);
     });
 
-    it("with saved readings, a second run reuses the first's with no model call, identical", async () => {
+    it("with saved readings, a second run reuses the first's with no reader call, identical", async () => {
       const { provider, calls } = routedProvider(READER_ROUTES);
       const [arm] = buildDocArms(["R"], "m", { reuseSavedReadings: true });
       const first = await arm!.read(ITEM, { provider, concurrency: 1 });
-      expect(calls).toHaveLength(2);
+      expect(readerCalls(calls)).toHaveLength(2);
       const second = await arm!.read(ITEM, { provider, concurrency: 1 });
-      expect(calls).toHaveLength(2);
+      expect(readerCalls(calls)).toHaveLength(2);
+      // #2271 — the reused reading is still extracted from and asked about,
+      // as an analysis of a stored document is.
+      expect(calls).toHaveLength(6);
+      expect(second.questions).toEqual(first.questions);
+      expect(second.questions).toHaveLength(1);
       expect(first.diagnostics).toMatchObject({ reused: 0, calls: 2 });
       expect(second.diagnostics).toMatchObject({ reused: 1, calls: 0, identicalToSaved: 1 });
       expect(second.requirements).toEqual(first.requirements);
@@ -476,7 +550,73 @@ describe("helpers", () => {
       const edited = { ...ITEM, text: `${TEXT}\n` };
       const out = await arm.read(edited, { provider, concurrency: 1 });
       expect(out.diagnostics.reused).toBe(0);
-      expect(calls).toHaveLength(4);
+      expect(readerCalls(calls)).toHaveLength(4);
+    });
+  });
+
+  describe("#2271 — a failed question round", () => {
+    const BASE: Array<[string, string | ((call: Call) => string)]> = [
+      [
+        "from beginning to end",
+        JSON.stringify({
+          statements: [
+            {
+              section: "S2",
+              kind: "requirement",
+              statement: "Lock after five failures.",
+              quote: "The portal shall lock an account after five failed attempts.",
+            },
+          ],
+        }),
+      ],
+      ["combining the statements", JSON.stringify({ duplicates: [], crossReferences: [] })],
+    ];
+
+    it("keeps the reader's requirements and reports the question round failed apart", async () => {
+      const { provider } = routedProvider([
+        ...BASE,
+        ["Extract structured requirements", "this is not JSON at all"],
+      ]);
+      const arm = createArmR("m", { store: createEvalReadingStore() });
+      const out = await arm.read(ITEM, { provider, concurrency: 1 });
+      expect(out.requirements.map((r) => r.text)).toEqual(["Lock after five failures."]);
+      expect(out.questions).toEqual([]);
+      expect(out.questionError).toMatch(/^questions: /);
+      expect(out.diagnostics).toMatchObject({ statements: 1, questionsFailed: 1 });
+    });
+
+    it("a question call that throws is a failed round too, not a failed reading", async () => {
+      const { provider } = routedProvider([
+        ...BASE,
+        LOOP_ROUTES[1]!,
+        [
+          "clarification session",
+          () => {
+            throw new Error("rate limited\nby the gateway");
+          },
+        ],
+      ]);
+      const arm = createArmR("m", { store: createEvalReadingStore() });
+      const out = await arm.read(ITEM, { provider, concurrency: 1 });
+      expect(out.requirements).toHaveLength(1);
+      expect(out.questionError).toBe("questions: rate limited by the gateway");
+      expect(out.diagnostics.questionsFailed).toBe(1);
+    });
+
+    it("a round that ran says so: questionsFailed 0 and no questionError", async () => {
+      const { provider } = routedProvider([...BASE, ...LOOP_ROUTES]);
+      const arm = createArmR("m", { store: createEvalReadingStore() });
+      const out = await arm.read(ITEM, { provider, concurrency: 1 });
+      expect(out.questionError).toBeUndefined();
+      expect(out.diagnostics.questionsFailed).toBe(0);
+    });
+
+    it("extracts at the arm's model, as production passes the analysis's model", async () => {
+      const { provider, calls } = routedProvider([...BASE, ...LOOP_ROUTES]);
+      const arm = createArmR("the-arm-model", { store: createEvalReadingStore() });
+      await arm.read(ITEM, { provider, concurrency: 1 });
+      const extraction = calls.find((c) => c.system.includes("Extract structured requirements"));
+      expect(extraction!.opts?.model).toBe("the-arm-model");
     });
   });
 
