@@ -258,6 +258,14 @@ describe("ambiguitiesNotConsidered (#2543)", () => {
     expect(ambiguitiesNotConsidered(reqs, new Set(["r0:a#2", "r1:a"]))).toBe(0);
   });
 
+  it("counts a chosen ambiguity the model wrote no question for", () => {
+    const reqs = document(5);
+    const written = new Set(["r0:a", "r1:a"]);
+    // cap 3 chooses r0..r2: r2 has no question; r3 and r4 were left out by the cap.
+    expect(ambiguitiesNotConsidered(reqs, new Set(), { cap: 3, written })).toBe(3);
+    expect(ambiguitiesNotConsidered(reqs, new Set(), { cap: 3 })).toBe(2);
+  });
+
   it("honours a cap of its own", () => {
     expect(ambiguitiesNotConsidered(document(5), new Set(), { cap: 2 })).toBe(3);
   });

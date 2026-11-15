@@ -91,6 +91,8 @@ function listed(user: string): string[] {
 function documentProvider(
   grade: (key: string, i: number) => Record<string, unknown> = () => ({}),
   extra: unknown[] = [],
+  /** Which listed ambiguities the model writes a question for. */
+  keep: (key: string, i: number) => boolean = () => true,
 ) {
   const prompts: string[] = [];
   const chat = vi.fn(async (messages: ChatMessage[]): Promise<ChatResponse> => {
@@ -102,19 +104,21 @@ function documentProvider(
       } as ChatResponse;
     }
     prompts.push(user);
-    const questions = listed(user).map((key, i) => {
-      const [requirementId, ambiguityField] = key.split(":");
-      return {
-        requirementId,
-        ambiguityField,
-        uncertainty: "ambiguity",
-        divergent: true,
-        impact: "medium",
-        question: `What is meant by ${ambiguityField} in ${requirementId}?`,
-        context: "c",
-        ...grade(key, i),
-      };
-    });
+    const questions = listed(user)
+      .filter(keep)
+      .map((key, i) => {
+        const [requirementId, ambiguityField] = key.split(":");
+        return {
+          requirementId,
+          ambiguityField,
+          uncertainty: "ambiguity",
+          divergent: true,
+          impact: "medium",
+          question: `What is meant by ${ambiguityField} in ${requirementId}?`,
+          context: "c",
+          ...grade(key, i),
+        };
+      });
     return { content: JSON.stringify({ questions: [...questions, ...extra] }) } as ChatResponse;
   });
   const provider = {
@@ -278,6 +282,20 @@ describe("#2543 — a round counts the open ambiguities its question call left o
     const round = roundOf("a1");
     expect(round.notConsidered).toBe(DOCUMENT.totalAmbiguities - cap);
     expect(round.notAsked).toBe(cap - MAX_QUESTIONS_PER_ROUND);
+  });
+
+  it("counts a chosen ambiguity the model wrote no question for", async () => {
+    // 4 of the cap's 24 chosen ambiguities get no question: counted, not lost.
+    const { provider } = documentProvider(
+      () => ({}),
+      [],
+      (_key, i) => i >= 4,
+    );
+    await new ClarificationDialog({ provider, sourceQuestions: true }).startOrContinue(
+      "unwritten",
+      DOCUMENT,
+    );
+    expect(roundOf("unwritten").notConsidered).toBe(DOCUMENT.totalAmbiguities - cap + 4);
   });
 
   it("leaves none out at the cap, and one just past it", async () => {

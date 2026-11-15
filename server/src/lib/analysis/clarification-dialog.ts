@@ -714,10 +714,14 @@ export class ClarificationDialog {
     let ask = selection.ask.filter((q) => !reused.has(q.id));
     let notAsked = selection.notAsked.length;
     // #2543 — the open ambiguities the question call left out (#2534's cap):
-    // no question was written for them, so `notAsked` does not count them.
+    // no question was written for them, so `notAsked` does not count them —
+    // nor the ones chosen for the call that the model wrote none for.
     let notConsidered =
       sourceQuestions && unresolvedReqs.length > 0
-        ? ambiguitiesNotConsidered(unresolvedReqs, addressed, { askFirst: this.askFirst })
+        ? ambiguitiesNotConsidered(unresolvedReqs, addressed, {
+            askFirst: this.askFirst,
+            written: new Set(generated.map((q) => `${q.requirementId}:${q.ambiguityField}`)),
+          })
         : 0;
     const governingAsk = governingQuestions.filter((q) => !reused.has(q.id));
     if (ask.length === 0 && governingAsk.length === 0) {
@@ -754,7 +758,9 @@ export class ClarificationDialog {
         : askEveryQuestion(cited);
       ask = fallbackSelection.ask;
       notAsked = fallbackSelection.notAsked.length;
-      // Every open ambiguity was written as a question: none was left out.
+      // The fallback asks from every open ambiguity, not the cap's choice (one
+      // with neither a suggested question nor a description is dropped, but
+      // none is left out by the cap): nothing is counted as not considered.
       notConsidered = 0;
     }
 
