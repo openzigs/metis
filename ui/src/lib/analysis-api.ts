@@ -1147,6 +1147,11 @@ export interface ClarificationRound {
   unreadResolutions?: string[];
   /** #2235 — questions worth asking that did not fit this round's cap. */
   notAsked?: number;
+  /**
+   * #2543 — open ambiguities this round wrote no question for (the server's
+   * cap on the ambiguities one round considers). Not counted in `notAsked`.
+   */
+  notConsidered?: number;
 }
 
 export interface ClarificationStatePayload {

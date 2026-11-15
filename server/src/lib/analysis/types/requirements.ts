@@ -297,6 +297,13 @@ export interface ClarificationRound {
    * round; on the last round they are never asked, and this count says so.
    */
   notAsked?: number;
+  /**
+   * #2543 — open ambiguities this round's question call did not consider: the
+   * remainder of #2534's cap (`QUESTION_CANDIDATES_PER_ROUND`). No question was
+   * written for them, so `notAsked` does not count them; a later round chooses
+   * again from what is still open. Absent when none was left out.
+   */
+  notConsidered?: number;
 }
 
 export interface ClarificationState {
