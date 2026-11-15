@@ -23,10 +23,20 @@ vi.mock("../middleware/auth.js", () => ({
     next();
   },
 }));
+// #2171 — a test can make the permission check refuse, to show the per-user
+// limiter sits after it (a refused caller spends no per-user budget).
+const permissionGate = vi.hoisted(() => ({ deny: false, checked: [] as string[] }));
 vi.mock("../middleware/require-permission.js", () => ({
   requirePermission:
-    () => (_req: express.Request, _res: express.Response, next: express.NextFunction) =>
-      next(),
+    (permission: string) =>
+    (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+      permissionGate.checked.push(permission);
+      if (permissionGate.deny) {
+        res.status(403).json({ success: false, error: { code: "FORBIDDEN", message: "no" } });
+        return;
+      }
+      next();
+    },
 }));
 vi.mock("../middleware/analysis-deepdive-rate-limit.js", () => ({
   analysisDeepDiveRateLimiter: (
@@ -236,6 +246,8 @@ beforeEach(() => {
   preAuthLimiter.calls = 0;
   reviewLimiter.limited = false;
   reviewLimiter.calls = 0;
+  permissionGate.deny = false;
+  permissionGate.checked.length = 0;
   authCalls.n = 0;
   analysisRow.status = "completed";
   analysisRow.metadata = null;
@@ -398,6 +410,17 @@ describe("PUT .../approvals/:approvalId — #1104 promotion retry", () => {
     expect(authCalls.n).toBe(2);
     expect(reviewApprovalRequest).not.toHaveBeenCalled();
     expect(promoteApprovedRequirements).not.toHaveBeenCalled();
+  });
+
+  it("checks analysis.run before the per-user limiter, so a refused caller spends none of it (#2171)", async () => {
+    permissionGate.deny = true;
+
+    const res = await approve();
+
+    expect(res.status).toBe(403);
+    expect(permissionGate.checked).toEqual(["analysis.run"]);
+    expect(reviewLimiter.calls).toBe(0);
+    expect(reviewApprovalRequest).not.toHaveBeenCalled();
   });
 });
 

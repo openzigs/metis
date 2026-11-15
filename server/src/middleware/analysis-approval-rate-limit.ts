@@ -158,11 +158,12 @@ export const analysisApprovalPromoteRateLimiter: RequestHandler = rateLimit({
  * that writes: promote, approve-all, reject-added, reopen, (#1580) the
  * checkpoint requirement edit and (#2167) the per-card review,
  * `PUT /:id/approvals/:approvalId`, which until then was bounded only by the
- * app-wide `apiRateLimiter` on `/api` (#1539). CodeQL `js/missing-rate-limiting` flags the route's own
- * `requireAuth` ("performs authorization, but is not rate-limited") unless an
- * `express-rate-limit` handler precedes it; the per-user limiters above then
- * run after the permission check, unchanged. Same shape as
- * `traceabilityPreAuthRateLimiter` (#815).
+ * app-wide `apiRateLimiter` on `/api` (#1539). CodeQL
+ * `js/missing-rate-limiting` flags the route's own `requireAuth` ("performs
+ * authorization, but is not rate-limited") unless an `express-rate-limit`
+ * handler precedes it; the per-user limiters above then run after the
+ * permission check, unchanged. Same shape as `traceabilityPreAuthRateLimiter`
+ * (#815).
  *
  * #1349 — keyed like the runs guard (`runsPreAuthKey`): the user id in a token
  * this server signed, else the TCP peer — never `req.ip`, which under
