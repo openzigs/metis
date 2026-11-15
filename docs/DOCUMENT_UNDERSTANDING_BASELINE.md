@@ -442,7 +442,7 @@ not read, #2275) is unchanged: it asks every question raised.
 
 Reading `reader-sonnet-5-5-2534` (arm R, claude-sonnet-5-5, one run per document, combined
 with `--combine`). It was made at `1f9a591fb`, a **local merge** of this change with #2530's
-branch (PR #2535, not yet merged), whose extraction the round needs. Arm R now also runs
+branch (PR #2535, merged since, unchanged in the files the round runs), whose extraction the round needs. Arm R now also runs
 round 2 as the dialog does after the analyst answers every question asked. The answered and
 set-aside ambiguities are addressed, and the model is the Sonnet tier the dialog escalates to.
 Round 2 is counted in the diagnostics (`secondRound*`), not scored. Document 04 runs longer
