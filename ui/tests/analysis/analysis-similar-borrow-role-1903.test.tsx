@@ -1,8 +1,9 @@
 /**
  * Issue #1903 — the REAL analysis page offers "Start from these citations"
  * (#1840) only to a viewer who may edit requirements (`project.update`). The
- * #1840 panel test toggles `canEdit` directly; this proves the page passes it
- * from the viewer's permissions, for both roles. The server enforces the same
+ * #1840 panel test toggles the panel's `writeHint` directly (from which it
+ * derives "may edit", #2180); this proves the page passes it from the
+ * viewer's permissions, for both roles. The server enforces the same
  * permission on the borrow itself (403, #1839).
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";

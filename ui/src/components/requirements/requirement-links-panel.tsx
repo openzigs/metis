@@ -38,6 +38,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
+import { useResetOnHint } from "@/hooks/use-reset-on-hint";
 
 export interface RequirementLinksPanelProps {
   projectId: string;
@@ -317,6 +318,15 @@ export function RequirementLinksPanel({
 }: RequirementLinksPanelProps): React.ReactElement {
   const qc = useQueryClient();
   const [dialogOpen, setDialogOpen] = useState(false);
+  // Bumped on each hint reset: a new key remounts the dialog, so its link type
+  // and search draft are dropped too, as the mapping form's and the assignee
+  // search's are.
+  const [dialogKey, setDialogKey] = useState(0);
+  // #2180 — close it for good, or it reopens unasked when the hint clears.
+  useResetOnHint(writeHint, () => {
+    setDialogOpen(false);
+    setDialogKey((n) => n + 1);
+  });
 
   const links = useQuery({
     queryKey: requirementLinksKey(requirementId),
@@ -402,6 +412,7 @@ export function RequirementLinksPanel({
 
       {/* #1591 — a hint set while the dialog is open closes it (cf. #1587's picker). */}
       <AddLinkDialog
+        key={dialogKey}
         open={dialogOpen && !writeHint}
         onOpenChange={setDialogOpen}
         projectId={projectId}
