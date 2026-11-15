@@ -97,16 +97,18 @@ const MAX_WORKSPACE_NAME_SHOWN = 100;
  * U+2066–9, the directional marks, zero-width space and joiners, the BOM, the
  * soft hyphen, tag characters), the line and paragraph separators (`Zl`, `Zp`),
  * and the rest of Unicode's default-ignorable set (Hangul fillers, variation
- * selectors). A bidi override inside the quotes would render the sentence after
+ * selectors), plus two that draw nothing without being default-ignorable: the
+ * Braille blank U+2800 and the private-use characters (`Co`, whose glyph, if
+ * any, is the font's). A bidi override inside the quotes would render the sentence after
  * the value reversed, and a zero-width character makes two ids look alike.
  */
-const HIDDEN_CHARACTER = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
+const HIDDEN_CHARACTER = /[\p{Cc}\p{Cf}\p{Co}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}⠀]/gu;
 
 /** `ch` as `\uXXXX` escapes, one per UTF-16 code unit (an astral one is two). */
 function escapeCodeUnits(ch: string): string {
   let out = "";
   for (let i = 0; i < ch.length; i++) {
-    out += `\\u${ch.charCodeAt(i).toString(16).toUpperCase().padStart(4, "0")}`;
+    out += `\\u${ch.charCodeAt(i).toString(16).padStart(4, "0")}`;
   }
   return out;
 }
@@ -124,9 +126,14 @@ function quoted(value: string, max: number): string {
   return JSON.stringify(shown).replace(HIDDEN_CHARACTER, escapeCodeUnits);
 }
 
-/** A user's name as shown in a notice, falling back to a neutral label. */
+/**
+ * A user's name as shown in a notice, falling back to a neutral label. The name
+ * is text a user chose and the actor's opens the sentence, so its hidden
+ * characters are shown as escapes too (not quoted: it reads as a name).
+ */
 function nameOf(u: { displayName: string; username: string } | null | undefined): string {
-  return u?.displayName || u?.username || "A workspace admin";
+  const name = u?.displayName || u?.username || "A workspace admin";
+  return name.replace(HIDDEN_CHARACTER, escapeCodeUnits);
 }
 
 /**
