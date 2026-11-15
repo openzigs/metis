@@ -131,50 +131,111 @@ export function buildJudgeMessages(
   ];
 }
 
+/**
+ * The verdict's full shape, as the prompt asks for it. #2533 review — `facts`
+ * and `spans` must be present, with no defaults: with defaults, an aside like
+ * `{"behaviour": "abstain"}` in prose after the verdict was itself a valid
+ * verdict, and as the last candidate it won.
+ */
 const verdictSchema = z.object({
   behaviour: z.enum(BEHAVIOURS),
-  facts: z.record(z.string(), z.enum(FACT_VERDICTS)).default({}),
-  spans: z.record(z.string(), z.boolean()).default({}),
+  facts: z.record(z.string(), z.enum(FACT_VERDICTS)),
+  spans: z.record(z.string(), z.boolean()),
 });
 
-/** The first `{ … }` block in a reply, fenced or not. */
-function jsonBlock(text: string): string | null {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  return start >= 0 && end > start ? text.slice(start, end + 1) : null;
+/** `facts` or `spans` left out: read only when nothing in the reply has the full shape. */
+const partialVerdictSchema = verdictSchema.partial({ facts: true, spans: true });
+
+type Verdict = z.infer<typeof verdictSchema>;
+
+/**
+ * Every balanced `{ … }` in `text`, in one stack-based pass. Braces inside a
+ * JSON string do not count. Strings are tracked only inside an open brace,
+ * so a quote in prose (`a 5" gap`) changes nothing. A string also ends at a
+ * newline, which JSON forbids inside one, so a stray quote inside an unclosed
+ * prose brace cannot hide the rest of the reply. A `{` that never closes
+ * yields nothing.
+ */
+function balancedObjects(text: string): { start: number; end: number }[] {
+  const open: number[] = [];
+  const objects: { start: number; end: number }[] = [];
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (c === "\\") i++;
+      else if (c === '"' || c === "\n") inString = false;
+    } else if (c === '"' && open.length > 0) inString = true;
+    else if (c === "{") open.push(i);
+    else if (c === "}" && open.length > 0) objects.push({ start: open.pop()!, end: i });
+  }
+  return objects;
 }
 
 /**
- * Parse the judge's reply. Null when it is not the shape asked for, or when a
- * verdict for an expected fact or a shown span is absent: a partial grading
- * is not scored as if the gaps were "missing".
+ * The texts a verdict may be in, in the order they are tried (#2521): the last
+ * fenced ```json block, then every balanced `{ … }` from the last back to the
+ * first (an enclosing object before the ones inside it). A judge that corrects
+ * itself means its last verdict. A brace in its prose (`{base_url}`) is at
+ * most a candidate that fails to parse, and an unclosed one is never a
+ * candidate, so neither starts a slice that swallows the real verdict.
+ */
+function verdictCandidates(text: string): string[] {
+  const fenced = [...text.matchAll(/```json[^\n]*\n([\s\S]*?)```/gi)].map((m) => m[1]!);
+  const objects = balancedObjects(text).sort((a, b) => b.end - a.end || a.start - b.start);
+  return [...fenced.slice(-1), ...objects.map((o) => text.slice(o.start, o.end + 1))];
+}
+
+/**
+ * The first candidate with the verdict's full shape. #2533 review — when none
+ * has it, one that leaves out `facts` or `spans` (`{"behaviour": "abstain"}`)
+ * is read with the missing ones empty, but only when it is the reply's only
+ * such object. Two that differ (a verdict, then an example in prose) leave the
+ * question unscored rather than scored by whichever came last.
+ */
+function readVerdict(text: string): Verdict | null {
+  const partial = new Map<string, Verdict>();
+  for (const candidate of verdictCandidates(text)) {
+    let raw: unknown;
+    try {
+      raw = JSON.parse(candidate);
+    } catch {
+      continue;
+    }
+    const full = verdictSchema.safeParse(raw);
+    if (full.success) return full.data;
+    const some = partialVerdictSchema.safeParse(raw);
+    if (some.success) {
+      const v = { facts: {}, spans: {}, ...some.data };
+      partial.set(JSON.stringify(v), v);
+    }
+  }
+  return partial.size === 1 ? [...partial.values()][0]! : null;
+}
+
+/**
+ * Parse the judge's reply. Null when no object in it is the shape asked for,
+ * or when the verdict lacks one for an expected fact or a shown span: a
+ * partial grading is not scored as if the gaps were "missing".
  */
 export function parseJudgeVerdict(
   text: string,
   q: BaQaQuestion,
   spans: readonly JudgedSpan[],
 ): JudgeVerdict | null {
-  const block = jsonBlock(text);
-  if (!block) return null;
-  let raw: unknown;
-  try {
-    raw = JSON.parse(block);
-  } catch {
-    return null;
-  }
-  const parsed = verdictSchema.safeParse(raw);
-  if (!parsed.success) return null;
+  const data = readVerdict(text);
+  if (!data) return null;
   const facts: Record<string, FactVerdict> = {};
   for (const f of q.facts ?? []) {
-    const v = parsed.data.facts[f.id];
+    const v = data.facts[f.id];
     if (!v) return null;
     facts[f.id] = v;
   }
   const out: Record<number, boolean> = {};
   for (const s of spans) {
-    const v = parsed.data.spans[String(s.n)];
+    const v = data.spans[String(s.n)];
     if (v === undefined) return null;
     out[s.n] = v;
   }
-  return { behaviour: parsed.data.behaviour, facts, spans: out };
+  return { behaviour: data.behaviour, facts, spans: out };
 }
