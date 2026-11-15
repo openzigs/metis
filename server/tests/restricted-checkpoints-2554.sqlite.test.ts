@@ -583,6 +583,38 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(orch.cancel).toHaveBeenCalledTimes(1);
       });
 
+      it("an admin still decides a review of a requirement resting on it; no one else can", async () => {
+        await db.requirement.create({
+          data: {
+            id: "req-2554-gone",
+            analysisId: GONE_RUN,
+            projectId: P,
+            title: "Requirement on a deleted source",
+            body: "b",
+            labels: "[]",
+            sourceIds: sources(["doc-deleted-2554"]),
+          },
+        });
+        await db.reviewRequest.create({
+          data: {
+            id: "rv-2554-gone",
+            projectId: P,
+            title: "rv-2554-gone",
+            status: "in_review",
+            policy: "all",
+            requestedById: "bob",
+            items: { create: [{ requirementId: "req-2554-gone", pinnedVersion: 1 }] },
+            assignments: { create: [{ reviewerId: "alice" }, { reviewerId: "root" }] },
+          },
+        });
+        const decide = (who: Who) =>
+          post(who, `/api/reviews/rv-2554-gone/decision`, { decision: "approved" });
+        const alice = await decide("alice");
+        expect(alice.status).toBe(403);
+        expect(alice.body.error.code).toBe("REVIEW_ITEM_RESTRICTED");
+        expect((await decide("root")).status).toBe(200);
+      });
+
       it("an admin can edit its checkpoint the list shows them unrestricted; its starter cannot", async () => {
         const edit = (who: Who) =>
           request(app())

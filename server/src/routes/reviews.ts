@@ -151,9 +151,10 @@ async function refuseRestrictedReviewItems(
  * nothing a reader is not (a reader is shown who reads a document). Refused
  * (403 `REVIEWER_CANNOT_SEE_ITEMS`, the reviewers named in
  * `details.reviewerIds`) before anything is written, audited as
- * `review.create.denied`. An admin reviewer (durable role) is never refused, as
- * at the decision below. An inactive or unknown reviewer is left to the
- * reviewer validation, which answers 400.
+ * `review.create.denied`. No admin escape is needed here: an admin reads every
+ * document but a deleted one, and a requirement on a deleted source is refused
+ * to every requester above first. An inactive or unknown reviewer is left to
+ * the reviewer validation, which answers 400.
  */
 async function refuseReviewersWhoCannotSee(
   userId: string,
@@ -173,8 +174,7 @@ async function refuseReviewersWhoCannotSee(
   });
   const blocked: string[] = [];
   for (const { id } of live) {
-    const hidden = (await restrictedIds(userSourceReader(id), rows)).size > 0;
-    if (hidden && !(await isDurableAdminUser(id))) blocked.push(id);
+    if ((await restrictedIds(userSourceReader(id), rows)).size > 0) blocked.push(id);
   }
   if (blocked.length === 0) return;
   audit({
