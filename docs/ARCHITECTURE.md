@@ -7164,6 +7164,7 @@ Recovery is at-least-once.
 |--------|------|---------|------------|
 | `POST` | `/generate` | Trigger documentation generation (async, returns 202) | 5 req/15min per user |
 | `GET` | `/` | List generated documents for a project, including separate indexing state from the synthetic `Document` row | — |
+| `GET` | `/cost-estimate?repoConnectorId=&pathPrefixes=` | A business-requirements document's estimated cost, as a USD range, before it is generated (#2189) | — |
 | `GET` | `/:docId` | Get a single document: its content once, plus summary metadata, the five latest version summaries (`id`, `version`, `revisionId`, `diffSummary`, `createdAt`) and separate indexing state | — |
 | `GET` | `/:docId/versions/:versionId` | One version's markdown body (#190) | — |
 | `GET` | `/:docId/versions/:versionId/provenance` | One version's full provenance manifest (#190); the UI fetches it only for **Download full manifest** (#196) | — |
@@ -7193,6 +7194,31 @@ selecting every latest version's manifest. Responses are compressed by `compress
 otherwise; on the 611,592-character document the detail body is 151 KB gzip and 144 KB
 Brotli, so no stronger Brotli setting is used (quality 11 saves another 29 KB for ~0.5 s
 of CPU per response).
+
+#2189 — `GET /cost-estimate` answers the Generate form before a business-requirements run.
+`server/src/lib/docs-gen/cost-estimate.ts` builds the plan the generator would run, without a
+model call: the scope's modules grouped by `groupSymbolsIntoModules` with the Phase-1 test
+policy and path scope applied, each module's indexed source lines, which modules already have
+facts in `docs_gen_fact_cache` under the Phase-1 model and `PHASE1_PROMPT_VERSION`, the section
+count from `sectionGroupsFor`, and `DOCS_GEN_DOCUMENT_MAX_CHARS`. A cache row names its module's
+directory but not its repository, so a directory two of the project's repositories share is
+never counted cached. The project's grouped modules are held in memory for up to 60 s, keyed
+on the project, the test policy and each code graph's `updatedAt` and symbol count, so the
+form's repeated estimates (open, repository change, each debounced path edit) read the
+symbols once; the fact cache is read every time. It lays out the run's calls
+(one per Phase-1 chunk, a write and a judge per section, extra batch pairs once the facts
+outgrow one facts cap, claim-extraction calls) and prices them through `RunUsage` →
+`estimateRunCost`, the same path as the after-run tally, so a prompt-length tier is applied per
+call. The models come from `resolveDocsGenCostInputs` (holistic-synthesizer.ts), resolved as a
+run resolves them. `status` is `priced` (`lowUsd`–`highUsd`: the point estimate × 0.7 to × 1.5),
+`unpriced` (naming each model with no price — never a $0 total), `free` (self-hosted or
+zero-priced models only) or `no-code`. The call model's constants are fitted to 16 measured runs
+(#1749's fixture BRD on Sonnet 5.5, a Miniflux BRD on Haiku 5.5, seven first-run and seven
+re-run Miniflux BRDs on DeepSeek Flash); `cost-estimate.calibration.test.ts` pins each run's
+error (−12% to +30%) and requires the range to hold all of them. Not counted: SQL-only
+directories found on disk at run time, web-research grounding, hybrid per-section routing and
+prompt-cache discounts. The route sits behind the router's `requireProjectAccess` and
+`project.read`; every query is project-scoped.
 
 ### UI Components
 
