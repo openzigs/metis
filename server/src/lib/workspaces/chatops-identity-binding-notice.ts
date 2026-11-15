@@ -18,10 +18,18 @@
  * that member as `replacedUserId`, and they are told too (unless they made the
  * rebind themselves): their chat commands no longer run as them.
  *
+ * #2175 — that member is told whether or not they are still a member. The
+ * binding named them, so they are owed the receipt; what it adds to what they
+ * knew is the new holder's display name. A binding to a former member was
+ * already inert (the resolver requires active membership), so the notice is
+ * the only sign that it moved.
+ *
  * The notice text names the external id and the workspace name, which the
  * admin it exposes can choose (any 1-200 characters for the id). Both are
- * quoted with their quotes and control characters escaped, and the id is cut
- * to a GUID's length, so that input cannot pass for the notice's own wording.
+ * quoted with their quotes and control characters escaped, with bidi controls
+ * and invisible characters shown as `\uXXXX` escapes (#2175), and the id is
+ * cut to a GUID's length, so that input cannot pass for the notice's own
+ * wording.
  *
  * The notice is a security receipt, so it is NOT gated on notification
  * preferences: an owner who has muted in-app notifications must still learn
@@ -83,13 +91,37 @@ const MAX_EXTERNAL_ID_SHOWN = 40;
 const MAX_WORKSPACE_NAME_SHOWN = 100;
 
 /**
+ * #2175 — characters `JSON.stringify` leaves raw that either draw nothing or
+ * reorder what follows them: controls past C0 (`Cc`: DEL, C1), format
+ * characters (`Cf`: the bidi embeddings, overrides and isolates U+202A–E and
+ * U+2066–9, the directional marks, zero-width space and joiners, the BOM, the
+ * soft hyphen, tag characters), the line and paragraph separators (`Zl`, `Zp`),
+ * and the rest of Unicode's default-ignorable set (Hangul fillers, variation
+ * selectors). A bidi override inside the quotes would render the sentence after
+ * the value reversed, and a zero-width character makes two ids look alike.
+ */
+const HIDDEN_CHARACTER = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}]/gu;
+
+/** `ch` as `\uXXXX` escapes, one per UTF-16 code unit (an astral one is two). */
+function escapeCodeUnits(ch: string): string {
+  let out = "";
+  for (let i = 0; i < ch.length; i++) {
+    out += `\\u${ch.charCodeAt(i).toString(16).toUpperCase().padStart(4, "0")}`;
+  }
+  return out;
+}
+
+/**
  * `value` as a double-quoted string with its own quotes and control characters
- * escaped (JSON rules), cut at `max` characters with an ellipsis, so text a
- * user chose cannot close the quote and read as the notice's own sentence.
+ * escaped (JSON rules) and every hidden character above shown as a `\uXXXX`
+ * escape, cut at `max` characters (counted before escaping) with an ellipsis,
+ * so text a user chose cannot close the quote, reorder the sentence or hide
+ * inside it, and read as the notice's own wording.
  */
 function quoted(value: string, max: number): string {
   const chars = [...value];
-  return JSON.stringify(chars.length > max ? `${chars.slice(0, max).join("")}…` : value);
+  const shown = chars.length > max ? `${chars.slice(0, max).join("")}…` : value;
+  return JSON.stringify(shown).replace(HIDDEN_CHARACTER, escapeCodeUnits);
 }
 
 /** A user's name as shown in a notice, falling back to a neutral label. */
