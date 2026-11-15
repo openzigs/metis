@@ -51,6 +51,12 @@ export interface DiscussionMentionInput {
   body: string;
   /** Author id — excluded from self-mentions. */
   authorId: string;
+  /**
+   * #2192 — the handles to notify, when not every handle in `body`: an edit
+   * notifies only the mentions it added, and still quotes the whole message.
+   * Defaults to every handle `body` mentions.
+   */
+  mentions?: string[];
 }
 
 // ---- Membership predicate ---------------------------------------------------
@@ -224,7 +230,7 @@ async function threadTitle(threadId: string, projectId: string): Promise<string 
 export async function notifyDiscussionMentions(input: DiscussionMentionInput): Promise<void> {
   const { threadId, projectId, messageId, body, authorId } = input;
   try {
-    const usernames = parseMentions(body);
+    const usernames = input.mentions ?? parseMentions(body);
     if (usernames.length === 0) return;
 
     const users = await resolveUsernames(usernames);
@@ -311,6 +317,116 @@ export async function notifyDiscussionMentions(input: DiscussionMentionInput): P
     );
   } catch (err) {
     log.error("notifyDiscussionMentions top-level error", { threadId, err });
+  }
+}
+
+// ---- Quote refresh / retraction (#2192) --------------------------------------
+
+/** Message of a mention notification whose discussion message was deleted (#2192). */
+export const DELETED_MESSAGE_TEXT = "The message was deleted.";
+/** Message of a mention notification whose message was edited and cannot be re-quoted (#2192). */
+export const EDITED_MESSAGE_TEXT = "The message was edited.";
+
+/** The `messageId` a stored `discussion_mention` payload names, or null. */
+function payloadMessageId(payload: string | null): string | null {
+  if (!payload) return null;
+  try {
+    const id = (JSON.parse(payload) as { messageId?: unknown }).messageId;
+    return typeof id === "string" ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The project's `discussion_mention` notifications that quote `messageId`.
+ * The row records its message only in the JSON payload (`Notification` has a
+ * `commentId` column for comments and nothing for a discussion message), so the
+ * database narrows by a substring of the serialized payload and the exact match
+ * is made on the parsed `messageId`: a `LIKE` wildcard or a case-insensitive
+ * match can never widen it to another message.
+ */
+async function notificationsQuoting(
+  projectId: string,
+  messageId: string,
+): Promise<Array<{ id: string; userId: string }>> {
+  const rows = await prisma.notification.findMany({
+    where: {
+      type: "discussion_mention",
+      projectId,
+      payload: { contains: `"messageId":${JSON.stringify(messageId)}` },
+    },
+    select: { id: true, userId: true, payload: true },
+  });
+  return rows
+    .filter((r) => payloadMessageId(r.payload) === messageId)
+    .map(({ id, userId }) => ({ id, userId }));
+}
+
+export interface MentionQuoteTarget {
+  projectId: string;
+  messageId: string;
+}
+
+/**
+ * #2192 — a deleted discussion message's mention notifications stop quoting
+ * it, as a deleted comment's do (#1318). The message becomes
+ * {@link DELETED_MESSAGE_TEXT}; the title (who, and which thread) and the link
+ * stay. Never throws: the message is already deleted, and a failure is logged.
+ */
+export async function retractDiscussionMentionExcerpts(target: MentionQuoteTarget): Promise<void> {
+  try {
+    const rows = await notificationsQuoting(target.projectId, target.messageId);
+    if (rows.length === 0) return;
+    await prisma.notification.updateMany({
+      where: { id: { in: rows.map((r) => r.id) } },
+      data: { message: DELETED_MESSAGE_TEXT },
+    });
+  } catch (err) {
+    log.error("Failed to retract a deleted message's mention excerpts", {
+      messageId: target.messageId,
+      err,
+    });
+  }
+}
+
+/**
+ * #2192 — an edited discussion message's mention notifications quote the new
+ * text, as an edited comment's do (#1318). Access is re-checked per recipient:
+ * one who can no longer open the project's discussions gets
+ * {@link EDITED_MESSAGE_TEXT} instead of the new text. Never throws.
+ */
+export async function refreshDiscussionMentionExcerpts(
+  target: MentionQuoteTarget & { body: string },
+): Promise<void> {
+  try {
+    const rows = await notificationsQuoting(target.projectId, target.messageId);
+    if (rows.length === 0) return;
+    const excerpt = commentExcerpt(target.body);
+    const userIds = [...new Set(rows.map((r) => r.userId))];
+    const verdicts = excerpt
+      ? await Promise.all(userIds.map((id) => isProjectMember(id, target.projectId)))
+      : userIds.map(() => false);
+    const allowed = new Set(userIds.filter((_, i) => verdicts[i]));
+    const requote = rows.filter((r) => allowed.has(r.userId)).map((r) => r.id);
+    const neutral = rows.filter((r) => !allowed.has(r.userId)).map((r) => r.id);
+    if (requote.length > 0) {
+      await prisma.notification.updateMany({
+        where: { id: { in: requote } },
+        data: { message: excerpt },
+      });
+    }
+    if (neutral.length > 0) {
+      await prisma.notification.updateMany({
+        where: { id: { in: neutral } },
+        data: { message: EDITED_MESSAGE_TEXT },
+      });
+    }
+  } catch (err) {
+    log.error("Failed to refresh an edited message's mention excerpts", {
+      messageId: target.messageId,
+      err,
+    });
   }
 }
 

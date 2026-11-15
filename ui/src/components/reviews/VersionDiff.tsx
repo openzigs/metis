@@ -16,6 +16,9 @@
  * only to hidden `finding:` labels is no change a reader can see, so it is not
  * listed. A list compared item by item, not as a set: a duplicated item is
  * an addition, and a reorder alone shows the order before and after.
+ *
+ * #2192 — each side's test id names its field (`diff-from-title`), so two
+ * changed fields never share one id.
  */
 import type { ChangedFields } from "@/lib/history-api";
 import { RequirementBody } from "@/components/analysis/RequirementBody";
@@ -48,7 +51,7 @@ function DiffSide({ side, field, value }: { side: "from" | "to"; field: string; 
   return (
     <Tag
       className={`block break-words rounded px-2 py-1 no-underline ${layout} ${SIDE_CLASS[side]}`}
-      data-testid={`diff-${side}`}
+      data-testid={`diff-${side}-${field}`}
     >
       {/* Headings stay below the card's own `h4` section heading. */}
       {markdown ? <RequirementBody body={value} minHeadingLevel={5} /> : text}
@@ -57,16 +60,16 @@ function DiffSide({ side, field, value }: { side: "from" | "to"; field: string; 
 }
 
 /** #2220 — a reorder only: the whole list before and after, numbered. */
-function OrderChange({ from, to }: { from: string[]; to: string[] }) {
+function OrderChange({ field, from, to }: { field: string; from: string[]; to: string[] }) {
   const numbered = (items: string[]) => items.map((x, i) => `${i + 1}. ${x}`).join("\n");
   const block = "block whitespace-pre-wrap break-words rounded px-2 py-1 no-underline";
   return (
     <>
       <p className="text-muted-foreground">Order changed</p>
-      <del className={`${block} ${SIDE_CLASS.from}`} data-testid="diff-from">
+      <del className={`${block} ${SIDE_CLASS.from}`} data-testid={`diff-from-${field}`}>
         {numbered(from)}
       </del>
-      <ins className={`${block} ${SIDE_CLASS.to}`} data-testid="diff-to">
+      <ins className={`${block} ${SIDE_CLASS.to}`} data-testid={`diff-to-${field}`}>
         {numbered(to)}
       </ins>
     </>
@@ -74,17 +77,33 @@ function OrderChange({ from, to }: { from: string[]; to: string[] }) {
 }
 
 /** #2220 — a list field's change: each removed item struck, each added item inserted. */
-function ListChange({ removed, added }: { removed: string[]; added: string[] }) {
+function ListChange({
+  field,
+  removed,
+  added,
+}: {
+  field: string;
+  removed: string[];
+  added: string[];
+}) {
   const item = "block whitespace-pre-wrap break-words rounded px-2 py-1 no-underline";
   return (
     <>
       {removed.map((text, i) => (
-        <del key={`from-${i}`} className={`${item} ${SIDE_CLASS.from}`} data-testid="diff-from">
+        <del
+          key={`from-${i}`}
+          className={`${item} ${SIDE_CLASS.from}`}
+          data-testid={`diff-from-${field}`}
+        >
           {text}
         </del>
       ))}
       {added.map((text, i) => (
-        <ins key={`to-${i}`} className={`${item} ${SIDE_CLASS.to}`} data-testid="diff-to">
+        <ins
+          key={`to-${i}`}
+          className={`${item} ${SIDE_CLASS.to}`}
+          data-testid={`diff-to-${field}`}
+        >
           {text}
         </ins>
       ))}
@@ -127,9 +146,9 @@ export function VersionDiff({ changedFields }: { changedFields: ChangedFields })
           </dt>
           <dd className="mt-0.5 space-y-0.5">
             {row.kind === "list" ? (
-              <ListChange removed={row.removed} added={row.added} />
+              <ListChange field={row.field} removed={row.removed} added={row.added} />
             ) : row.kind === "order" ? (
-              <OrderChange from={row.from} to={row.to} />
+              <OrderChange field={row.field} from={row.from} to={row.to} />
             ) : (
               <>
                 <DiffSide side="from" field={row.field} value={row.from} />

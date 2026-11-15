@@ -189,8 +189,8 @@ describe("VersionDiff — list fields (#2220)", () => {
     );
     const row = screen.getByTestId("diff-field-acceptanceCriteria");
     expect(row.querySelector("dt")).toHaveTextContent("Acceptance criteria");
-    expect(within(row).getByTestId("diff-from")).toHaveTextContent('Old "one"');
-    expect(within(row).getByTestId("diff-to")).toHaveTextContent("New one");
+    expect(within(row).getByTestId("diff-from-acceptanceCriteria")).toHaveTextContent('Old "one"');
+    expect(within(row).getByTestId("diff-to-acceptanceCriteria")).toHaveTextContent("New one");
     expect(row).not.toHaveTextContent("Kept");
     expect(row).not.toHaveTextContent("[");
     expect(row).not.toHaveTextContent("acceptanceCriteria");
@@ -219,8 +219,12 @@ describe("VersionDiff — list fields (#2220)", () => {
     );
     const row = screen.getByTestId("diff-field-acceptanceCriteria");
     expect(row).toHaveTextContent("Order changed");
-    expect(within(row).getByTestId("diff-from")).toHaveTextContent("1. First 2. Second");
-    expect(within(row).getByTestId("diff-to")).toHaveTextContent("1. Second 2. First");
+    expect(within(row).getByTestId("diff-from-acceptanceCriteria")).toHaveTextContent(
+      "1. First 2. Second",
+    );
+    expect(within(row).getByTestId("diff-to-acceptanceCriteria")).toHaveTextContent(
+      "1. Second 2. First",
+    );
   });
 
   it("shows a duplicated criterion as added", () => {
@@ -230,8 +234,8 @@ describe("VersionDiff — list fields (#2220)", () => {
       />,
     );
     const row = screen.getByTestId("diff-field-acceptanceCriteria");
-    expect(within(row).getByTestId("diff-to")).toHaveTextContent("Same");
-    expect(within(row).queryByTestId("diff-from")).toBeNull();
+    expect(within(row).getByTestId("diff-to-acceptanceCriteria")).toHaveTextContent("Same");
+    expect(within(row).queryByTestId("diff-from-acceptanceCriteria")).toBeNull();
   });
 
   it("with nothing visible left, says no field changed", () => {

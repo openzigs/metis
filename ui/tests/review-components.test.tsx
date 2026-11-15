@@ -105,12 +105,12 @@ describe("VersionDiff — a body change (#1581)", () => {
     const row = screen.getByTestId("diff-field-body");
     expect(row.textContent).not.toMatch(/metis:|##|\*\*Q:\*\*/);
     // The new side's heading and emphasis are elements, not characters.
-    const added = screen.getByTestId("diff-to");
+    const added = screen.getByTestId("diff-to-body");
     expect(added.tagName).toBe("INS");
     expect(added.querySelector("h5")).toHaveTextContent("Clarifications");
     expect(added.querySelector("strong")).toHaveTextContent("Q:");
-    expect(screen.getByTestId("diff-from").tagName).toBe("DEL");
-    expect(screen.getByTestId("diff-from")).toHaveTextContent("Feeds refresh.");
+    expect(screen.getByTestId("diff-from-body").tagName).toBe("DEL");
+    expect(screen.getByTestId("diff-from-body")).toHaveTextContent("Feeds refresh.");
     // No `pre-wrap` around rendered blocks; a plain field keeps it.
     expect(added.className).not.toContain("whitespace-pre-wrap");
   });
@@ -146,6 +146,12 @@ describe("VersionDiff", () => {
     expect(screen.getByTestId("diff-field-title")).toHaveTextContent("New title");
     expect(screen.getByTestId("diff-field-storyPoints")).toHaveTextContent("—");
     expect(screen.getByTestId("diff-field-storyPoints")).toHaveTextContent("5");
+    // #2192 — each side's test id names its field, so two changed fields do
+    // not share one id.
+    expect(screen.getByTestId("diff-from-title")).toHaveTextContent("Old title");
+    expect(screen.getByTestId("diff-to-title")).toHaveTextContent("New title");
+    expect(screen.getByTestId("diff-from-storyPoints")).toHaveTextContent("—");
+    expect(screen.getByTestId("diff-to-storyPoints")).toHaveTextContent("5");
   });
 
   it("renders an empty state when nothing changed", () => {

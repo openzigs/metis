@@ -19,7 +19,7 @@ const mockPrisma = {
   commentThread: { create: vi.fn() },
   // User + Mention are driven by the real mention fan-out path.
   user: { findMany: vi.fn() },
-  mention: { upsert: vi.fn(), updateMany: vi.fn() },
+  mention: { create: vi.fn(), updateMany: vi.fn() },
   // #734 — the real project-access rule runs: the caller is a workspace member.
   project: { findUnique: vi.fn(), findFirst: vi.fn() },
   // #734/#735 — fan-out resolves where the comment lives, and whether each
@@ -117,7 +117,7 @@ const flush = () => new Promise((r) => setTimeout(r, 10));
 describe("POST comment with @mentions (real fan-out path)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockPrisma.mention.upsert.mockResolvedValue({});
+    mockPrisma.mention.create.mockResolvedValue({});
     mockPrisma.mention.updateMany.mockResolvedValue({ count: 1 });
     projectMembers(["user-1"]);
     mockPrisma.project.findFirst.mockResolvedValue({ id: "proj-1" });
@@ -150,19 +150,15 @@ describe("POST comment with @mentions (real fan-out path)", () => {
 
     await flush();
     // Resolvable mention persisted; unresolvable one silently skipped (no throw).
-    expect(mockPrisma.mention.upsert).toHaveBeenCalledTimes(1);
-    expect(mockPrisma.mention.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: {
-          commentId_mentionedUserId: { commentId: "comment-1", mentionedUserId: "u-admin" },
-        },
-      }),
-    );
+    expect(mockPrisma.mention.create).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.mention.create).toHaveBeenCalledWith({
+      data: { commentId: "comment-1", mentionedUserId: "u-admin", notified: false },
+    });
   });
 
   it("returns 201 even when mention persistence throws (never 500s the request)", async () => {
     mockPrisma.user.findMany.mockResolvedValue([{ id: "u-admin", username: "admin" }]);
-    mockPrisma.mention.upsert.mockRejectedValue(new Error("DB exploded"));
+    mockPrisma.mention.create.mockRejectedValue(new Error("DB exploded"));
     stubThread("cc @admin");
 
     const res = await request(createApp())
@@ -186,7 +182,7 @@ describe("POST comment with @mentions (real fan-out path)", () => {
     expect(res.body.error.code).toBe("REQUIREMENT_NOT_FOUND");
     await flush();
     expect(mockPrisma.commentThread.create).not.toHaveBeenCalled();
-    expect(mockPrisma.mention.upsert).not.toHaveBeenCalled();
+    expect(mockPrisma.mention.create).not.toHaveBeenCalled();
   });
 
   it("returns 201 for a plain body with no mentions", async () => {

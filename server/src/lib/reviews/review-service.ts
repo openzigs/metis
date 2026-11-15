@@ -954,6 +954,7 @@ export async function recordDecision(
     decision,
     outcome: result.aggregate === "pending" ? null : (result.status as "approved" | "rejected"),
     baselineId: result.baselineId,
+    reviewerCount: reviewerIdsOf(review).length,
   });
   // #1574 — an open review page shows the decision (and any outcome) live.
   void emitReviewChanged(review.projectId, reviewId, reviewerIdsOf(review));

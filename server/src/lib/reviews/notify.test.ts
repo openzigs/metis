@@ -347,6 +347,27 @@ describe("notifyReviewDecision", () => {
     expect(emit).toHaveBeenCalledTimes(1);
   });
 
+  it("#2192 — a multi-reviewer approval credits the reviewer with the last approval, not the whole", async () => {
+    await notifyReviewDecision(
+      decisionInput({ outcome: "approved", baselineId: "base-9", reviewerCount: 2 }),
+    );
+    expect(createdRows()[0].title).toBe("Review approved");
+    expect(createdRows()[0].message).toBe(
+      '"Sprint 4 sign-off" was approved: Alice Reviewer gave the last approval — a baseline was created',
+    );
+  });
+
+  it("#2192 — a one-reviewer approval, and any rejection, still name the reviewer's own decision", async () => {
+    await notifyReviewDecision(decisionInput({ outcome: "approved", reviewerCount: 1 }));
+    await notifyReviewDecision(
+      decisionInput({ decision: "rejected", outcome: "rejected", reviewerCount: 3 }),
+    );
+    expect(createdRows().map((r) => r.message)).toEqual([
+      'Alice Reviewer approved "Sprint 4 sign-off"',
+      'Alice Reviewer rejected "Sprint 4 sign-off"',
+    ]);
+  });
+
   it("a terminal approval with no baseline (a docs-only scope) does not claim one", async () => {
     await notifyReviewDecision(decisionInput({ outcome: "approved", baselineId: undefined }));
 

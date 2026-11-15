@@ -166,6 +166,8 @@ describe("recordDecision → dispatchReviewDecision", () => {
       decision: "approved",
       outcome: null,
       baselineId: null,
+      // #2192 — the review's reviewer count, for the terminal approval's wording.
+      reviewerCount: 2,
     });
     expect(dispatchedInTx).toEqual([false]);
   });

@@ -58,13 +58,24 @@ function harness(existing: Record<string, unknown> | null = EXISTING, writeCount
   const emitUpdated = vi.fn();
   const emitDeleted = vi.fn();
   const dispatchMentions = vi.fn();
+  const refreshMentionQuotes = vi.fn(async () => undefined);
+  const retractMentionQuotes = vi.fn(async () => undefined);
   return {
     findFirst,
     update,
     emitUpdated,
     emitDeleted,
     dispatchMentions,
-    deps: { db, emitUpdated, emitDeleted, dispatchMentions },
+    refreshMentionQuotes,
+    retractMentionQuotes,
+    deps: {
+      db,
+      emitUpdated,
+      emitDeleted,
+      dispatchMentions,
+      refreshMentionQuotes,
+      retractMentionQuotes,
+    },
   };
 }
 
@@ -151,7 +162,7 @@ describe("editHumanDiscussionMessage", () => {
     expect(h.update).not.toHaveBeenCalled();
   });
 
-  it("notifies only the mentions the edit ADDED, through the member-only fan-out", async () => {
+  it("notifies only the mentions the edit ADDED, quoting the whole edited message (#2192)", async () => {
     const h = harness();
     await editHumanDiscussionMessage({ ...EDIT, body: "hi @Bob and @carol" }, h.deps);
     expect(h.dispatchMentions).toHaveBeenCalledTimes(1);
@@ -159,8 +170,20 @@ describe("editHumanDiscussionMessage", () => {
       threadId: "t1",
       projectId: "p1",
       messageId: "m1",
-      body: "@carol",
+      body: "hi @Bob and @carol",
       authorId: "alice",
+      mentions: ["carol"],
+    });
+  });
+
+  it("re-quotes the mention notifications already sent with the edited text (#2192)", async () => {
+    const h = harness();
+    await editHumanDiscussionMessage({ ...EDIT, body: "hello again @bob" }, h.deps);
+    expect(h.refreshMentionQuotes).toHaveBeenCalledTimes(1);
+    expect(h.refreshMentionQuotes).toHaveBeenCalledWith({
+      projectId: "p1",
+      messageId: "m1",
+      body: "hello again @bob",
     });
   });
 
@@ -181,6 +204,13 @@ describe("deleteHumanDiscussionMessage", () => {
     expect(audit).toHaveBeenCalledWith(
       expect.objectContaining({ action: "discussion.message.deleted" }),
     );
+  });
+
+  it("retracts the deleted message's quote from its mention notifications (#2192)", async () => {
+    const h = harness();
+    await deleteHumanDiscussionMessage(EDIT, h.deps);
+    expect(h.retractMentionQuotes).toHaveBeenCalledTimes(1);
+    expect(h.retractMentionQuotes).toHaveBeenCalledWith({ projectId: "p1", messageId: "m1" });
   });
 
   it("refuses another member's message with NOT_AUTHOR", async () => {
@@ -206,6 +236,7 @@ describe("deleteHumanDiscussionMessage", () => {
       code: "MESSAGE_NOT_FOUND",
     });
     expect(h.emitDeleted).not.toHaveBeenCalled();
+    expect(h.retractMentionQuotes).not.toHaveBeenCalled();
     expect(audit).not.toHaveBeenCalled();
   });
 });
@@ -219,6 +250,7 @@ describe("#734 — an edit racing a delete", () => {
     expect(h.update.mock.calls[0][0].where).toEqual(OWN_LIVE_WHERE);
     expect(h.emitUpdated).not.toHaveBeenCalled();
     expect(h.dispatchMentions).not.toHaveBeenCalled();
+    expect(h.refreshMentionQuotes).not.toHaveBeenCalled();
     expect(audit).not.toHaveBeenCalled();
   });
 

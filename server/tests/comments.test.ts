@@ -292,9 +292,7 @@ describe("comments router", () => {
       // #1318 — the comment's mention notifications quote the new text.
       expect(refreshCommentMentionExcerpts).toHaveBeenCalledWith("c-1", "Updated body");
       // #1581 — a mention the edit added notifies; only new ones (see fanOutMentions).
-      expect(dispatchMentions).toHaveBeenCalledWith("c-1", "Updated body", "user-1", {
-        onlyNew: true,
-      });
+      expect(dispatchMentions).toHaveBeenCalledWith("c-1", "Updated body", "user-1");
     });
 
     it("returns 403 when editing another user's comment", async () => {

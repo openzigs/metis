@@ -16,11 +16,17 @@ const userRoleFindFirst = vi.fn();
 const prefFindMany = vi.fn();
 const userFindUnique = vi.fn();
 const threadFindFirst = vi.fn();
+const notificationFindMany = vi.fn();
+const notificationUpdateMany = vi.fn();
 vi.mock("../prisma.js", () => ({
   prisma: {
     user: { findUnique: (...a: unknown[]) => userFindUnique(...a) },
     discussionThread: { findFirst: (...a: unknown[]) => threadFindFirst(...a) },
-    notification: { create: (...a: unknown[]) => notificationCreate(...a) },
+    notification: {
+      create: (...a: unknown[]) => notificationCreate(...a),
+      findMany: (...a: unknown[]) => notificationFindMany(...a),
+      updateMany: (...a: unknown[]) => notificationUpdateMany(...a),
+    },
     userRole: { findFirst: (...a: unknown[]) => userRoleFindFirst(...a) },
     notificationPreference: { findMany: (...a: unknown[]) => prefFindMany(...a) },
   },
@@ -62,6 +68,10 @@ const {
   loadMentionNotifyConfig,
   __resetMentionNotifyLimiter,
   __setMentionNotifyStore,
+  refreshDiscussionMentionExcerpts,
+  retractDiscussionMentionExcerpts,
+  DELETED_MESSAGE_TEXT,
+  EDITED_MESSAGE_TEXT,
 } = await import("./notify.js");
 const { SharedRateLimitStore, InMemoryRateLimitStore } = await import("./rate-limit-store.js");
 
@@ -420,6 +430,135 @@ describe("discussion mention notifications", () => {
     it("is fire-and-forget and never throws synchronously", () => {
       resolveUsernames.mockResolvedValue([{ id: "bob", username: "bob" }]);
       expect(() => dispatchDiscussionMentions(baseInput())).not.toThrow();
+    });
+  });
+
+  describe("#2192 — an edit's added mention", () => {
+    it("notifies only the handles named, and quotes the whole message", async () => {
+      resolveUsernames.mockResolvedValue([{ id: "carol", username: "carol" }]);
+
+      await notifyDiscussionMentions(
+        baseInput({ body: "hi @bob, and now @carol too", mentions: ["carol"] }),
+      );
+
+      expect(resolveUsernames).toHaveBeenCalledWith(["carol"]);
+      expect(notificationCreate).toHaveBeenCalledTimes(1);
+      expect(notificationCreate.mock.calls[0][0].data.message).toBe(
+        "“hi @bob, and now @carol too”",
+      );
+    });
+
+    it("an empty handle list notifies nobody", async () => {
+      await notifyDiscussionMentions(baseInput({ mentions: [] }));
+      expect(resolveUsernames).not.toHaveBeenCalled();
+      expect(notificationCreate).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("#2192 — quotes of an edited or deleted message", () => {
+    const row = (id: string, userId: string, messageId = "m1") => ({
+      id,
+      userId,
+      payload: JSON.stringify({ kind: "discussion_mention", threadId: "t1", messageId }),
+    });
+
+    it("finds the message's notifications by type, project and payload", async () => {
+      notificationFindMany.mockResolvedValue([]);
+      await retractDiscussionMentionExcerpts({ projectId: "p1", messageId: "m1" });
+      expect(notificationFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            type: "discussion_mention",
+            projectId: "p1",
+            payload: { contains: '"messageId":"m1"' },
+          },
+        }),
+      );
+      // Nothing quoted the message: nothing is written.
+      expect(notificationUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("a delete replaces the quote, and only on rows whose payload names that message", async () => {
+      notificationFindMany.mockResolvedValue([
+        row("n1", "bob"),
+        // The substring match only narrows: whatever the database returns, a
+        // row whose parsed payload names another message is left alone.
+        row("n2", "carol", "m1x"),
+        { id: "n3", userId: "dave", payload: "not json" },
+        { id: "n4", userId: "erin", payload: null },
+      ]);
+
+      await retractDiscussionMentionExcerpts({ projectId: "p1", messageId: "m1" });
+
+      expect(notificationUpdateMany).toHaveBeenCalledTimes(1);
+      expect(notificationUpdateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["n1"] } },
+        data: { message: DELETED_MESSAGE_TEXT },
+      });
+    });
+
+    it("a delete never throws when the database fails", async () => {
+      notificationFindMany.mockRejectedValue(new Error("db down"));
+      await expect(
+        retractDiscussionMentionExcerpts({ projectId: "p1", messageId: "m1" }),
+      ).resolves.toBeUndefined();
+    });
+
+    it("an edit re-quotes a member's notification with the new text", async () => {
+      notificationFindMany.mockResolvedValue([row("n1", "bob"), row("n2", "bob")]);
+
+      await refreshDiscussionMentionExcerpts({
+        projectId: "p1",
+        messageId: "m1",
+        body: "@bob  the new\n text",
+      });
+
+      expect(canAccessProjectDiscussions).toHaveBeenCalledTimes(1); // once per user
+      expect(notificationUpdateMany).toHaveBeenCalledTimes(1);
+      expect(notificationUpdateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["n1", "n2"] } },
+        data: { message: "“@bob the new text”" },
+      });
+    });
+
+    it("an edit does not show the new text to a recipient who lost access", async () => {
+      notificationFindMany.mockResolvedValue([row("n1", "bob"), row("n2", "carol")]);
+      canAccessProjectDiscussions.mockImplementation(async (u: { id: string }) => u.id === "bob");
+
+      await refreshDiscussionMentionExcerpts({ projectId: "p1", messageId: "m1", body: "secret" });
+
+      expect(notificationUpdateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["n1"] } },
+        data: { message: "“secret”" },
+      });
+      expect(notificationUpdateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["n2"] } },
+        data: { message: EDITED_MESSAGE_TEXT },
+      });
+    });
+
+    it("an edit to a blank body leaves the neutral text, checking nobody's access", async () => {
+      notificationFindMany.mockResolvedValue([row("n1", "bob")]);
+
+      await refreshDiscussionMentionExcerpts({ projectId: "p1", messageId: "m1", body: "  " });
+
+      expect(canAccessProjectDiscussions).not.toHaveBeenCalled();
+      expect(notificationUpdateMany).toHaveBeenCalledTimes(1);
+      expect(notificationUpdateMany).toHaveBeenCalledWith({
+        where: { id: { in: ["n1"] } },
+        data: { message: EDITED_MESSAGE_TEXT },
+      });
+    });
+
+    it("an edit with no quoting notification writes nothing, and never throws on failure", async () => {
+      notificationFindMany.mockResolvedValueOnce([]);
+      await refreshDiscussionMentionExcerpts({ projectId: "p1", messageId: "m1", body: "x" });
+      expect(notificationUpdateMany).not.toHaveBeenCalled();
+
+      notificationFindMany.mockRejectedValueOnce(new Error("db down"));
+      await expect(
+        refreshDiscussionMentionExcerpts({ projectId: "p1", messageId: "m1", body: "x" }),
+      ).resolves.toBeUndefined();
     });
   });
 });

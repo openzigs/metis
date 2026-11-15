@@ -12,7 +12,7 @@ const mockIoTo = vi.fn(() => ({ emit: mockEmit }));
 
 const mockPrisma = {
   user: { findMany: vi.fn() },
-  mention: { upsert: vi.fn(), updateMany: vi.fn() },
+  mention: { create: vi.fn(), updateMany: vi.fn() },
   notification: { create: vi.fn(), findMany: vi.fn(), updateMany: vi.fn() },
   notificationPreference: { findMany: vi.fn() },
   comment: { findUnique: vi.fn() },
@@ -59,7 +59,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   onRequirement();
   mockPrisma.user.findMany.mockResolvedValue([{ id: "user-bob", username: "bob" }]);
-  mockPrisma.mention.upsert.mockResolvedValue({});
+  mockPrisma.mention.create.mockResolvedValue({});
   mockPrisma.mention.updateMany.mockResolvedValue({ count: 1 });
   mockPrisma.notification.create.mockResolvedValue({ id: "n-42" });
   mockPrisma.notificationPreference.findMany.mockResolvedValue([]);

@@ -220,8 +220,8 @@ describe("the review card — a requirement edited after its pin", () => {
     expect(within(notice).getByText("v2 differs from the approved v1")).toBeTruthy();
     expect(notice.textContent).toContain("Request a re-review");
     await waitFor(() => expect(within(notice).getByTestId("diff-field-body")).toBeTruthy());
-    expect(within(notice).getByTestId("diff-from").textContent).toContain(PINNED.body);
-    expect(within(notice).getByTestId("diff-to").textContent).toContain(CURRENT.body);
+    expect(within(notice).getByTestId("diff-from-body").textContent).toContain(PINNED.body);
+    expect(within(notice).getByTestId("diff-to-body").textContent).toContain(CURRENT.body);
     // Only what changed between the pin and now.
     expect(within(notice).queryByTestId("diff-field-title")).toBeNull();
   });
