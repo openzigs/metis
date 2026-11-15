@@ -3,12 +3,29 @@
  * and a member the document is restricted away from cannot select it (#2546:
  * it is listed, but neither selectable nor counted as used).
  */
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import type { DocumentRow } from "@/lib/projects-api";
 
 vi.mock("@/hooks/use-repo-names", () => ({ useRepoNames: () => new Map() }));
+const createFromUrl = vi.fn();
+vi.mock("@/lib/projects-api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/projects-api")>();
+  return {
+    ...actual,
+    documentsApi: {
+      ...actual.documentsApi,
+      createFromUrl: (...a: unknown[]) => createFromUrl(...a),
+    },
+  };
+});
+vi.mock("@/components/projects/document-uploader", () => ({
+  DocumentUploader: () => <div data-testid="stub-uploader" />,
+}));
+vi.mock("@/components/projects/text-ingest-form", () => ({
+  TextIngestForm: () => <div data-testid="stub-text-form" />,
+}));
 
 const { AddDocumentsPanel } = await import("./add-documents-panel");
 
@@ -101,5 +118,97 @@ describe("AddDocumentsPanel — #2547 restricted documents", () => {
       ["d-open"],
     );
     expect(onSelectedDocsChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("AddDocumentsPanel — list states and the URL form", () => {
+  it("says it is loading, or that there are no documents yet", () => {
+    const { unmount } = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <AddDocumentsPanel
+          projectId="p1"
+          docs={[]}
+          selectedDocs={[]}
+          onSelectedDocsChange={vi.fn()}
+          onInvalidateDocs={async () => undefined}
+          loading
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByText("Loading documents…")).toBeInTheDocument();
+    unmount();
+    renderPanel([]);
+    expect(screen.getByText(/No documents yet/)).toBeInTheDocument();
+  });
+
+  it("warns while a selected document is still ingesting, and shows its status", () => {
+    renderPanel([doc({ id: "d-new", status: "processing" })], ["d-new"]);
+    expect(screen.getByTestId("add-documents-status-d-new")).toHaveTextContent("processing");
+    expect(screen.getByTestId("add-documents-warning")).toHaveTextContent(
+      "1 selected document is still ingesting",
+    );
+  });
+
+  it("unticks a selected document", () => {
+    const { onSelectedDocsChange } = renderPanel([doc({ id: "d1" })], ["d1"]);
+    fireEvent.click(checkboxOf("d1"));
+    expect(onSelectedDocsChange).toHaveBeenCalledWith([]);
+  });
+
+  it("expands the add controls and suggests a fix for a URL it cannot fetch", () => {
+    renderPanel([]);
+    const toggle = screen.getByTestId("add-documents-toggle");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByTestId("add-documents-controls")).toBeInTheDocument();
+    fireEvent.change(screen.getByTestId("add-documents-url-input"), {
+      target: { value: "example.com/spec.md" },
+    });
+    fireEvent.click(screen.getByTestId("add-documents-url-submit"));
+    expect(screen.getByTestId("add-documents-url-error")).toHaveTextContent(/https:\/\//);
+    fireEvent.change(screen.getByTestId("add-documents-url-input"), {
+      target: { value: "ftp://example.com/spec.md" },
+    });
+    fireEvent.click(screen.getByTestId("add-documents-url-submit"));
+    expect(screen.getByTestId("add-documents-url-error")).toBeInTheDocument();
+  });
+
+  it("fetches a URL, waits for the list to refresh, then selects the new document", async () => {
+    createFromUrl.mockResolvedValueOnce({ document: doc({ id: "d-url" }) });
+    const onInvalidateDocs = vi.fn(async () => undefined);
+    const onSelectedDocsChange = vi.fn();
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <AddDocumentsPanel
+          projectId="p1"
+          docs={[]}
+          selectedDocs={["d-old"]}
+          onSelectedDocsChange={onSelectedDocsChange}
+          onInvalidateDocs={onInvalidateDocs}
+        />
+      </QueryClientProvider>,
+    );
+    fireEvent.click(screen.getByTestId("add-documents-toggle"));
+    fireEvent.change(screen.getByTestId("add-documents-url-input"), {
+      target: { value: "https://example.com/spec.md" },
+    });
+    fireEvent.click(screen.getByTestId("add-documents-url-submit"));
+    await waitFor(() => expect(onSelectedDocsChange).toHaveBeenCalledWith(["d-old", "d-url"]));
+    expect(createFromUrl).toHaveBeenCalledWith("p1", { url: "https://example.com/spec.md" });
+    expect(onInvalidateDocs).toHaveBeenCalled();
+  });
+
+  it("shows the server's message when a URL cannot be fetched", async () => {
+    createFromUrl.mockRejectedValueOnce(new Error("boom"));
+    renderPanel([]);
+    fireEvent.click(screen.getByTestId("add-documents-toggle"));
+    fireEvent.change(screen.getByTestId("add-documents-url-input"), {
+      target: { value: "https://example.com/x.md" },
+    });
+    fireEvent.click(screen.getByTestId("add-documents-url-submit"));
+    expect(await screen.findByTestId("add-documents-url-error")).toHaveTextContent(
+      "Failed to fetch URL",
+    );
   });
 });

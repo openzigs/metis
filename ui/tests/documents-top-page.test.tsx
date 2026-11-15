@@ -173,3 +173,57 @@ describe("<DocumentsTopLevelPage />", () => {
     expect(repoListMock).not.toHaveBeenCalled();
   });
 });
+
+describe("Top-level /documents — #2547 a document the caller cannot read", () => {
+  it("offers no spec toggle on it: the server refuses a non-reader's change", async () => {
+    documentsListMock.mockImplementation(async (projectId: string) => ({
+      items:
+        projectId === "p1"
+          ? [
+              doc("d1", "p1", "alpha-1.md"),
+              {
+                ...doc("d2", "p1", "Restricted"),
+                restricted: true,
+                access: { restricted: true as const, canRead: false as const },
+              },
+            ]
+          : [],
+      total: projectId === "p1" ? 2 : 0,
+      limit: 100,
+      offset: 0,
+    }));
+    renderPage();
+    await screen.findByTestId("documents-spec-toggle-d1");
+    expect(screen.queryByTestId("documents-spec-toggle-d2")).toBeNull();
+    expect(screen.getByTestId("documents-spec-restricted-d2")).toBeInTheDocument();
+    // The Restricted badge, naming no reader to a non-reader.
+    expect(screen.getByTestId("documents-top-restricted-d2")).toHaveTextContent(/^Restricted$/);
+    expect(screen.queryByTestId("documents-top-restricted-d1")).toBeNull();
+  });
+
+  it("badges a readable restricted document with who else reads it", async () => {
+    documentsListMock.mockImplementation(async (projectId: string) => ({
+      items:
+        projectId === "p1"
+          ? [
+              {
+                ...doc("d1", "p1", "plan.md"),
+                access: {
+                  restricted: true,
+                  canRead: true as const,
+                  subjects: [{ kind: "role" as const, value: "coordinator" }],
+                },
+              },
+            ]
+          : [],
+      total: projectId === "p1" ? 1 : 0,
+      limit: 100,
+      offset: 0,
+    }));
+    renderPage();
+    expect(await screen.findByTestId("documents-top-restricted-d1")).toHaveTextContent(
+      "Readable by role coordinator and admins",
+    );
+    expect(screen.getByTestId("documents-spec-toggle-d1")).toBeInTheDocument();
+  });
+});

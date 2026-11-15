@@ -20,8 +20,10 @@ import {
 } from "@/components/tables/responsive-table";
 import { documentsApi, projectsApi, type DocumentRow, type Project } from "@/lib/projects-api";
 import { ApiError } from "@/lib/api-client";
+import { isUnreadableDocument } from "@/lib/document-access";
 import { PageHeader } from "@/components/ui/page-header";
 import { DocumentName } from "@/components/projects/document-name";
+import { RestrictedBadge } from "@/components/projects/restricted-badge";
 import { useRepoNamesForProjects } from "@/hooks/use-repo-names";
 
 interface AggregatedRow extends DocumentRow {
@@ -89,8 +91,15 @@ export default function DocumentsTopLevelPage() {
       {
         key: "filename",
         header: "Document",
+        // #2547 — the same Restricted badge as the project's Documents page.
         cell: (row) => (
-          <DocumentName filename={row.filename} source={row.source} repoNames={repoNames} />
+          <span className="inline-flex flex-wrap items-center gap-2">
+            <DocumentName filename={row.filename} source={row.source} repoNames={repoNames} />
+            <RestrictedBadge
+              access={isUnreadableDocument(row) ? { restricted: true, canRead: false } : row.access}
+              testId={`documents-top-restricted-${row.id}`}
+            />
+          </span>
         ),
       },
       { key: "project", header: "Project", cell: (row) => row.projectName },
@@ -98,18 +107,28 @@ export default function DocumentsTopLevelPage() {
       {
         key: "spec",
         header: "Spec",
-        cell: (row) => (
-          <SpecToggle
-            projectId={row.projectId}
-            documentId={row.id}
-            isSpec={row.isSpec ?? false}
-            onToggled={() =>
-              qc.invalidateQueries({
-                queryKey: ["top-level", "documents", row.projectId],
-              })
-            }
-          />
-        ),
+        // #2547 — a member who cannot read a document cannot re-tag it (the
+        // server answers 403 DOCUMENT_RESTRICTED), so no toggle is offered.
+        cell: (row) =>
+          isUnreadableDocument(row) ? (
+            <span
+              className="text-xs text-muted-foreground"
+              data-testid={`documents-spec-restricted-${row.id}`}
+            >
+              Restricted
+            </span>
+          ) : (
+            <SpecToggle
+              projectId={row.projectId}
+              documentId={row.id}
+              isSpec={row.isSpec ?? false}
+              onToggled={() =>
+                qc.invalidateQueries({
+                  queryKey: ["top-level", "documents", row.projectId],
+                })
+              }
+            />
+          ),
       },
       {
         key: "uploaded",
@@ -236,8 +255,20 @@ function SpecToggle({
       disabled={mutation.isPending}
       onClick={() => mutation.mutate()}
       data-testid={`documents-spec-toggle-${documentId}`}
+      aria-describedby={mutation.isError ? `documents-spec-error-${documentId}` : undefined}
     >
       {isSpec ? "Spec ✓" : "—"}
+      {/* #2547 — a refused change says so instead of silently not changing. */}
+      {mutation.isError ? (
+        <span
+          id={`documents-spec-error-${documentId}`}
+          role="alert"
+          className="ml-1 text-destructive"
+          data-testid={`documents-spec-error-${documentId}`}
+        >
+          {mutation.error instanceof Error ? mutation.error.message : "Could not change the tag"}
+        </span>
+      ) : null}
     </button>
   );
 }
