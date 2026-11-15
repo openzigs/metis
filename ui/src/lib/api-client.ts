@@ -145,8 +145,26 @@ function buildUrl(path: string, params?: ApiFetchOptions["params"]): string {
 type RefreshOutcome = "ok" | "failed" | "unavailable";
 
 let inFlightRefresh: Promise<RefreshOutcome> | null = null;
-type RefreshFailureHandler = () => void;
+/**
+ * #2549 — which sign-in the browser's cookies belong to: {@link beginSignedInSession}
+ * advances it. A refresh records the one it started under, so a failure of a
+ * refresh that still carried a replaced session's cookie is told it is stale.
+ */
+let sessionEpoch = 0;
+let inFlightEpoch = 0;
+/** `stale` — the refresh started under a session a sign-in has since replaced. */
+type RefreshFailureHandler = (info: { stale: boolean }) => void;
 let onRefreshFailure: RefreshFailureHandler | null = null;
+
+/** #2549 — the browser now holds a new sign-in's cookies (see {@link sessionEpoch}). */
+export function beginSignedInSession(): void {
+  sessionEpoch += 1;
+}
+
+/** Tell the failure handler about the refresh that just failed under `epoch`. */
+function refreshFailed(epoch: number): void {
+  onRefreshFailure?.({ stale: epoch !== sessionEpoch });
+}
 
 type RefreshSuccessHandler = () => void;
 let onRefreshSuccess: RefreshSuccessHandler | null = null;
@@ -176,6 +194,8 @@ export function _resetAuthRetryState(): void {
   inFlightRefresh = null;
   onRefreshFailure = null;
   onRefreshSuccess = null;
+  sessionEpoch = 0;
+  inFlightEpoch = 0;
 }
 
 /**
@@ -194,18 +214,39 @@ export async function refreshAccessToken(): Promise<boolean> {
   return (await refreshOnce()) === "ok";
 }
 
+/** #2549 — how long a sign-in waits on a refresh already in flight. */
+export const SIGN_IN_REFRESH_WAIT_MS = 5_000;
+
 /**
  * #2549 — wait for a refresh already in flight, whatever its outcome (it never
- * rejects). A sign-in waits on it: a refresh started under the session the
- * browser held before, and answered after the sign-in, would set that
- * session's cookies over the new ones.
+ * rejects), for at most {@link SIGN_IN_REFRESH_WAIT_MS}. A sign-in waits on it:
+ * a refresh started under the session the browser held before, and answered
+ * after the sign-in, would set that session's cookies over the new ones. A
+ * refresh that stalls past the bound does not stall the sign-in with it; the
+ * server refuses its token once the sign-in has revoked it.
  */
 export async function settleInFlightRefresh(): Promise<void> {
-  if (inFlightRefresh) await inFlightRefresh;
+  if (!inFlightRefresh) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    inFlightRefresh,
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, SIGN_IN_REFRESH_WAIT_MS);
+    }),
+  ]);
+  clearTimeout(timer);
+}
+
+/** The refresh's outcome, and the sign-in it started under ({@link sessionEpoch}). */
+async function refreshOnceUnder(): Promise<{ outcome: RefreshOutcome; epoch: number }> {
+  const pending = refreshOnce();
+  const epoch = inFlightEpoch;
+  return { outcome: await pending, epoch };
 }
 
 async function refreshOnce(): Promise<RefreshOutcome> {
   if (!inFlightRefresh) {
+    inFlightEpoch = sessionEpoch;
     inFlightRefresh = (async () => {
       try {
         const response = await fetch(buildUrl("/auth/refresh"), {
@@ -336,11 +377,11 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
     path !== "/auth/logout";
 
   if (shouldRetry) {
-    const refreshed = await refreshOnce();
+    const { outcome: refreshed, epoch } = await refreshOnceUnder();
     if (refreshed === "ok") {
       ({ response, payload } = await doFetch<T>(path, { ...options, _skipAuthRetry: true }));
       if (response.status === 401) {
-        onRefreshFailure?.();
+        refreshFailed(epoch);
       }
     } else if (refreshed === "unavailable") {
       // #582 — the session is intact; surface a retryable error, don't log out.
@@ -350,7 +391,7 @@ export async function apiFetch<T>(path: string, options: ApiFetchOptions = {}): 
         "REFRESH_UNAVAILABLE",
       );
     } else {
-      onRefreshFailure?.();
+      refreshFailed(epoch);
     }
   }
 
@@ -425,7 +466,7 @@ export async function streamFetch(
   }
 
   if (shouldRetry) {
-    const refreshed = await refreshOnce();
+    const { outcome: refreshed, epoch } = await refreshOnceUnder();
     if (refreshed === "ok") {
       // Discard the original 401 body so the underlying socket can be reused.
       try {
@@ -435,10 +476,10 @@ export async function streamFetch(
       }
       response = await fetch(url, baseInit);
       if (response.status === 401) {
-        onRefreshFailure?.();
+        refreshFailed(epoch);
       }
     } else if (refreshed === "failed") {
-      onRefreshFailure?.();
+      refreshFailed(epoch);
     }
     // `unavailable` (#582): return the original 401 untouched and keep the
     // session — the caller surfaces an error and a later request retries.

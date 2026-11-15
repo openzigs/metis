@@ -35,11 +35,18 @@ vi.mock("../src/lib/prisma.js", async () => {
   };
 });
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
+// The real disconnect, observed: which session's sockets a sign-in closes.
+vi.mock("../src/lib/socket/session-disconnect.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/lib/socket/session-disconnect.js")>();
+  return { ...actual, disconnectSessionSockets: vi.fn(actual.disconnectSessionSockets) };
+});
 
 const { createApp } = await import("../src/app.js");
 const { CSRF_HEADER } = await import("../src/middleware/csrf-protection.js");
 const { verifyAccessToken } = await import("../src/lib/auth/jwt.js");
 const { revocationStore } = await import("../src/lib/auth/revocation-store.js");
+const { audit } = await import("../src/lib/audit/audit-service.js");
+const { disconnectSessionSockets } = await import("../src/lib/socket/session-disconnect.js");
 
 /** The `name=value` of each cookie a response set, by name. */
 function setCookies(res: request.Response): Record<string, string> {
@@ -117,6 +124,37 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       expect(late.status).toBe(401);
       expect(setCookies(late)).toEqual({});
+    });
+
+    it("ends the replaced session as a sign-out does: its sockets are closed and it is audited", async () => {
+      const readerCookies = setCookies(await signIn("reader"));
+      const old = verifyAccessToken(readerCookies.accessToken!);
+      expect(old.sid).toBeTruthy();
+      vi.mocked(disconnectSessionSockets).mockClear();
+      vi.mocked(audit).mockClear();
+
+      const res = await signIn("coordinator", readerCookies);
+      expect(res.status, res.text).toBe(200);
+      const coordinator = verifyAccessToken(setCookies(res).accessToken!);
+
+      // #1414 — only the replaced session's sockets: never the new one's.
+      expect(vi.mocked(disconnectSessionSockets).mock.calls).toEqual([[old.userId, old.sid]]);
+      expect(vi.mocked(audit)).toHaveBeenCalledWith({
+        actor: { id: old.userId },
+        action: "user.logout",
+        target: { type: "user", id: old.userId },
+        metadata: { reason: "replaced_by_sign_in", signedInAs: coordinator.userId },
+      });
+    });
+
+    it("closes no socket and audits no sign-out when the sign-in carried no session", async () => {
+      vi.mocked(disconnectSessionSockets).mockClear();
+      vi.mocked(audit).mockClear();
+      expect((await signIn("coordinator", { refreshToken: "not-a-token" })).status).toBe(200);
+      expect(vi.mocked(disconnectSessionSockets)).not.toHaveBeenCalled();
+      expect(vi.mocked(audit)).not.toHaveBeenCalledWith(
+        expect.objectContaining({ action: "user.logout" }),
+      );
     });
 
     it("leaves a session the sign-in did not carry alone", async () => {

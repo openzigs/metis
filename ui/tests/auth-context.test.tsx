@@ -1,7 +1,12 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { PROACTIVE_REFRESH_MS, useAuth } from "@/lib/auth-context";
-import { _resetAuthRetryState, apiFetch, refreshAccessToken } from "@/lib/api-client";
+import {
+  _resetAuthRetryState,
+  apiFetch,
+  refreshAccessToken,
+  SIGN_IN_REFRESH_WAIT_MS,
+} from "@/lib/api-client";
 import type { AuthUser } from "@/lib/auth-types";
 import { makeWrapper, TEST_USER } from "./test-utils";
 import { QueryClient } from "@tanstack/react-query";
@@ -679,6 +684,102 @@ describe("AuthProvider — a sign-in replaces the session the browser held (#254
     });
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     expect(result.current.user).toEqual(COORDINATOR);
+  });
+
+  it("is not signed out by a refresh of the old session that fails after the sign-in", async () => {
+    const login = deferred();
+    const refresh = deferred();
+    fetchMock.mockImplementation((url: string) => {
+      if (url === "/api/auth/login") return login.promise;
+      if (url === "/api/auth/refresh") return refresh.promise;
+      // A request of the page, made with the old session's expired cookie.
+      return Promise.resolve(
+        ok({ success: false, error: { code: "TOKEN_EXPIRED", message: "expired" } }, 401),
+      );
+    });
+    const { result } = renderHook(() => useAuth(), {
+      wrapper: makeWrapper({ initialUser: READER }),
+    });
+
+    // The sign-in is posted; while it is in flight a page request gets a 401
+    // and starts a refresh, which still carries the old session's cookie.
+    let signedIn!: Promise<void>;
+    await act(async () => {
+      signedIn = result.current.login({ username: "coordinator", password: "password" });
+      await Promise.resolve();
+    });
+    let page!: Promise<unknown>;
+    await act(async () => {
+      page = apiFetch("/projects").catch(() => undefined);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      login.resolve(ok({ success: true, data: { user: COORDINATOR } }));
+      await signedIn;
+    });
+    expect(result.current.user).toEqual(COORDINATOR);
+
+    // The server refuses it (the sign-in revoked that token): it ends nothing.
+    await act(async () => {
+      refresh.resolve(ok({ success: false, error: { code: "TOKEN_INVALID" } }, 401));
+      await page;
+    });
+    expect(result.current.user).toEqual(COORDINATOR);
+    const router = (useRouter as unknown as () => { replace: ReturnType<typeof vi.fn> })();
+    expect(router.replace).not.toHaveBeenCalled();
+  });
+
+  it("is still signed out by a refresh of the current session that fails", async () => {
+    stubLocation("/projects");
+    fetchMock.mockImplementation((url: string) => {
+      if (url === "/api/auth/login") {
+        return Promise.resolve(ok({ success: true, data: { user: COORDINATOR } }));
+      }
+      return Promise.resolve(
+        ok({ success: false, error: { code: "TOKEN_INVALID", message: "no" } }, 401),
+      );
+    });
+    const { result } = renderHook(() => useAuth(), {
+      wrapper: makeWrapper({ initialUser: READER }),
+    });
+    await act(async () => {
+      await result.current.login({ username: "coordinator", password: "password" });
+    });
+    // Started after the sign-in: it is the new session's, and its failure ends it.
+    await act(async () => {
+      await apiFetch("/projects").catch(() => undefined);
+    });
+    expect(result.current.user).toBeNull();
+  });
+
+  it("does not wait forever on a refresh that never answers", async () => {
+    vi.useFakeTimers();
+    try {
+      const urls: string[] = [];
+      fetchMock.mockImplementation((url: string) => {
+        urls.push(url);
+        if (url === "/api/auth/refresh") return new Promise<Response>(() => {});
+        return Promise.resolve(ok({ success: true, data: { user: COORDINATOR } }));
+      });
+      const { result } = renderHook(() => useAuth(), {
+        wrapper: makeWrapper({ initialUser: READER }),
+      });
+      void refreshAccessToken();
+      let signedIn!: Promise<void>;
+      await act(async () => {
+        signedIn = result.current.login({ username: "coordinator", password: "password" });
+        await Promise.resolve();
+      });
+      expect(urls).toEqual(["/api/auth/refresh"]);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SIGN_IN_REFRESH_WAIT_MS);
+        await signedIn;
+      });
+      expect(urls).toEqual(["/api/auth/refresh", "/api/auth/login"]);
+      expect(result.current.user).toEqual(COORDINATOR);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("still takes a /auth/me answer asked after the sign-in", async () => {

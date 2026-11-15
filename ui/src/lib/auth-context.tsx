@@ -16,6 +16,7 @@ import {
   apiFetch,
   refreshAccessToken,
   setOnRefreshFailure,
+  beginSignedInSession,
   settleInFlightRefresh,
 } from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
@@ -122,6 +123,9 @@ export function AuthProvider({
           body: { username, password },
         });
         signInsRef.current += 1;
+        // #2549 — the cookies are the new session's from here: a refresh that
+        // started before this point and fails ends nothing.
+        beginSignedInSession();
         signingOutRef.current = false;
         setIsSigningOut(false);
         setUser(data.user);
@@ -234,7 +238,10 @@ export function AuthProvider({
   }, [isAuthenticated]);
 
   useEffect(() => {
-    setOnRefreshFailure(() => {
+    setOnRefreshFailure(({ stale }) => {
+      // #2549 — a refresh that still carried a session a sign-in has replaced
+      // since: its refusal says nothing about the session this browser holds.
+      if (stale) return;
       // #1391 — first, before the public-route early return below.
       closeSocket();
       setUser(null);
