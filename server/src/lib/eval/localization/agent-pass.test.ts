@@ -7,7 +7,7 @@ import type { runAgentLoop } from "../../analysis/agent-loop.js";
 import { buildAgenticPassPrompt } from "../../analysis/agentic-pass-context.js";
 import type { AgentTool } from "../../analysis/tools/types.js";
 import {
-  assertA3NClones,
+  assertClonesFor,
   citationsFromAnswer,
   citationsOfLoop,
   createMaterializedAgentPass,
@@ -270,19 +270,20 @@ describe("createMaterializedAgentPass", () => {
     const missing = path.join(root, "gone");
     const two = state(root);
     two.repos.push({ ...two.repos[0]!, name: "s", cloneDir: missing });
-    await expect(assertA3NClones(new Map([["c", state(root)]]))).resolves.toBeUndefined();
+    await expect(assertClonesFor(new Map([["c", state(root)]]), "A3N")).resolves.toBeUndefined();
     await expect(
-      assertA3NClones(
+      assertClonesFor(
         new Map([
           ["c", two],
           ["d", state(path.join(root, "also-gone"))],
         ]),
+        "A3N",
       ),
     ).rejects.toThrow(
       /A3N needs every repository's clone[\s\S]*c\/s \(.*gone\): run pnpm eval:materialize c[\s\S]*d\/r \(.*also-gone\): run pnpm eval:materialize d/,
     );
     // The clone that is on disk is not listed.
-    await expect(assertA3NClones(new Map([["c", two]]))).rejects.not.toThrow(/c\/r /);
+    await expect(assertClonesFor(new Map([["c", two]]), "A3N")).rejects.not.toThrow(/c\/r /);
   });
 
   describe("the explorer pass (A20, #2560)", () => {
@@ -390,6 +391,47 @@ describe("createMaterializedAgentPass", () => {
       expect(result).toEqual({ citations: [], turns: 3, toolCalls: 3, answered: false });
     });
 
+    it("stops with no answer when the cap is reached at the real loop's final-answer retry", async () => {
+      // The real runAgentLoop: its final-answer retry catches and degrades on
+      // any error, so the cap there must still end the pass with no answer.
+      const valid = JSON.stringify({
+        agentKey: "code",
+        summary: "s",
+        findings: [
+          {
+            category: "architecture",
+            severity: "medium",
+            title: "t",
+            body: "b",
+            tags: [],
+            citations: [{ filePath: "a.go", startLine: 1, endLine: 2 }],
+          },
+        ],
+        notes: [],
+      });
+      // Turn 1 answers before any tool call (the nudge sends it back), turn 2
+      // answers with prose, so the loop reaches its retry with $1.00 spent.
+      const replies = [valid, "no json"];
+      let spent = 0;
+      const chat = vi.fn(async () => {
+        spent += 0.5;
+        return { content: replies.shift() ?? "never", model: "m" };
+      });
+      const { runLoop: _stub, ...rest } = explorerDeps({
+        provider: { ...provider, chat } as unknown as AIProvider,
+        spentUsd: () => spent,
+      });
+      const result = await createMaterializedAgentPass(rest)({
+        corpus: "c",
+        repo: "r",
+        text: "t",
+        toolset: "explorer",
+        costCapUsd: 1,
+      });
+      expect(chat).toHaveBeenCalledTimes(2);
+      expect(result).toEqual({ citations: [], turns: 2, toolCalls: 0, answered: false });
+    });
+
     it("reads the cap against what the meter had spent when the pass began", async () => {
       let spent = 5;
       const chat = vi.fn(async () => {
@@ -454,7 +496,7 @@ describe("createMaterializedAgentPass", () => {
 
     it("names A20 in the clone preflight", async () => {
       const missing = state(path.join(root, "nowhere"));
-      await expect(assertA3NClones(new Map([["c", missing]]), "A20")).rejects.toThrow(
+      await expect(assertClonesFor(new Map([["c", missing]]), "A20")).rejects.toThrow(
         /^A20 needs every repository's clone/,
       );
     });

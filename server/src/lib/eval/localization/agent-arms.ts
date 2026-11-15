@@ -152,6 +152,17 @@ interface SharedPass {
 /** One store per pass function: A3 and A3A built from the same deps share it. */
 const sharedPasses = new WeakMap<AgentPass, Map<string, Promise<SharedPass>>>();
 
+/** Each agent tool set as the arm's configuration names it: a new tool set fails typecheck until it has one. */
+const TOOLSET_LABELS: Record<AgentToolset, string> = {
+  graph:
+    "assembleAgenticCodeTools (search_code_graph, search_code_symbols, search_knowledge, read_file_slice, list_files) + seeded fused / affected-code / affected-schema blocks",
+  "graph-primitives":
+    "assembleAgenticCodeTools with search_code_symbols's fileGlob/symbolKind/language filters, plus grep_files (#2327) + seeded fused / affected-code / affected-schema blocks",
+  files:
+    "list_files, read_file_slice, grep_files (literal text search); no graph or symbol search, no seeded blocks",
+  explorer: `grep_files, list_files, read_file_slice (up to ${EXPLORER_READ_MAX_LINES} lines a call: whole files), search_code_graph, search_code_symbols (filters on); no search_knowledge; seeded fused / affected-code / affected-schema blocks offered as hints only (#2560)`,
+};
+
 /**
  * Build an A3 variant. Needs `deps.agentPass` (the CLI's materialized pass),
  * `deps.meter` (to price a pass another arm reuses) and `deps.provider` (the
@@ -205,15 +216,6 @@ export function createAgentArm(deps: ArmDeps, variant: AgentVariant): Localizati
   }
 
   const explorer = variant.toolset === "explorer";
-  const TOOLSET_LABELS: Record<AgentToolset, string> = {
-    graph:
-      "assembleAgenticCodeTools (search_code_graph, search_code_symbols, search_knowledge, read_file_slice, list_files) + seeded fused / affected-code / affected-schema blocks",
-    "graph-primitives":
-      "assembleAgenticCodeTools with search_code_symbols's fileGlob/symbolKind/language filters, plus grep_files (#2327) + seeded fused / affected-code / affected-schema blocks",
-    files:
-      "list_files, read_file_slice, grep_files (literal text search); no graph or symbol search, no seeded blocks",
-    explorer: `grep_files, list_files, read_file_slice (up to ${EXPLORER_READ_MAX_LINES} lines a call: whole files), search_code_graph, search_code_symbols (filters on); no search_knowledge; seeded fused / affected-code / affected-schema blocks offered as hints only (#2560)`,
-  };
   const toolsetLabel = TOOLSET_LABELS[variant.toolset];
   return {
     id: variant.id,

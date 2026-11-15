@@ -11,3 +11,5 @@ section: Added
   change edits (pooled Recall@5 +0.09, Miniflux +0.19) at the same edit precision, for about 46%
   more cost per Miniflux requirement (`eval-data/README.md`). Production's impact analysis and
   analysis agent are unchanged.
+- The partials of `pnpm eval:localization` now record spend after every model call, so a slice
+  killed mid-requirement keeps the calls that returned.

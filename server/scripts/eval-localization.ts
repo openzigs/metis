@@ -134,6 +134,7 @@ import {
   describeSlice,
   parseItemSlice,
   recordedArms,
+  recordingSpendPerCall,
   runFingerprint,
   seedBudget,
   sliceItemIds,
@@ -512,11 +513,11 @@ async function agentPassFor(
   spentUsd: () => number,
 ): Promise<AgentPass> {
   const states = await materializedStates(corpora);
-  const { assertA3NClones, createMaterializedAgentPass, withSearchPrimitives } =
+  const { assertClonesFor, createMaterializedAgentPass, withSearchPrimitives } =
     await import("../src/lib/eval/localization/agent-pass.js");
   // #1819 — before any pass: A3N's file tools read only the clone (#2560: A20's too).
-  if (armIds.includes("A3N")) await assertA3NClones(states);
-  if (armIds.includes("A20")) await assertA3NClones(states, "A20");
+  const cloneArms = ["A3N", "A20"].filter((id) => armIds.includes(id));
+  if (cloneArms.length > 0) await assertClonesFor(states, cloneArms.join("/"));
   const { prisma } = await import("../src/lib/prisma.js");
   const { assembleAgenticCodeTools } = await import("../src/lib/analysis/orchestrator.js");
   const { assembleAgenticPassSeeds, resolveDatabaseAwareDecision } =
@@ -924,6 +925,9 @@ async function main(): Promise<void> {
   // #1800 — the cap counts what every earlier slice in this directory spent.
   const prior = await store.readRecordedSpend();
   const meter = new LedgerCostMeter();
+  // #2560 review — spend reaches the partials on every model call, not only when
+  // a requirement completes: a killed slice loses only the call in flight.
+  store.trackSpend(runId, meter);
   const capped = withRecordedSpend(meter, prior);
   const budget = new EvalBudget(budgetUsd);
   seedBudget(budget, prior);
@@ -958,7 +962,9 @@ async function main(): Promise<void> {
   const needsProvider =
     reportedArmIds.some((id) => MODEL_ARMS.has(id)) &&
     (!mergeDir || argv.includes("--table-guard"));
-  const provider = needsProvider ? await armProviderFor(meter) : undefined;
+  const provider = needsProvider
+    ? recordingSpendPerCall(await armProviderFor(meter), store)
+    : undefined;
   // #1755 — the agent arms read the materialized corpora; a merge runs no pass.
   const agentPass =
     !mergeDir && provider && armIds.some((id) => AGENT_ARM_IDS.has(id))

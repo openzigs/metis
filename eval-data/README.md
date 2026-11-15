@@ -289,7 +289,10 @@ pnpm eval:localization --merge <dir> --md                       # the report; ru
 - **Partial files** live in `eval-results/localization-partials-<run>/`:
   `<corpus>/config.json` (the configuration), one `<corpus>/<arm>/run-<n>/<item>.json`
   per requirement score, and `spend/<invocation>.json` for spend outside requirements
-  (the table guard).
+  (the table guard, and the calls of a requirement still running). That file is
+  rewritten after every model call (#2560), so a slice killed mid-requirement keeps
+  every call that returned. Only the call in flight is lost, because its usage never
+  arrived.
 - **Resume.** `--resume <dir>` loads every score already recorded and runs only the
   missing ones, so a stop mid-slice re-runs nothing that finished. A3 and A3A share one
   agent pass per item and run in one invocation; when a resume scores them in different
@@ -820,7 +823,9 @@ Recall@10 **+0.107 [0.02, 0.20]**, MRR **+0.089 [0.01, 0.19]**, and edit precisi
   That is **$18.21 recorded** in all. Two slices hit the 10-minute shell timeout during a
   16,000-token runaway answer, and the call in flight when each was killed was not recorded. At
   Sonnet's $10 per million output tokens, each is about $0.16 of output plus its input, under
-  $0.50 for both. The total stays under the $20 pre-approval.
+  $0.50 for both. The total stays under the $20 pre-approval. These slices ran before the
+  partials recorded spend per model call. That change keeps a killed slice's finished calls,
+  but a call in flight is still lost.
 
 ### Rebuilding a corpus
 

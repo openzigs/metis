@@ -268,14 +268,15 @@ async function existingDir(dir: string): Promise<string | undefined> {
 }
 
 /**
- * #1819 — the CLI's preflight for A3N: every materialized repository's clone is
- * on disk. The pass checks it too, but only at its first A3N reading, after
+ * #1819 — the CLI's preflight for the arms whose file tools read only the clone
+ * (A3N, and A20 since #2560): every materialized repository's clone is on disk.
+ * The pass checks it too, but only at its first reading of such an arm, after
  * run 1's A3 and A3A passes are paid for; this check runs before any spend.
  */
-export async function assertA3NClones(
+export async function assertClonesFor(
   states: ReadonlyMap<string, Pick<MaterializedState, "repos">>,
-  /** #2560 — the arm the check is for: A20's file tools read only the clone too. */
-  arm = "A3N",
+  /** The arm (or arms, e.g. `A3N/A20`) the check is for, named in the error. */
+  arm: string,
 ): Promise<void> {
   const missing: string[] = [];
   for (const [corpus, state] of states) {
@@ -366,6 +367,10 @@ export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): Ag
     // transcript, and a dollar cap checked before every model call.
     let modelCalls = 0;
     let toolCallsMade = 0;
+    // #2560 review — set where the cap throws: the loop's final-answer retry
+    // catches every error and degrades, so the throw alone does not stop a
+    // pass whose cap is reached at the retry.
+    let capReached = false;
     const startedAt = explorer ? deps.spentUsd!() : 0;
     const cap = request.costCapUsd;
     const bounds: Parameters<typeof runAgentLoop>[2] = explorer
@@ -377,6 +382,7 @@ export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): Ag
           },
           callModel: (messages, opts) => {
             if (cap !== undefined && deps.spentUsd!() - startedAt >= cap) {
+              capReached = true;
               throw new PassCostCapReached(cap);
             }
             modelCalls += 1;
@@ -396,6 +402,14 @@ export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): Ag
           maxTurns: resolveAgenticMaxTurns(requirements.length),
           maxTokens: agenticPassEffectiveBudget(resolveAgentTokenBudget(), seeds),
         };
+    // The cap stops the pass with no answer: scored as no citation, and the
+    // item's cost (at or past the cap) says why.
+    const capped = (): AgentPassResult => ({
+      citations: [],
+      turns: modelCalls,
+      toolCalls: toolCallsMade,
+      answered: false,
+    });
     let result: AgentLoopResult;
     try {
       result = await runLoop(
@@ -414,13 +428,12 @@ export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): Ag
         },
       );
     } catch (err) {
-      // The cap stops the pass with no answer: scored as no citation, and the
-      // item's cost (at or past the cap) says why.
-      if (err instanceof PassCostCapReached) {
-        return { citations: [], turns: modelCalls, toolCalls: toolCallsMade, answered: false };
-      }
+      if (err instanceof PassCostCapReached) return capped();
       throw err;
     }
+    // Reached at the final-answer retry, the cap was caught inside the loop,
+    // which returned its salvage: the pass still has no answer.
+    if (capReached) return capped();
     return {
       citations: citationsOfLoop(result),
       turns: result.turnsUsed,
