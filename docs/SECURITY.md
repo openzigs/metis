@@ -794,6 +794,21 @@ affected code and schema, plan context, finding text, tool output — between
 fences is data, never instructions. That only holds if the data cannot close its
 own block.
 
+Since #2549 chat's retrieved excerpts (the one-project and multi-product
+retrieved-knowledge blocks, `fenceData` in `fence.ts`) are fenced the same way,
+and the turn's retrieval system message ends with a fixed closing line
+(`server/src/lib/ai/retrieved-context.ts`). That block is the last part of the
+system prompt, and a provider may place text of its own after it. Anthropic's
+tool-use documentation shows the system prompt it builds when `tools` are sent
+as a template with `{{ TOOL CONFIGURATION }}` after `{{ USER SYSTEM PROMPT }}`
+([Define tools](https://platform.claude.com/docs/en/agents-and-tools/tool-use/define-tools#tool-use-system-prompt));
+the text it renders there is not published. What was observed: in the
+2026-11-15 walkthrough a model answered that `open-spec.md` "contained an
+instruction about how to make tool calls", which it does not. A replay of that
+turn did not reproduce it (0 of 20 before the fix), so the mechanism is
+inferred, not shown; the fence and the closing line are cheap hygiene whatever
+it was.
+
 ### 13.1 What is scrubbed
 
 `scrubFenceLookalikes` (`server/src/lib/ai/tool-runtime/fence-scrub.ts`) replaces

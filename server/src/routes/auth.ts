@@ -91,6 +91,40 @@ async function ensureUserRow(
   return { id: row.id, username: row.username, role, authMode: providerName };
 }
 
+/**
+ * #2549 — end the session whose refresh cookie a sign-in request carries, as
+ * `POST /logout` ends one: its refresh token is revoked, its live sockets are
+ * closed (#1414, that session's only: the user's other sessions keep theirs)
+ * and the end is audited as a `user.logout`. Best-effort: a token that is not
+ * a live one of ours ends nothing, and a failed revocation never costs the
+ * user their sign-in. The token names its own user, and only a holder of it
+ * reaches this, so it can close no one else's sockets.
+ */
+async function endPresentedSession(req: Request, signedInAs: string): Promise<void> {
+  const cookies = (req as unknown as { cookies?: Record<string, string> }).cookies;
+  const presented = cookies?.refreshToken;
+  if (!presented) return;
+  let decoded: Awaited<ReturnType<typeof verifyRefreshToken>>;
+  try {
+    decoded = await verifyRefreshToken(presented);
+  } catch {
+    return; // Not a live token of ours (or the store is unreachable): nothing to end.
+  }
+  try {
+    const expiresAt = decoded.exp !== undefined ? new Date(decoded.exp * 1000) : new Date();
+    await revokeRefreshToken(decoded.tokenId, decoded.userId, expiresAt);
+  } catch {
+    /* The store is unreachable: the sign-in goes on, and the sockets still close. */
+  }
+  disconnectSessionSockets(decoded.userId, sessionIdOf(decoded));
+  audit({
+    actor: { id: decoded.userId },
+    action: "user.logout",
+    target: { type: "user", id: decoded.userId },
+    metadata: { reason: "replaced_by_sign_in", signedInAs },
+  });
+}
+
 export function authRouter(): Router {
   const r = Router();
 
@@ -132,6 +166,14 @@ export function authRouter(): Router {
       authMode: userRow.authMode,
     });
 
+    // #2549 — the session this sign-in replaces in this browser ends here, as
+    // a sign-out ends it: a refresh with its token that reaches the server
+    // after this point is refused. Not one already in flight: a refresh that
+    // claimed the token first (`refreshAccessToken`) still mints a rotated pair
+    // under the same session, and its answer can land after this sign-in's.
+    // Closing that needs revocation by session id, which the store does not
+    // keep; the UI closes it for its own tab (`settleInFlightRefresh`).
+    await endPresentedSession(req, userRow.id);
     res.cookie("accessToken", tokens.accessToken, {
       ...cookieOptions(),
       maxAge: 60 * 60 * 1000,

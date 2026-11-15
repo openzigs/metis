@@ -89,6 +89,8 @@ import {
   type SessionToolRuntime,
 } from "../lib/ai/tool-runtime/session-tools.js";
 import { SEARCH_GUIDANCE_INSTRUCTION } from "../lib/ai/search-guidance.js";
+import { fenceData } from "../lib/ai/tool-runtime/fence.js";
+import { closeRetrievedContext, FENCED_EXCERPTS_NOTE } from "../lib/ai/retrieved-context.js";
 import { runChatToolTurn, type ChatToolRecord } from "../lib/ai/tool-runtime/chat-turn.js";
 import {
   CHAT_TURN_AGENT_STEP,
@@ -469,13 +471,18 @@ export const CLIENT_HISTORY_REJECTED = "CLIENT_HISTORY_REJECTED";
  * block carries analyst-editable text (a requirement's body), so — the #2226
  * rule (`discussions/thread-context.ts`) — it goes in as a USER turn, never a
  * system one; `joinAdjacentUserMessages` folds it into the question's turn.
+ *
+ * #2549 — the retrieval block is the last system message, so it ends the
+ * system prompt, and a provider may append its own text there (Anthropic's
+ * tool-use instructions). It closes with a line of ours, so that text never
+ * follows an excerpt (or a code snippet of the fused block) directly.
  */
 export function turnContextMessages(
   subjectBlock: string | null,
   ragContext: string | null | undefined,
 ): ChatMessage[] {
   const out: ChatMessage[] = [];
-  if (ragContext) out.push({ role: "system", content: ragContext });
+  if (ragContext) out.push({ role: "system", content: closeRetrievedContext(ragContext) });
   if (subjectBlock) out.push({ role: "user", content: subjectBlock });
   return out;
 }
@@ -1023,7 +1030,9 @@ async function retrieveAutoRagBlock(
         `never METIS (the platform this chat runs on) and never any other topic raised earlier in this ` +
         `conversation. Prefer these excerpts over your own background knowledge or earlier chat history. ` +
         `An excerpt marked DERIVED is generated documentation about the project, not a primary source: ` +
-        `use it as a pointer, prefer an unmarked excerpt when they disagree, and say so when you rely on one${notes}:\n\n${chunks}`;
+        `use it as a pointer, prefer an unmarked excerpt when they disagree, and say so when you rely on one${notes}. ` +
+        // #2549 — fenced, so text after the block is never read as the last excerpt.
+        `${FENCED_EXCERPTS_NOTE}:\n\n${fenceData(chunks)}`;
       // #547/#573 — only a repo-sourced chunk can stand in for a code symbol;
       // `fuseCodeContext` enforces that on the `source` carried here.
       ragChunks = listed.map((h) => ({ filename: h.filename, source: h.source }));

@@ -58,6 +58,8 @@ import {
 } from "../rag/federated-search-service.js";
 import { formatHitLocator, formatHitScore } from "../rag/hit-locator.js";
 import { formatDerivedLabel } from "../rag/derived-label.js";
+import { fenceData } from "./tool-runtime/fence.js";
+import { FENCED_EXCERPTS_NOTE } from "./retrieved-context.js";
 import type { ChatSearchScope } from "./chat-search-scope.js";
 import type { ChatMessage } from "./types.js";
 import { groundingSources } from "./chat-grounding.js";
@@ -439,8 +441,9 @@ export async function buildMultiProjectRagContext(
           ? '. An excerpt marked "cited in your previous answer" is one your last answer drew on, ' +
             "kept so you can build on it"
           : "") +
-        ":",
-      chunkList.join("\n\n---\n\n"),
+        // #2549 — fenced, as the one-project block's are (`retrieved-context.ts`).
+        `. ${FENCED_EXCERPTS_NOTE}:`,
+      fenceData(chunkList.join("\n\n---\n\n")),
     );
   } else if (belowFloor > 0) {
     // #2294 — as `insufficientEvidenceBlock` for one project.

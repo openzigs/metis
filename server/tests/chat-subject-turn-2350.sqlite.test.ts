@@ -48,6 +48,7 @@ const { aiRouter, setAIProviderForTests, turnContextMessages } =
   await import("../src/routes/ai.js");
 const { chatSubjectContextBlock, CHAT_SUBJECT_BODY_MAX } =
   await import("../src/lib/ai/chat-subject.js");
+const { RETRIEVED_CONTEXT_END } = await import("../src/lib/ai/retrieved-context.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 
@@ -229,6 +230,39 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(promptText(1)).toContain("Its source documents: “checkout-spec.md”");
     });
 
+    // #2549 — the walkthrough's chat about "Alice run: open + payroll" said "I
+    // couldn't tell which of the two analysis runs" it was: the result tools
+    // list runs by id, and the block named the change request by title only.
+    it("names the change request by the id the result tools list it under, in the user turn", async () => {
+      const sessionId = await newSession();
+      await post("/api/ai/stream", {
+        sessionId,
+        message: "Summarise this change request",
+        subject: { kind: "change-request", id: "cr-a" },
+      });
+      const prompt = model.prompts[0]!;
+      const turn = text(prompt[prompt.length - 1]!);
+      expect(turn).toContain(
+        "Its analysis id, as list_analyses lists it and get_analysis takes it: cr-a " +
+          "(for tool calls; do not quote it to the user)",
+      );
+      expect(systemOnly(0)).not.toContain("cr-a");
+    });
+
+    it("names a requirement's change request and the requirement by the ids the tools take", async () => {
+      const block = await chatSubjectContextBlock(
+        userA,
+        { projectId: "proj-a" },
+        { kind: "requirement", id: "req-a" },
+      );
+      expect(block).toContain(
+        "Its analysis id, as list_analyses lists it and get_analysis takes it: cr-a",
+      );
+      expect(block).toContain("Its requirement id, as get_requirement takes it: req-a");
+      // The ids lead the requirement's text, which stays last and fenced.
+      expect(block!.indexOf("req-a")).toBeLessThan(block!.indexOf('"""'));
+    });
+
     it("says nothing of an item when the turn names none", async () => {
       const sessionId = await newSession();
       await post("/api/ai/stream", { sessionId, message: "hello" });
@@ -362,7 +396,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     it("turnContextMessages: retrieval as system, the item as a user turn (#2226 rule)", () => {
       expect(turnContextMessages("item", "rag")).toEqual([
-        { role: "system", content: "rag" },
+        // #2549 — the retrieval block closes with a line of ours.
+        { role: "system", content: `rag\n\n${RETRIEVED_CONTEXT_END}` },
         { role: "user", content: "item" },
       ]);
       expect(turnContextMessages(null, "")).toEqual([]);
