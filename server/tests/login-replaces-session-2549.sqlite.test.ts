@@ -40,6 +40,7 @@ vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 const { authRouter } = await import("../src/routes/auth.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
+const { csrfProtection, CSRF_HEADER } = await import("../src/middleware/csrf-protection.js");
 const { verifyAccessToken } = await import("../src/lib/auth/jwt.js");
 const { revocationStore } = await import("../src/lib/auth/revocation-store.js");
 
@@ -66,19 +67,23 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     let sqlite: MigratedSqlite;
     let db: PrismaClient;
 
+    // As `app.ts` mounts them: cookie-parser, then the CSRF guard (#913).
     const app = () => {
       const a = express();
       a.use(express.json());
       a.use(cookieParser());
+      a.use(csrfProtection());
       a.use("/api/auth", authRouter());
       a.use(notFoundHandler);
       a.use(errorHandler);
       return a;
     };
+    /** A cookie-borne request as the UI proxy sends it: with the CSRF header. */
+    const withCookies = (req: request.Test, cookies: Record<string, string>) =>
+      req.set("Cookie", cookieHeader(cookies)).set(CSRF_HEADER, "1");
     const signIn = (username: string, cookies?: Record<string, string>) => {
       const req = request(app()).post("/api/auth/login");
-      if (cookies) req.set("Cookie", cookieHeader(cookies));
-      return req.send({ username, password: "password" });
+      return (cookies ? withCookies(req, cookies) : req).send({ username, password: "password" });
     };
 
     beforeAll(async () => {
@@ -107,7 +112,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(verifyAccessToken(next.accessToken!).role).toBe("coordinator");
 
       // What the browser sends next: the cookies the sign-in just set.
-      const me = await request(app()).get("/api/auth/me").set("Cookie", cookieHeader(next));
+      const me = await withCookies(request(app()).get("/api/auth/me"), next);
       expect(me.status, me.text).toBe(200);
       expect(me.body.data.user.username).toBe("coordinator");
       expect(me.body.data.user.role).toBe("coordinator");
@@ -119,9 +124,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
       // A refresh started under the old session and answered after the sign-in
       // would otherwise put `reader` back in this browser's cookies.
-      const late = await request(app())
-        .post("/api/auth/refresh")
-        .set("Cookie", cookieHeader({ refreshToken: readerCookies.refreshToken! }));
+      const late = await withCookies(request(app()).post("/api/auth/refresh"), {
+        refreshToken: readerCookies.refreshToken!,
+      });
       expect(late.status).toBe(401);
       expect(setCookies(late)).toEqual({});
     });
@@ -129,9 +134,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     it("leaves a session the sign-in did not carry alone", async () => {
       const elsewhere = setCookies(await signIn("reader"));
       expect((await signIn("coordinator")).status).toBe(200);
-      const refreshed = await request(app())
-        .post("/api/auth/refresh")
-        .set("Cookie", cookieHeader({ refreshToken: elsewhere.refreshToken! }));
+      const refreshed = await withCookies(request(app()).post("/api/auth/refresh"), {
+        refreshToken: elsewhere.refreshToken!,
+      });
       expect(refreshed.status, refreshed.text).toBe(200);
     });
 
