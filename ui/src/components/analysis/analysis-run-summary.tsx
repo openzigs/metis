@@ -7,11 +7,14 @@
  *
  * #1749 — selecting no document sends no `documentIds`, and the run reads every
  * ready document, so an empty selection reads "all N documents", never "0".
+ * #2185 — that count leaves out the connectors' code rows: see
+ * `defaultRunDocumentCount` (`lib/project-pipeline.ts`).
  */
+
 interface Props {
   /** Number of documents selected for the run. */
   docCount: number;
-  /** Number of ready documents the run reads when none is selected. */
+  /** Number of documents the run reads when none is selected (`defaultRunDocumentCount`). */
   availableDocCount: number;
   /**
    * True when the loaded document list is only its first page, so

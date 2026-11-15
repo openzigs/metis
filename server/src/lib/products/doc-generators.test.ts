@@ -398,6 +398,44 @@ describe("per-service-doc-generator", () => {
     });
     expect(doc.content).toContain("## Role: frontend");
   });
+
+  // #2185 — the per-service doc printed the stored `produces` / `consumes` for a
+  // shared-table edge, disagreeing with the Service Map and Data Flow diagrams.
+  it("labels a shared-table edge as the diagrams do, in both lists and the table", () => {
+    const table = (direction: string, edgeType: string): ProductEdgeInfo => ({
+      sourceRepoId: "r1",
+      targetRepoId: "r2",
+      edgeType,
+      confidence: 0.8,
+      evidence: [],
+      integrationKind: "database",
+      direction,
+    });
+    const tableEdges = [table("writes", "produces"), table("reads", "consumes")];
+    const outgoing = generatePerServiceDoc({
+      productName: "My Product",
+      repo: repos[0],
+      allRepos: repos,
+      edges: tableEdges,
+    }).content;
+    const incoming = generatePerServiceDoc({
+      productName: "My Product",
+      repo: repos[1],
+      allRepos: repos,
+      edges: tableEdges,
+    }).content;
+    for (const content of [outgoing, incoming]) {
+      expect(content).toContain("— writes a shared table (confidence: 80%)");
+      expect(content).toContain("— reads a shared table (confidence: 80%)");
+      expect(content).toMatch(/\| writes a shared table \| (?:outgoing|incoming) \|/);
+      expect(content).toMatch(/\| reads a shared table \| (?:outgoing|incoming) \|/);
+      expect(content).not.toMatch(/produces|consumes/);
+    }
+    // A call keeps its type.
+    expect(
+      generatePerServiceDoc({ productName: "P", repo: repos[0], allRepos: repos, edges }).content,
+    ).toContain("— calls (confidence: 90%)");
+  });
 });
 
 describe("api-contract-doc-generator", () => {

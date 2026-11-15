@@ -8,6 +8,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createPortfolioAssessmentSchema } from "@metis/shared";
 import { PortfolioAssessmentForm } from "@/components/portfolio/portfolio-assessment-form";
+import { HOST_PICKER_ID } from "@/lib/portfolio-impact";
 import { axeViolations } from "./axe";
 
 const products = [
@@ -222,6 +223,8 @@ describe("PortfolioAssessmentForm — arriving at the host picker (#1749)", () =
     window.location.hash = "#portfolio-host";
     setup();
     expect(picker()).toHaveFocus();
+    // #2185 — the id `hostPickerHref` links to.
+    expect(picker()).toHaveAttribute("id", HOST_PICKER_ID);
   });
 
   it("waits for the product list, since the picker is disabled until then", () => {

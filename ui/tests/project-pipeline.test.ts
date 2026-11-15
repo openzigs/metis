@@ -4,6 +4,7 @@
  */
 import { describe, it, expect } from "vitest";
 import {
+  defaultRunDocumentCount,
   derivePipelineStages,
   isChecklistComplete,
   isIngestRunning,
@@ -849,5 +850,26 @@ describe("openQuestionsFact (#2376)", () => {
     expect(openQuestionsFact({ enhancement: { enableClarification: false } })).toBe(0);
     expect(openQuestionsFact(undefined)).toBe(0);
     expect(openQuestionsFact(null)).toBe(0);
+  });
+});
+
+// #2185 — what "all N documents" counts on the analysis start form.
+describe("defaultRunDocumentCount", () => {
+  it("counts the ready documents a run with no selection reads, not the connectors' code rows", () => {
+    const doc = (source: string, status = "ready") => ({ source, status });
+    expect(
+      defaultRunDocumentCount([
+        doc("upload"),
+        doc("generated"),
+        doc("confluence"),
+        doc("jira"),
+        doc("clarification"),
+        doc("repo"),
+        doc("db"),
+        doc("upload", "processing"),
+        doc("upload", "failed"),
+      ]),
+    ).toBe(5);
+    expect(defaultRunDocumentCount([doc("repo"), doc("db")])).toBe(0);
   });
 });

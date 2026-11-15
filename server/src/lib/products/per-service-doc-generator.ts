@@ -6,6 +6,7 @@
  */
 import {
   docCell,
+  edgeDiagramLabel,
   repoNaming,
   visibleEvidence,
   type ExternalRepoInfo,
@@ -63,7 +64,7 @@ export function generatePerServiceDoc(input: PerServiceDocInput): GeneratedDoc {
   if (outgoingEdges.length > 0) {
     for (const edge of outgoingEdges) {
       sections.push(
-        `- **${docCell(naming.name(edge.targetRepoId))}** — ${edge.edgeType} (confidence: ${(edge.confidence * 100).toFixed(0)}%) — ${summary(edge)}`,
+        `- **${docCell(naming.name(edge.targetRepoId))}** — ${edgeDiagramLabel(edge)} (confidence: ${(edge.confidence * 100).toFixed(0)}%) — ${summary(edge)}`,
       );
     }
   } else {
@@ -76,7 +77,7 @@ export function generatePerServiceDoc(input: PerServiceDocInput): GeneratedDoc {
   if (incomingEdges.length > 0) {
     for (const edge of incomingEdges) {
       sections.push(
-        `- **${docCell(naming.name(edge.sourceRepoId))}** — ${edge.edgeType} (confidence: ${(edge.confidence * 100).toFixed(0)}%) — ${summary(edge)}`,
+        `- **${docCell(naming.name(edge.sourceRepoId))}** — ${edgeDiagramLabel(edge)} (confidence: ${(edge.confidence * 100).toFixed(0)}%) — ${summary(edge)}`,
       );
     }
   } else {
@@ -94,12 +95,12 @@ export function generatePerServiceDoc(input: PerServiceDocInput): GeneratedDoc {
       docCell(visibleEvidence(edge, naming)[0]?.filePath ?? "");
     for (const edge of outgoingEdges) {
       sections.push(
-        `| ${docCell(naming.name(edge.targetRepoId))} | ${edge.edgeType} | outgoing | ${(edge.confidence * 100).toFixed(0)}% | ${firstFile(edge)} |`,
+        `| ${docCell(naming.name(edge.targetRepoId))} | ${edgeDiagramLabel(edge)} | outgoing | ${(edge.confidence * 100).toFixed(0)}% | ${firstFile(edge)} |`,
       );
     }
     for (const edge of incomingEdges) {
       sections.push(
-        `| ${docCell(naming.name(edge.sourceRepoId))} | ${edge.edgeType} | incoming | ${(edge.confidence * 100).toFixed(0)}% | ${firstFile(edge)} |`,
+        `| ${docCell(naming.name(edge.sourceRepoId))} | ${edgeDiagramLabel(edge)} | incoming | ${(edge.confidence * 100).toFixed(0)}% | ${firstFile(edge)} |`,
       );
     }
   } else {

@@ -416,6 +416,12 @@ export function impactNeedsHost(view: PortfolioAssessmentView): boolean {
   );
 }
 
+/**
+ * #1725 — the entry form's host picker's id: the fragment {@link hostPickerHref}
+ * links to, and the element the form focuses on arriving at it.
+ */
+export const HOST_PICKER_ID = "portfolio-host";
+
 /** #1725 — a statement longer than this is not carried in the link (URL length). */
 export const HOST_LINK_STATEMENT_MAX = 2_000;
 
@@ -462,5 +468,5 @@ export function hostPickerHref(view: PortfolioAssessmentView): string | null {
     for (const id of view.productIds) params.append("productId", id);
   }
   const query = params.toString();
-  return `/portfolio${query ? `?${query}` : ""}#portfolio-host`;
+  return `/portfolio${query ? `?${query}` : ""}#${HOST_PICKER_ID}`;
 }

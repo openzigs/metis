@@ -145,6 +145,22 @@ export function isDocumentIngesting(d: { status: string; indexState?: string | n
   return RUNNING_DOC_STATUSES.has(d.status) && !isDocumentAwaitingReview(d);
 }
 
+/** The connectors' rows a run with no selection leaves out (server `CONNECTOR_CODE_SOURCES`). */
+const CODE_ROW_SOURCES: ReadonlySet<string> = new Set(["repo", "db"]);
+
+/**
+ * #2185 — the documents an analysis with no document ticked reads: every
+ * ready one except the repository and database connectors' rows (the server's
+ * `defaultAnalysisDocumentIds`). Those are code, read by the code agent and
+ * the specialists' search, never as documents, so a repo-only project does not
+ * read "all 40 documents".
+ */
+export function defaultRunDocumentCount(
+  docs: ReadonlyArray<{ status: string; source: string }>,
+): number {
+  return docs.filter((d) => d.status === "ready" && !CODE_ROW_SOURCES.has(d.source)).length;
+}
+
 /** Where quarantined documents are approved or rejected. */
 export function quarantineHref(projectId: string): string {
   return `/projects/${projectId}/settings#quarantine`;
