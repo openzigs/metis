@@ -236,10 +236,12 @@ export interface ReaderChangeRequestTitle {
   projectId: string;
   title: string;
   /**
-   * True when the title is Metis's and the run cites a document this reader
-   * cannot see: any text that quoted the stored title may name that document.
+   * True when the run cites a document this reader cannot see. Text that
+   * quoted the run's name at some earlier time (a check's statement) may name
+   * that document, whatever the title is now: a generated title made from it
+   * may since have been renamed.
    */
-  regenerated: boolean;
+  hidesSource: boolean;
 }
 
 /**
@@ -284,9 +286,8 @@ export async function readerChangeRequestTitles(
       out.set(r.id, {
         projectId,
         title: clampTitle(d.title),
-        // A placeholder source on a generated title: made without that document.
-        regenerated:
-          d.titleGenerated && d.sources.documents.some((s) => s.name === RESTRICTED_SOURCE_TITLE),
+        // A placeholder source: a document hidden from this reader.
+        hidesSource: d.sources.documents.some((s) => s.name === RESTRICTED_SOURCE_TITLE),
       });
     }
   }

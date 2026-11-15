@@ -220,8 +220,9 @@ export function changeRequestStatement(title: string): string {
 /**
  * #2546 — the statement of a check started from a change request quotes the
  * run's name as its starter saw it, and a generated name is the first
- * document's. A reader that document is restricted from is shown the statement
- * with the name as they see it. A deleted run is still read: the statement
+ * document's. A reader the run cites a hidden document to is shown the
+ * statement with the run's name as they see it now, even after a rename (the
+ * frozen statement may still quote the generated name). A deleted run is still read: the statement
  * outlives it.
  */
 async function readerStatement(access: ReaderAccess, a: PortfolioAssessment): Promise<string> {
@@ -234,7 +235,7 @@ async function readerStatement(access: ReaderAccess, a: PortfolioAssessment): Pr
       { includeDeleted: true },
     )
   ).get(a.sourceAnalysisId);
-  return named?.regenerated ? changeRequestStatement(named.title) : a.statement;
+  return named?.hidesSource ? changeRequestStatement(named.title) : a.statement;
 }
 
 /** Whitespace collapsed, as a not-checked entry's opening is written (`oneLine`). */

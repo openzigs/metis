@@ -770,6 +770,29 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     });
 
+    describe("#2546 panel round 2 — a check's statement after its change request is renamed", () => {
+      it("names the change request by its new name to Bob, not the frozen document name", async () => {
+        await db.analysis.update({
+          where: { id: RUN },
+          data: { title: "Pay review", titleGenerated: false },
+        });
+        try {
+          const bob = await get("bob", `/api/portfolio-assessments/${CHECK_CR}`);
+          expect(bob.status).toBe(200);
+          expect(JSON.stringify(bob.body)).not.toMatch(LEAKS);
+          expect(bob.body.data.statement).toBe('Requirements of change request "Pay review"');
+          // Alice saw the document when the check was started: hers stays as written.
+          const alice = await get("alice", `/api/portfolio-assessments/${CHECK_CR}`);
+          expect(alice.body.data.statement).toContain(PAYROLL_NAME);
+        } finally {
+          await db.analysis.update({
+            where: { id: RUN },
+            data: { title: PAYROLL_NAME, titleGenerated: true },
+          });
+        }
+      });
+    });
+
     describe("#2546 review — the quarantine list", () => {
       it("lists the restricted document to Bob without its name, and names it to Alice", async () => {
         await db.document.update({ where: { id: PAYROLL }, data: { indexState: "quarantined" } });
