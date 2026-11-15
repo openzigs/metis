@@ -293,6 +293,10 @@ export function ReusedAnswers({
  * #2235 — a round asks at most a fixed number of questions, the highest-impact
  * first. Say how many more are waiting, or, on the last round, that they will
  * not be asked.
+ *
+ * #2543 — and the open ambiguities the round wrote no question for at all
+ * (`notConsidered`, the server's cap on the ambiguities one round considers),
+ * so the note no longer understates what goes unasked.
  */
 export function NotAskedNote({
   state,
@@ -301,22 +305,38 @@ export function NotAskedNote({
 }): React.ReactElement | null {
   const last = state.rounds[state.rounds.length - 1];
   const count = last?.notAsked ?? 0;
-  if (count === 0) return null;
-  const more = `${count} more question${count === 1 ? "" : "s"}`;
+  const left = last?.notConsidered ?? 0;
+  if (count === 0 && left === 0) return null;
   const lastRound = (last?.round ?? 0) >= state.maxRounds;
-  const were = count === 1 ? "was" : "were";
+  // #2275 — a completed dialog has no next round to wait for.
+  const over = lastRound || state.completed;
+  const sentences: string[] = [];
+  if (count > 0) {
+    const more = `${count} more question${count === 1 ? "" : "s"}`;
+    const were = count === 1 ? "was" : "were";
+    sentences.push(
+      lastRound
+        ? `${more} did not fit in the last round and ${were} not asked.`
+        : state.completed
+          ? `${more} of lower impact ${were} not asked.`
+          : `${more} of lower impact ${count === 1 ? "is" : "are"} waiting for the next round.`,
+    );
+  }
+  if (left > 0) {
+    const more = `${left} more open ambiguit${left === 1 ? "y" : "ies"}`;
+    sentences.push(
+      over
+        ? `${more} had no question written and ${left === 1 ? "was" : "were"} not asked about.`
+        : `${more} ${left === 1 ? "has" : "have"} no question yet and ${left === 1 ? "is" : "are"} left for later rounds.`,
+    );
+  }
   return (
     <p
       role="status"
       className="text-xs text-muted-foreground"
       data-testid="clarification-not-asked"
     >
-      {lastRound
-        ? `${more} did not fit in the last round and ${were} not asked.`
-        : // #2275 — a completed dialog has no next round to wait for.
-          state.completed
-          ? `${more} of lower impact ${were} not asked.`
-          : `${more} of lower impact ${count === 1 ? "is" : "are"} waiting for the next round.`}
+      {sentences.join(" ")}
     </p>
   );
 }

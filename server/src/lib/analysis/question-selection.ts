@@ -88,6 +88,26 @@ export function ambiguitiesToQuestion(
   return chosen;
 }
 
+/**
+ * #2543 — how many open ambiguities a round's question call leaves out: the
+ * remainder of {@link ambiguitiesToQuestion}'s cap. No question is written for
+ * them this round, so neither the round's questions nor its `notAsked` count
+ * them; the round carries this number (`notConsidered`) so the dialog can say
+ * what else goes unasked.
+ */
+export function ambiguitiesNotConsidered(
+  requirements: readonly Pick<StructuredRequirement, "id" | "priority" | "ambiguities">[],
+  addressed: ReadonlySet<string>,
+  opts: { cap?: number; askFirst?: ReadonlySet<string> } = {},
+): number {
+  const open = requirements.reduce(
+    (n, r) =>
+      n + ambiguityFieldKeys(r.ambiguities).filter((k) => !addressed.has(`${r.id}:${k}`)).length,
+    0,
+  );
+  return open - ambiguitiesToQuestion(requirements, addressed, opts).size;
+}
+
 /** A generated question, before selection: `divergent` is the model's call, not persisted. */
 export type GeneratedQuestion = ClarifyingQuestion & { divergent?: boolean };
 

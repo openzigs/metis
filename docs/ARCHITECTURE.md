@@ -5387,7 +5387,10 @@ counted on the round (`notAsked`) for the next one. #2534 — questions are writ
 `QUESTION_CANDIDATES_PER_ROUND` (24) open ambiguities, chosen before the call by
 `ambiguitiesToQuestion`: ticked items, then priority, then document order, one per
 requirement in turn. A reader-read document has hundreds of open ambiguities, and one question
-for each overran the reply's output cap. The rest stay open, and each round chooses again. Set-aside questions are kept on
+for each overran the reply's output cap. The rest stay open, and each round chooses again.
+#2543 — how many were left out is counted on the round (`notConsidered`,
+`ambiguitiesNotConsidered`), apart from `notAsked`, and the panel's note says both; a round
+that falls back to asking the open ambiguities as written leaves none out. Set-aside questions are kept on
 `ClarificationState.setAside` and listed by the panel. Only real ambiguities of their
 requirement count as addressed (`setAsideAmbiguities`, inside `addressedAmbiguities`).
 Only missing knowledge (and an unclassified or governing question) goes through the grounding

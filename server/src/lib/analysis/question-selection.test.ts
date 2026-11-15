@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_QUESTIONS_PER_ROUND,
   QUESTION_CANDIDATES_PER_ROUND,
+  ambiguitiesNotConsidered,
   ambiguitiesToQuestion,
   citationFor,
   holdsWord,
@@ -224,5 +225,40 @@ describe("ambiguitiesToQuestion (#2534)", () => {
   it("chooses nothing when nothing is open", () => {
     expect(ambiguitiesToQuestion([req("r1", ["a"])], new Set(["r1:a"])).size).toBe(0);
     expect(ambiguitiesToQuestion([], new Set()).size).toBe(0);
+  });
+});
+
+describe("ambiguitiesNotConsidered (#2543)", () => {
+  const req = (id: string, fields: string[]) => ({
+    id,
+    priority: "should-have" as const,
+    ambiguities: fields.map((field) => ({ field, description: "", suggestedQuestion: "" })),
+  });
+  /** `open` open ambiguities, one per requirement. */
+  const document = (open: number) => Array.from({ length: open }, (_, i) => req(`r${i}`, ["a"]));
+  const cap = QUESTION_CANDIDATES_PER_ROUND;
+
+  it("leaves none out up to the cap, and one past it", () => {
+    expect(ambiguitiesNotConsidered(document(cap - 1), new Set())).toBe(0);
+    expect(ambiguitiesNotConsidered(document(cap), new Set())).toBe(0);
+    expect(ambiguitiesNotConsidered(document(cap + 1), new Set())).toBe(1);
+  });
+
+  it("counts the cap's remainder of a document's hundreds", () => {
+    // The clinic-booking FRD's size: 61 requirements, 244 open ambiguities.
+    const many = Array.from({ length: 61 }, (_, i) => req(`r${i}`, ["a", "b", "c", "d"]));
+    expect(ambiguitiesNotConsidered(many, new Set())).toBe(244 - cap);
+  });
+
+  it("counts only what is still open, under each ambiguity's own key (#2451)", () => {
+    // r0 has two "a" ambiguities (`a`, `a#2`): cap + 2 open in all.
+    const reqs = [req("r0", ["a", "a"]), ...document(cap + 1).slice(1)];
+    expect(ambiguitiesNotConsidered(reqs, new Set())).toBe(2);
+    expect(ambiguitiesNotConsidered(reqs, new Set(["r0:a#2"]))).toBe(1);
+    expect(ambiguitiesNotConsidered(reqs, new Set(["r0:a#2", "r1:a"]))).toBe(0);
+  });
+
+  it("honours a cap of its own", () => {
+    expect(ambiguitiesNotConsidered(document(5), new Set(), { cap: 2 })).toBe(3);
   });
 });

@@ -42,6 +42,7 @@ import type {
   UncertaintyKind,
 } from "./types/requirements.js";
 import {
+  ambiguitiesNotConsidered,
   ambiguitiesToQuestion,
   citationFor,
   selectQuestionsToAsk,
@@ -712,6 +713,12 @@ export class ClarificationDialog {
     );
     let ask = selection.ask.filter((q) => !reused.has(q.id));
     let notAsked = selection.notAsked.length;
+    // #2543 — the open ambiguities the question call left out (#2534's cap):
+    // no question was written for them, so `notAsked` does not count them.
+    let notConsidered =
+      sourceQuestions && unresolvedReqs.length > 0
+        ? ambiguitiesNotConsidered(unresolvedReqs, addressed, { askFirst: this.askFirst })
+        : 0;
     const governingAsk = governingQuestions.filter((q) => !reused.has(q.id));
     if (ask.length === 0 && governingAsk.length === 0) {
       // Everything raised was set aside (or, #2236, answered before in the
@@ -747,6 +754,8 @@ export class ClarificationDialog {
         : askEveryQuestion(cited);
       ask = fallbackSelection.ask;
       notAsked = fallbackSelection.notAsked.length;
+      // Every open ambiguity was written as a question: none was left out.
+      notConsidered = 0;
     }
 
     // Self-resolution pass (clarify-self-resolve): before surfacing questions,
@@ -771,6 +780,7 @@ export class ClarificationDialog {
       questions: orderQuestionsAskFirst(groundedQuestions, this.askFirst),
       answers: [],
       ...(notAsked > 0 ? { notAsked } : {}),
+      ...(notConsidered > 0 ? { notConsidered } : {}),
     };
 
     state.rounds.push(round);
