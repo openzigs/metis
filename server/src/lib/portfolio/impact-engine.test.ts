@@ -369,6 +369,15 @@ describe("addLink (#2191 — the link caps)", () => {
     expect(resources).toHaveLength(MAX_LINK_RESOURCES + 2);
   });
 
+  it("a within-cap new link is stored as a copy: a later merge leaves the caller's array alone", () => {
+    const t = target();
+    const resources = [table(0)];
+    addLink(t, link(resources));
+    addLink(t, link([table(1)]));
+    expect(t.links[0].resources).toEqual([table(0), table(1)]);
+    expect(resources).toEqual([table(0)]);
+  });
+
   it("keeps at most the cap of links of one kind", () => {
     const t = target();
     for (let i = 0; i < MAX_LINKS_PER_KIND + 2; i++) addLink(t, link([], `r-consumer-${i}`));

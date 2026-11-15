@@ -182,4 +182,45 @@ describe("DocumentationPage — a just-finished BRD's index", () => {
     });
     expect(listReads()).toBeGreaterThan(listBefore);
   });
+
+  it("#2191 — Back past the poll window still shows the settled index, not the stale 'pending'", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, now: NOW });
+    let index: Record<string, unknown> = pending;
+    const base = {
+      id: "doc_1",
+      title: "BRD",
+      scope: "full",
+      status: "ready",
+      autoUpdate: false,
+      // Generated just inside the window; it closes while the document is open.
+      generatedAt: iso(INDEXING_POLL_WINDOW_MS - 20_000),
+      createdAt: iso(1_000_000),
+    };
+    mockApiFetch.mockImplementation(async (path: string) => {
+      if (/\/docs\/doc_1$/.test(path)) {
+        return { ...base, content: "# BRD\n", versions: [], indexing: index };
+      }
+      if (/\/docs$/.test(path)) return [{ ...base, indexing: index }];
+      return [];
+    });
+    const Wrapper = makeWrapper({ withAuth: false });
+    render(
+      <Wrapper>
+        <DocumentationPage />
+      </Wrapper>,
+    );
+    fireEvent.click(await screen.findByTestId("doc-card-doc_1"));
+    await screen.findByTestId("doc-indexing-summary");
+
+    index = indexed;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(INDEXING_POLL_WINDOW_MS);
+    });
+    fireEvent.click(screen.getByRole("button", { name: /Back/ }));
+    expect(await screen.findByTestId("doc-card-doc_1")).toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+    expect(screen.getByTestId("doc-card-doc_1")).not.toHaveTextContent(/pending/i);
+  });
 });

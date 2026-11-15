@@ -13,7 +13,7 @@ import { useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { apiFetch } from "@/lib/api-client";
 import { analysisApi } from "@/lib/analysis-api";
@@ -205,6 +205,7 @@ export function indexingPollInterval(
 export default function DocumentationPage(): React.ReactElement {
   const params = useParams<{ id: string }>();
   const projectId = params?.id ?? "";
+  const queryClient = useQueryClient();
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
   // #2343 — `?doc=<id>` opens that document: where a finished or failed
   // generation's toast and bell item land. Followed on every change, not only
@@ -537,6 +538,13 @@ export default function DocumentationPage(): React.ReactElement {
               onClick={() => {
                 setViewingVersionId(null);
                 setSelectedDoc(null);
+                // #2191 — the list stood still while this document was open, so
+                // its index state is stale (and past the poll window nothing
+                // would re-read it). Read it fresh on the way back.
+                void queryClient.invalidateQueries({
+                  queryKey: ["generated-docs", projectId],
+                  exact: true,
+                });
               }}
             >
               &larr; Back
