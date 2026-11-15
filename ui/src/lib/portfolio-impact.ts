@@ -14,8 +14,10 @@ import {
   portfolioLinkResources,
   portfolioModifierText,
   portfolioOtherLinkKinds,
+  portfolioProviderSites,
   portfolioResourceLists,
   portfolioRestrictedRule,
+  portfolioSiteLocation,
   type CodeCitation,
   type PortfolioAssessmentView,
   type PortfolioImpactTier,
@@ -249,32 +251,11 @@ function paragraphFor(view: PortfolioAssessmentView, p: Product): string {
   return prose || p.baSummary;
 }
 
-const siteLocation = (s: { filePath: string; line: number | null }) =>
-  s.line === null ? s.filePath : `${s.filePath}:${s.line}`;
-
-/**
- * #2183 — where a product's code provides what changes downstream: the
- * provider's side of every hop out of it, on any product's path this reader is
- * shown. A host the gap engine found nothing in has no other file evidence.
- */
+/** #2183 — where a product's code provides what changes downstream (#2191: the shared rule). */
 function providerFiles(view: PortfolioAssessmentView, productId: string): DeepDive["files"] {
-  // The same file of the same repo once: two products downstream of one table share it.
-  const out = new Map<string, DeepDive["files"][number]>();
-  for (const q of view.products) {
-    if (q.coverage === "restricted") continue;
-    for (const h of storedImpact(q)?.hops ?? []) {
-      if (h.fromProductId !== productId || !h.provider) continue;
-      for (const s of h.providerSites ?? []) {
-        const location = siteLocation(s);
-        out.set(`${h.provider.label}\u0000${location}`, {
-          location,
-          repo: h.provider.label,
-          kind: "provides",
-        });
-      }
-    }
-  }
-  return [...out.values()];
+  return portfolioProviderSites(view.products, (q) => storedImpact(q)?.hops, productId).map(
+    ({ repo, location }) => ({ location, repo, kind: "provides" as const }),
+  );
 }
 
 function deepDiveFor(
@@ -303,7 +284,7 @@ function deepDiveFor(
         })),
       ),
     ...(last?.callSites ?? []).map((s) => ({
-      location: siteLocation(s),
+      location: portfolioSiteLocation(s),
       repo: last!.consumer.label,
       kind: "call-site" as const,
     })),

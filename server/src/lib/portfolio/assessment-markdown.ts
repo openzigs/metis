@@ -24,9 +24,11 @@ import {
   portfolioLinkResources,
   portfolioModifierText,
   portfolioOtherLinkKinds,
+  portfolioProviderSites,
   portfolioRestrictedNote,
   portfolioRestrictedRule,
   portfolioResourceLists,
+  portfolioSiteLocation,
   type CodeCitation,
   type PortfolioAssessmentView,
 } from "@metis/shared";
@@ -175,26 +177,11 @@ function modifierText(m: Hop["severity"]["modifiers"][number]): string {
   return mdInline(portfolioModifierText(m));
 }
 
-const site = (s: { filePath: string; line: number | null }) =>
-  s.line === null ? s.filePath : `${s.filePath}:${s.line}`;
-
-/**
- * #2183 — where a product's code provides what changes downstream: the
- * provider's side of every hop out of it, on any product's path the reader is
- * shown. A host the gap engine found nothing in has no other file evidence.
- */
+/** #2183 — where a product's code provides what changes downstream (#2191: the shared rule). */
 function providerSitesOf(v: PortfolioAssessmentView, productId: string): string[] {
-  const lines = new Set<string>();
-  for (const q of v.products) {
-    if (q.coverage === "restricted") continue;
-    for (const h of impactOf(q)?.hops ?? []) {
-      if (h.fromProductId !== productId) continue;
-      for (const s of h.providerSites) {
-        lines.add(`- ${code(site(s))} (${mdInline(h.provider.label)}): provides what changes`);
-      }
-    }
-  }
-  return [...lines];
+  return portfolioProviderSites(v.products, (q) => impactOf(q)?.hops, productId).map(
+    ({ repo, location }) => `- ${code(location)} (${mdInline(repo)}): provides what changes`,
+  );
 }
 
 function deepDive(
@@ -231,7 +218,7 @@ function deepDive(
         ),
       ),
     ...(last?.callSites ?? []).map(
-      (s) => `- ${code(site(s))} (${mdInline(last!.consumer.label)}): call site`,
+      (s) => `- ${code(portfolioSiteLocation(s))} (${mdInline(last!.consumer.label)}): call site`,
     ),
     ...providerSitesOf(v, p.productId),
   ];

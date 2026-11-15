@@ -108,6 +108,16 @@ export function generatedDocSyntheticDocumentId(
   return `gendoc-${generatedDocumentId}${revisionId ? `:${revisionId}` : ""}`;
 }
 
+/**
+ * Write the placeholder and enqueue one publication task directly.
+ *
+ * #2191 — no production path calls this. A generated document's publication
+ * is persisted through the outbox (`persistGeneratedDocTask` in
+ * `generated-doc-outbox.ts`); this function's only caller, `ingestDocumentToRag`
+ * (`rag-ingest.ts`), is itself uncalled outside tests. It stays as the seam the
+ * publication tests enqueue through (a task cancelled while still queued, the
+ * injected storage and queue).
+ */
 export async function enqueueGeneratedDocPublication(
   input: GeneratedDocPublicationRequest,
   deps: GeneratedDocPublicationDeps = {},
