@@ -163,15 +163,15 @@ export function buildHandoffInstructions(
   // title, and the run's Summary listed NR-1 as "Spec Kit handoff: evaluate…".
   // So each requirement is headed by its own label and first sentence, which
   // name it instead, and keep the list scannable by name (#1583 review).
-  // #2186 — the names cost budget, so a spec that fits only with shorter ones
-  // gets shorter ones, and one that fits only with none gets bare labels: a
-  // requirement is never left out to make room for the names of the others.
+  // #2186 — the names cost budget, so the packing that sends the most
+  // requirements wins, ties going to the widest names: a requirement is never
+  // left out to make room for the names of the others. Not "the widest that
+  // sends as many as bare labels": packing skips what does not fit, so a
+  // narrower width can let one long requirement crowd out many short ones.
   const header = `# Spec Kit handoff: evaluate these requirements from spec.md against the current implementation. Only spec.md's requirements are sent.${note}`;
-  const bare = packRequirements(header, requirements, 0);
-  const packed =
-    HEADING_NAME_WIDTHS.map((width) => packRequirements(header, requirements, width)).find(
-      (p) => p.sent.length === bare.sent.length,
-    ) ?? bare;
+  const packed = [...HEADING_NAME_WIDTHS, 0]
+    .map((width) => packRequirements(header, requirements, width))
+    .reduce((best, p) => (p.sent.length > best.sent.length ? p : best));
   return {
     text: packed.text,
     truncated: packed.omitted.length > 0,

@@ -170,6 +170,22 @@ describe("buildHandoffInstructions", () => {
       expect(r.text).toContain(`\nAC-23: Criterion 23 ${"w".repeat(137)}`);
       expect(r.text.length).toBeLessThan(MAX_EXTRA_INSTRUCTIONS);
     });
+
+    it("keeps the width that sends the most, though a narrower one lets a long criterion crowd out short ones", () => {
+      // Packing skips what does not fit and tries the next, so the bare labels
+      // let the near-cap AC-1 in and leave room for one short one; full-width
+      // names leave AC-1 out and send all twelve short ones.
+      const spec = `## Acceptance criteria\n- **AC-1**: Long ${"w".repeat(80)}. ${"x".repeat(3800)}\n${Array.from(
+        { length: 12 },
+        (_, i) => `- **AC-${i + 2}**: Short criterion ${i + 2}.`,
+      ).join("\n")}\n`;
+      const r = buildHandoffInstructions(["spec.md"], spec);
+      expect(r.sent).toHaveLength(12);
+      expect(r.omitted).toEqual(["AC-1"]);
+      // Ties go to the widest names: these are the full first sentences.
+      expect(headings(r.text)[0]).toBe("### AC-2: Short criterion 2.");
+      expect(r.text.length).toBeLessThan(MAX_EXTRA_INSTRUCTIONS);
+    });
   });
 
   it("sends a requirement that ends one under the cap, and leaves out one that ends at it (#994 review)", () => {

@@ -360,10 +360,11 @@ describe("Spec Kit page — a command as a background job (#1059)", () => {
       answer();
       await waitFor(() => expect(toastSuccess).toHaveBeenCalledWith("Generated tasks.md (v1)."));
       expect(toastSuccess).toHaveBeenCalledTimes(1);
-      // Left mid-job as before: the job is kept for the next visit…
-      expect(loadWatchedJobs("p1").map((w) => w.jobId)).toEqual(["job-1"]);
-      // …and the event, announced once, stays quiet when it is delivered again.
+      // The event, announced once, stays quiet when it is delivered again…
       expect(globalLayerHears("completed")).toBe(false);
+      // …and the job, its outcome announced, is no longer watched, so a visit
+      // within SPEC_KIT_FRESH_RESULT_MS does not re-attach it and toast again.
+      expect(loadWatchedJobs("p1")).toEqual([]);
     });
 
     it("#2186 — gives the claim back when the job can no longer be read", async () => {

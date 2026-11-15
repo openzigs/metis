@@ -58,14 +58,28 @@ const ABSENT_FROM_CONTEXT_RE =
  * of the absence phrase only, so a later clause ("…, so its source is unknown")
  * does not turn a claim that the file is absent into one that its source was
  * not shown. Bounded alternation, no nested quantifier.
+ *
+ * The `of`/`for` form counts only up to the first code span, where the noun
+ * takes that path as its object ("the source of `x.go`"): in "`x.go`, which
+ * holds the implementation of `Y`, is not in the context" the noun is about
+ * another symbol, and the file is still said to be absent. The possessive
+ * accepts a typographic apostrophe (U+2019) as well as `'`.
  */
-const SOURCE_SUBJECT_RE =
-  /\b(?:source(?: code)?|body|contents?|implementation|definition|code) (?:of|for)\b|(?:\bits|'s) (?:source(?: code)?|body|contents?|implementation|definition|code)\b/i;
+const SOURCE_OF_RE =
+  /\b(?:source(?: code)?|body|contents?|implementation|definition|code) (?:of|for)\b/i;
+const SOURCE_POSSESSIVE_RE =
+  /(?:\bits|['\u2019]s) (?:source(?: code)?|body|contents?|implementation|definition|code)\b/i;
+/** The first backticked name in a sentence. */
+const FIRST_CODE_SPAN_RE = /`[^`\n]+`/;
 
 /** True when `sentence` says a FILE is absent from the context, not that its source was not shown. */
 function claimsFileAbsent(sentence: string): boolean {
   const m = ABSENT_FROM_CONTEXT_RE.exec(sentence);
-  return m !== null && !SOURCE_SUBJECT_RE.test(sentence.slice(0, m.index + m[0].length));
+  if (m === null) return false;
+  const subject = sentence.slice(0, m.index + m[0].length);
+  const span = FIRST_CODE_SPAN_RE.exec(subject);
+  const ofScope = span ? subject.slice(0, span.index + span[0].length) : subject;
+  return !SOURCE_OF_RE.test(ofScope) && !SOURCE_POSSESSIVE_RE.test(subject);
 }
 
 /** Sentences of `text`, split on `.`/`!`/`?` followed by space, or on a line break. */

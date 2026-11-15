@@ -468,7 +468,12 @@ export default function SpecKitPage() {
       live.off("job:lifecycle" as never, onLifecycle as never);
       if (!claimed || settled) return;
       releaseTerminalToast(jobId);
-      if (swallowed) fireTerminalToast(swallowed);
+      if (!swallowed) return;
+      fireTerminalToast(swallowed);
+      // #2186 review — the outcome is announced, so the job is no longer this
+      // page's to pick up: kept in the watched list, a visit within
+      // SPEC_KIT_FRESH_RESULT_MS re-attached it and toasted it a second time.
+      forgetWatchedJob(projectId, jobId);
     };
   };
 

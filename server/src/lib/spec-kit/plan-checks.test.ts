@@ -99,11 +99,22 @@ describe("findNotVisibleClaims", () => {
         { named: CTX, file: CTX },
       ]);
     }
+    // A source noun about ANOTHER symbol, in a clause of its own, is not the
+    // subject: the file is still said to be absent (`WithLimit` is checked too).
+    expect(
+      await findNotVisibleClaims(
+        "`internal/http/request/context.go`, which holds the implementation of `WithLimit`, is not in the retrieved context.",
+        named,
+        lookup,
+      ),
+    ).toContainEqual({ named: CTX, file: CTX });
     // Its SOURCE is said not to be shown, and it was not: honest, whatever the verb.
     for (const notShown of [
       "The source of `internal/http/request/context.go` is not in the retrieved context.",
       "The body of `internal/http/request/context.go` is not present in the retrieved context.",
       "`internal/http/request/context.go`'s source is not in the given context.",
+      // A typographic apostrophe, as a model often writes it.
+      "`internal/http/request/context.go`’s source is not in the given context.",
       "I could not find the implementation of `internal/http/request/context.go` in the retrieved context.",
     ]) {
       expect(await findNotVisibleClaims(notShown, named, lookup), notShown).toEqual([]);
