@@ -12,12 +12,14 @@ import {
   COVERAGE_CLEAN_THRESHOLD,
   describeOverlapPlan,
   DOC_EVAL_K,
+  extraSizeArm,
   ladderArmsAlreadyRun,
   MIN_IMPORTANT_NDCG_DELTA,
   ndcgByQuery,
   overlapArmsFor,
   OVERLAP_LADDER,
   OVERLAP_RATIO,
+  parseExtraSizes,
   ratioOverlap,
   renderChunkSweep,
   renderOverlapDelivery,
@@ -162,6 +164,36 @@ describe("the sweep's arm definitions", () => {
 
   it("gives every arm a rationale, because the artefact prints it", () => {
     for (const arm of CHUNK_SIZE_ARMS) expect(arm.rationale.length).toBeGreaterThan(20);
+  });
+});
+
+describe("extra size arms (#2527)", () => {
+  it("builds a non-control arm at the constant size-arm overlap", () => {
+    expect(extraSizeArm(4096)).toEqual({
+      id: "size-4096",
+      chunkSize: 4096,
+      overlap: SIZE_ARM_OVERLAP,
+      control: false,
+      rationale: expect.stringContaining("--extra-sizes"),
+    });
+  });
+
+  it("refuses a size the standard sweep already runs, so no arm id is run twice", () => {
+    expect(() => extraSizeArm(2048)).toThrow(/already a standard arm/);
+    expect(() => extraSizeArm(768)).toThrow(/already a standard arm/);
+  });
+
+  it("refuses a size that is not a whole number above the requested overlap", () => {
+    expect(() => extraSizeArm(SIZE_ARM_OVERLAP)).toThrow(/above the 256 overlap/);
+    expect(() => extraSizeArm(4096.5)).toThrow(/whole number/);
+  });
+
+  it("parses a comma list in order, and rejects junk and repeats", () => {
+    expect(parseExtraSizes("4096, 6144").map((a) => a.chunkSize)).toEqual([4096, 6144]);
+    expect(() => parseExtraSizes("4k")).toThrow(/whole numbers, not "4k"/);
+    expect(() => parseExtraSizes("")).toThrow(/whole numbers/);
+    expect(() => parseExtraSizes("4096,4096")).toThrow(/names a size twice/);
+    expect(() => parseExtraSizes("4096,04096")).toThrow(/names a size twice/);
   });
 });
 

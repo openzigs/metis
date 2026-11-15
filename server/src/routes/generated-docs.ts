@@ -5,7 +5,8 @@
  * Routes:
  *   POST   /generate             — trigger doc generation for a project
  *   GET    /                     — list generated documents
- *   GET    /:docId               — get a single document (content + summary metadata)
+ *   GET    /cost-estimate        — a BRD's estimated cost range, before it is generated (#2189)
+ *   GET    /:docId              — get a single document (content + summary metadata)
  *   GET    /:docId/versions/:versionId                 — one version's markdown (#190)
  *   GET    /:docId/versions/:versionId/provenance      — its provenance manifest (#190)
  *   GET    /:docId/versions/:versionId/provenance/summary — the panel's summary of it (#196)
@@ -57,8 +58,11 @@ import {
 import {
   PHASE1_PROMPT_VERSION,
   buildDocsGenProvider,
+  resolveDocsGenCostInputs,
   resolvePhase2Router,
+  sectionGroupsFor,
 } from "../lib/docs-gen/holistic-synthesizer.js";
+import { estimateBrdGenerationCost, noCodeEstimate } from "../lib/docs-gen/cost-estimate.js";
 import { generatedDocSyntheticDocumentId } from "../lib/docs-gen/generated-doc-publication.js";
 import {
   documentProgressPercent,
@@ -90,6 +94,8 @@ import {
 import { NO_DOCUMENTABLE_CODE } from "../lib/docs-gen/no-documentable-code.js";
 import { scopeHasIndexedSourceCode } from "../lib/docs-gen/indexed-source-code.js";
 import {
+  MAX_PATH_PREFIX_LENGTH,
+  MAX_PATH_PREFIXES,
   PATH_SCOPE_EMPTY_CODE,
   pathPrefixesSchema,
   pathScopeLabel,
@@ -358,6 +364,26 @@ const sourceCodeQuerySchema = z.object({
   repoConnectorId: z.string().min(1).max(200).optional(),
 });
 
+/**
+ * #2189 — `GET /cost-estimate`: the scope of the business-requirements
+ * document to estimate. `pathPrefixes` is the form's comma-separated field,
+ * validated as `POST /generate` validates it.
+ */
+const costEstimateQuerySchema = z.object({
+  repoConnectorId: z.string().min(1).max(200).optional(),
+  pathPrefixes: z
+    .string()
+    .max(MAX_PATH_PREFIXES * (MAX_PATH_PREFIX_LENGTH + 1))
+    .transform((raw) =>
+      raw
+        .split(",")
+        .map((p) => p.trim())
+        .filter(Boolean),
+    )
+    .pipe(z.union([z.array(z.string()).length(0), pathPrefixesSchema]))
+    .optional(),
+});
+
 /** #190 — a version's stored manifest, read only when a caller needs it. */
 async function storedManifest(documentId: string, versionId: string): Promise<string | null> {
   const stored = await prisma.generatedDocumentVersion.findFirst({
@@ -581,6 +607,46 @@ export function generatedDocsRouter(): Router {
     const indexed = await scopeHasIndexedSourceCode(projectId, query.data.repoConnectorId);
     res.json({ data: { indexed } });
   });
+
+  // #2189 — GET /cost-estimate — what a business-requirements document of this
+  // scope is estimated to cost, as a range, before the form starts it. Built
+  // from the plan the generator would run and the configured models' prices
+  // (lib/docs-gen/cost-estimate.ts). Registered before `/:docId`.
+  r.get(
+    "/cost-estimate",
+    requirePermission("project.read"),
+    async (req: Request, res: Response) => {
+      const projectId = getProjectId(req);
+      const query = costEstimateQuerySchema.safeParse(req.query);
+      if (!query.success) throw new AppError(400, "VALIDATION_ERROR", query.error.message);
+      const sections = sectionGroupsFor("business-requirements").length;
+      let codeGraphId: string | undefined;
+      if (query.data.repoConnectorId !== undefined) {
+        try {
+          codeGraphId = await requireRepositoryGraph(projectId, query.data.repoConnectorId);
+        } catch (err) {
+          // A repository with no code graph has nothing to document, as in /source-code.
+          if (err instanceof AppError && err.code === "REPOSITORY_GRAPH_UNAVAILABLE") {
+            res.json({ data: noCodeEstimate(sections) });
+            return;
+          }
+          throw err;
+        }
+      }
+      const inputs = resolveDocsGenCostInputs();
+      const estimate = await estimateBrdGenerationCost({
+        projectId,
+        codeGraphId,
+        pathPrefixes: query.data.pathPrefixes?.length ? query.data.pathPrefixes : undefined,
+        sections,
+        models: inputs.models,
+        factsCharCap: inputs.factsCharCap,
+        phase1FactsMaxOutputTokens: inputs.phase1FactsMaxOutputTokens,
+        phase1PromptVersion: PHASE1_PROMPT_VERSION,
+      });
+      res.json({ data: estimate });
+    },
+  );
 
   // GET / — list documents
   r.get("/", requirePermission("project.read"), async (req: Request, res: Response) => {

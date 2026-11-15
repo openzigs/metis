@@ -40,6 +40,14 @@
  * −0.054 while the complement it discards reads +0.023, opposite signs — which is the
  * unadjusted-subgroup behaviour described below, not new information.
  *
+ * ## What the analyst corpus measured (#2527)
+ *
+ * Re-asked on `docretrieval-03-analyst-docs` (226 queries over BRDs, PRDs, FRDs and
+ * policies) with `--extra-sizes 4096`, on the default `gte-modernbert-base`: 1024 −0.015,
+ * 3072 and 4096 −0.001 (NOT-ESTABLISHED), 768 −0.049 (DIRECTION-ESTABLISHED-MAGNITUDE-NOT).
+ * Every arm needs at most 106 queries to resolve ±0.04, so this is a resolved null and 2048
+ * stays. Short-sectioned documents leave the larger arms almost identical to the control.
+ *
  * ## Read the units before reasoning about the hypothesis
  *
  * `DEFAULT_RAG_CHUNK_SIZE = 2048` and `DEFAULT_RAG_CHUNK_OVERLAP = 256`
@@ -274,6 +282,48 @@ export const CHUNK_SIZE_ARMS: readonly ChunkArmSpec[] = [
     rationale: "≈768 tokens — tests the hypothesis UPWARD so the sweep is not one-sided.",
   },
 ];
+
+/**
+ * An opt-in size arm beyond {@link CHUNK_SIZE_ARMS} (#2527), e.g. `--extra-sizes 4096`.
+ *
+ * It requests the same absolute {@link SIZE_ARM_OVERLAP} as every size arm, so chunk size
+ * is again the only parameter that differs from the control. It is not added to
+ * {@link CHUNK_SIZE_ARMS} because the committed corpora's results and tests are stated
+ * over those four arms; an extra arm is asked for by name.
+ */
+export function extraSizeArm(chunkSize: number): ChunkArmSpec {
+  if (!Number.isInteger(chunkSize) || chunkSize <= SIZE_ARM_OVERLAP) {
+    throw new Error(
+      `An extra size arm must be a whole number of characters above the ${SIZE_ARM_OVERLAP} ` +
+        `overlap every size arm requests, not "${chunkSize}"`,
+    );
+  }
+  if (CHUNK_SIZE_ARMS.some((a) => a.chunkSize === chunkSize)) {
+    throw new Error(`size-${chunkSize} is already a standard arm; it needs no --extra-sizes`);
+  }
+  return {
+    id: `size-${chunkSize}`,
+    chunkSize,
+    overlap: SIZE_ARM_OVERLAP,
+    control: false,
+    rationale: `≈${Math.round(chunkSize / 4)} tokens — opt-in arm (--extra-sizes, #2527).`,
+  };
+}
+
+/** `--extra-sizes 4096,6144` → one {@link extraSizeArm} per distinct size, in order. */
+export function parseExtraSizes(raw: string): ChunkArmSpec[] {
+  const sizes = raw.split(",").map((s) => {
+    const trimmed = s.trim();
+    if (!/^\d+$/.test(trimmed)) {
+      throw new Error(`--extra-sizes takes whole numbers, not "${trimmed}"`);
+    }
+    return Number(trimmed);
+  });
+  if (new Set(sizes).size !== sizes.length) {
+    throw new Error(`--extra-sizes names a size twice: "${raw}"`);
+  }
+  return sizes.map(extraSizeArm);
+}
 
 /**
  * How an arm's REQUESTED overlap survives {@link resolveChunkParams}' cap (#1185).

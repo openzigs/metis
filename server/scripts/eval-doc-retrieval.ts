@@ -12,6 +12,11 @@
  *   EMBEDDINGS_MODEL_DOWNLOAD_TESTS=1 pnpm eval:doc-retrieval --corpus docretrieval-01-metis-docs
  *   EMBEDDINGS_MODEL_DOWNLOAD_TESTS=1 pnpm eval:doc-retrieval --contextual headings
  *   EMBEDDINGS_MODEL_DOWNLOAD_TESTS=1 pnpm eval:doc-retrieval --contextual headings,model
+ *   EMBEDDINGS_MODEL_DOWNLOAD_TESTS=1 pnpm eval:doc-retrieval \
+ *     --corpus docretrieval-03-analyst-docs --extra-sizes 4096
+ *
+ * `--extra-sizes` (#2527) adds size arms beyond the standard 768 / 1024 / 2048 / 3072,
+ * each at the same requested overlap and compared against the same 2048 control.
  *
  * `--contextual` (#2234) runs the contextual-chunks comparison instead of the size
  * sweep: the shipped 2048/256 index with contextual chunks `off`, against one arm
@@ -111,6 +116,11 @@ async function main(): Promise<void> {
 
     const contextualModes = parseContextualModes(argv);
     if (contextualModes) {
+      if (parseFlag(argv, "extra-sizes") !== undefined) {
+        throw new Error(
+          "--extra-sizes applies to the size sweep only; drop it or drop --contextual",
+        );
+      }
       let generator;
       if (contextualModes.includes("model")) {
         const { buildProvider, loadAIConfig } = await import("../src/lib/ai/index.js");
@@ -157,11 +167,13 @@ async function main(): Promise<void> {
       return;
     }
 
+    const extraSizes = parseFlag(argv, "extra-sizes");
     const report = await harness.runChunkSweep({
       corpusId: parseCorpusId(argv),
       embedder,
       tmpRoot,
       log,
+      extraSizeArms: extraSizes === undefined ? undefined : sweep.parseExtraSizes(extraSizes),
     });
 
     const runId = new Date().toISOString().replace(/[:.]/g, "-");

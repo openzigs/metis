@@ -18,6 +18,12 @@
  * run of the same invocation saved, with no reader call, as a second analysis
  * of an unchanged document does.
  *
+ * #2271 — arm R also asks the first round of clarifying questions an analysis
+ * asks about its reading (#2235): the extraction in source mode, then question
+ * generation and selection. The report's Questions table gives each arm's
+ * questions asked, labelled ambiguities found, questions set aside by reason
+ * and questions over the round's cap.
+ *
  * A slow model may not read the whole corpus in one sitting: run one
  * `--corpus` (or one `--arms`) at a time, then `--combine` the reports into
  * one reading.
