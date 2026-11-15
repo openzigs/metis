@@ -2148,8 +2148,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // admin, whom they never refuse, is shown none marked).
       const seen = await hiddenCheckpointIds(readerOf(req), analysisId, rows);
       const hidden = seen.size > 0 && (await isDurableAdmin(req)) ? new Set<string>() : seen;
+      // Its reviewer's note goes too: a reader's note can quote the entry.
       const items = rows.map((row) => {
-        const marked = hidden.has(row.id) ? { ...row, restricted: true as const } : row;
+        const marked = hidden.has(row.id)
+          ? { ...row, reviewNote: null, restricted: true as const }
+          : row;
         if (row.type !== "requirement") return marked;
         const origin = origins.get(row.itemId);
         return {
@@ -2446,20 +2449,24 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         throw new AppError(400, "VALIDATION_ERROR", "reviewNote must be a string");
       }
       const reviewNote = rawNote?.trim() ? rawNote.trim() : undefined;
-      // #2554 — not while any pending checkpoint is one the caller cannot see.
+      // #2554 — not while any pending checkpoint is one the caller cannot see;
+      // and the write approves only the ones checked here, so a checkpoint
+      // created in between is left pending rather than approved unchecked.
+      const checked = await checkpointRows(analysisId, { status: "pending" });
       await refuseHiddenCheckpoints(
         req,
         analysisId,
         projectId,
-        await checkpointRows(analysisId, { status: "pending" }),
+        checked,
         "analysis.approval.approve_all",
       );
 
       const actor = actorFromReq(req);
-      const { approvedCount } = await approveAllPendingApprovalRequests(analysisId, {
-        reviewerId: actor.id,
-        reviewNote,
-      });
+      const { approvedCount } = await approveAllPendingApprovalRequests(
+        analysisId,
+        { reviewerId: actor.id, reviewNote },
+        checked.map((c) => c.id),
+      );
 
       audit({
         actor: { id: actor.id },
@@ -2507,25 +2514,33 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
 
       const origins = await requirementOriginsFor(analysisId, analysis.metadata);
       const addedIds = [...origins].filter(([, o]) => o === "added").map(([id]) => id);
-      // #2554 — not while any of them is a checkpoint the caller cannot see.
-      await refuseHiddenCheckpoints(
-        req,
-        analysisId,
-        projectId,
+      // #2554 — not while any of them is a checkpoint the caller cannot see;
+      // and only the ones checked here are written (as for approve all).
+      const checked =
         addedIds.length > 0
           ? await checkpointRows(analysisId, {
               type: "requirement",
               status: "pending",
               itemId: { in: addedIds },
             })
-          : [],
+          : [];
+      await refuseHiddenCheckpoints(
+        req,
+        analysisId,
+        projectId,
+        checked,
         "analysis.approval.reject_added",
       );
       const actor = actorFromReq(req);
-      const { rejectedCount } = await rejectPendingRequirementApprovals(analysisId, addedIds, {
-        reviewerId: actor.id,
-        reviewNote: "Left out: added by the analysis, not one of the ticked items.",
-      });
+      const { rejectedCount } = await rejectPendingRequirementApprovals(
+        analysisId,
+        addedIds,
+        {
+          reviewerId: actor.id,
+          reviewNote: "Left out: added by the analysis, not one of the ticked items.",
+        },
+        checked.map((c) => c.id),
+      );
 
       audit({
         actor: { id: actor.id },

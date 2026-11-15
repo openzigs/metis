@@ -90,25 +90,37 @@ interface ApprovalsPanelProps {
 }
 
 /**
- * #2462 — what approving does to a requirement the viewer edited in the
- * checkpoint, in a project that does not allow self-approval: the server
- * promotes it awaiting review, not approved (#2436). Said before the click,
- * not only in the toast after it.
- */
-/**
  * #2554 — said on a checkpoint the viewer cannot see the entry of, in place of
  * the decision the server would refuse them.
  */
 export const RESTRICTED_CHECKPOINT_NOTICE =
   "This checkpoint rests on a document you don't have access to, so you can't approve, reject or edit it. Ask one of its readers or an admin.";
 
-/** #2554 — why Approve all (and leave out the added) is not offered. */
+/** #2554 — why Approve all is not offered. */
 export function describeRestrictedPending(count: number): string {
   const which =
     count === 1 ? "one of these checkpoints rests" : `${count} of these checkpoints rest`;
   return `Approve all isn't offered: ${which} on a document you don't have access to. Decide the others one by one.`;
 }
 
+/**
+ * #2554 — why "Leave out the added" is not offered: one of the added
+ * checkpoints it would reject is one the viewer cannot see.
+ */
+export function describeRestrictedAdded(count: number): string {
+  const which =
+    count === 1
+      ? "one of the requirements the analysis added rests"
+      : `${count} of the requirements the analysis added rest`;
+  return `Leave out the added isn't offered: ${which} on a document you don't have access to. Reject the others one by one.`;
+}
+
+/**
+ * #2462 — what approving does to a requirement the viewer edited in the
+ * checkpoint, in a project that does not allow self-approval: the server
+ * promotes it awaiting review, not approved (#2436). Said before the click,
+ * not only in the toast after it.
+ */
 export const HELD_FOR_REVIEW_NOTICE =
   "You edited this requirement, so approving it holds it for a colleague's review: it is saved awaiting review, not approved. An admin can allow self-approval in Project settings → Approval gate.";
 
@@ -1171,6 +1183,14 @@ export function ApprovalsPanel({
                       />
                     )}
                   </div>
+                  {split.added.some((a) => a.restricted) && (
+                    <p
+                      className="text-xs text-muted-foreground"
+                      data-testid="leave-out-added-restricted"
+                    >
+                      {describeRestrictedAdded(split.added.filter((a) => a.restricted).length)}
+                    </p>
+                  )}
                   <p className="text-xs text-muted-foreground">
                     None of the ticked items asked for these. They are offered, not promoted: each
                     is promoted only if you approve it.

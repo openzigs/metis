@@ -32,6 +32,7 @@ import { requirePermission } from "../middleware/require-permission.js";
 import { AppError } from "../middleware/error-handler.js";
 import { prisma } from "../lib/prisma.js";
 import { restrictedIds, userSourceReader } from "../lib/analysis/source-redaction.js";
+import { InactiveAclActorError, resolveAclActor } from "../lib/rag/acl.js";
 import { audit } from "../lib/audit/audit-service.js";
 import { redactReviewFor, redactReviewsFor } from "../lib/reviews/review-redaction.js";
 import { assertLiveProjectAccess } from "../lib/custom-agents/authz.js";
@@ -142,6 +143,112 @@ async function refuseRestrictedReviewItems(
   );
 }
 
+/**
+ * #2554 — each reviewer of a review must be able to see every requirement in
+ * it, or they would be asked to sign off text they are shown only as
+ * "Restricted" (and their approval would set its `reviewStatus`). Checked after
+ * the requester's own check, so the requester reads every item and is told
+ * nothing a reader is not (a reader is shown who reads a document). Refused
+ * (403 `REVIEWER_CANNOT_SEE_ITEMS`, the reviewers named in
+ * `details.reviewerIds`) before anything is written, audited as
+ * `review.create.denied`. An admin reviewer (durable role) is never refused, as
+ * at the decision below. An inactive or unknown reviewer is left to the
+ * reviewer validation, which answers 400.
+ */
+async function refuseReviewersWhoCannotSee(
+  userId: string,
+  projectId: string,
+  reviewerIds: readonly string[],
+  requirementIds: readonly string[],
+): Promise<void> {
+  if (requirementIds.length === 0) return;
+  const rows = await prisma.requirement.findMany({
+    where: { id: { in: [...new Set(requirementIds)] }, projectId, deletedAt: null },
+    select: { id: true, analysisId: true, sourceIds: true },
+  });
+  if (rows.length === 0) return;
+  const live = await prisma.user.findMany({
+    where: { id: { in: [...new Set(reviewerIds)] }, status: "active", deletedAt: null },
+    select: { id: true },
+  });
+  const blocked: string[] = [];
+  for (const { id } of live) {
+    const hidden = (await restrictedIds(userSourceReader(id), rows)).size > 0;
+    if (hidden && !(await isDurableAdminUser(id))) blocked.push(id);
+  }
+  if (blocked.length === 0) return;
+  audit({
+    actor: { id: userId },
+    action: "review.create.denied",
+    target: { type: "project", id: projectId },
+    metadata: { reason: "reviewer-source-restricted", reviewerIds: blocked },
+  });
+  throw new AppError(
+    403,
+    "REVIEWER_CANNOT_SEE_ITEMS",
+    blocked.length === 1
+      ? "One of the reviewers cannot read a document these requirements rest on, so they cannot review them. Choose another reviewer, or leave those requirements out."
+      : "Some of the reviewers cannot read a document these requirements rest on, so they cannot review them. Choose other reviewers, or leave those requirements out.",
+    { reviewerIds: blocked },
+  );
+}
+
+/**
+ * #2554 — an assigned reviewer cannot decide a review holding a requirement
+ * they cannot see now (its document restricted after the review was asked
+ * for, say): their approval would set the `reviewStatus` of text they are shown
+ * only as "Restricted". Only an assigned reviewer is checked, so anyone else
+ * still gets the decision's own uniform 403 `NOT_A_REVIEWER`. An admin (durable
+ * role) is never refused, as for a checkpoint: a requirement whose source
+ * document was deleted since is seen by no one (#2447), and the review would be
+ * stranded. Refused with 403 `REVIEW_ITEM_RESTRICTED`, audited
+ * `review.decision.denied`.
+ */
+async function refuseDecisionOnHiddenItems(userId: string, reviewId: string): Promise<void> {
+  const review = await prisma.reviewRequest.findUnique({
+    where: { id: reviewId },
+    select: {
+      projectId: true,
+      assignments: { where: { reviewerId: userId }, select: { id: true } },
+      items: { select: { requirementId: true } },
+    },
+  });
+  if (!review || review.assignments.length === 0) return;
+  const requirementIds = review.items.flatMap((i) => (i.requirementId ? [i.requirementId] : []));
+  if (requirementIds.length === 0) return;
+  const rows = await prisma.requirement.findMany({
+    where: { id: { in: requirementIds } },
+    select: { id: true, analysisId: true, sourceIds: true },
+  });
+  const hidden = await restrictedIds(userSourceReader(userId), rows);
+  if (hidden.size === 0 || (await isDurableAdminUser(userId))) return;
+  audit({
+    actor: { id: userId },
+    action: "review.decision.denied",
+    target: { type: "review", id: reviewId },
+    metadata: {
+      projectId: review.projectId,
+      reason: "source-restricted",
+      requirementIds: [...hidden],
+    },
+  });
+  throw new AppError(
+    403,
+    "REVIEW_ITEM_RESTRICTED",
+    "This review covers a requirement resting on a document you cannot read, so you cannot decide it. Ask one of its readers or an admin.",
+  );
+}
+
+/** #2554 — whether `userId` is an admin by durable role (an inactive user is not). */
+async function isDurableAdminUser(userId: string): Promise<boolean> {
+  try {
+    return (await resolveAclActor(userId)).role === "admin";
+  } catch (err) {
+    if (err instanceof InactiveAclActorError) return false;
+    throw err;
+  }
+}
+
 function isReviewAdmin(role: RoleKey): boolean {
   return hasPermission(role, "review.admin");
 }
@@ -191,11 +298,11 @@ export function projectReviewsRouter(): Router {
           issues: parsed.error.flatten(),
         });
       }
-      await refuseRestrictedReviewItems(
-        userId,
-        projectId,
-        parsed.data.items.flatMap((i) => (i.requirementId ? [i.requirementId] : [])),
+      const requirementIds = parsed.data.items.flatMap((i) =>
+        i.requirementId ? [i.requirementId] : [],
       );
+      await refuseRestrictedReviewItems(userId, projectId, requirementIds);
+      await refuseReviewersWhoCannotSee(userId, projectId, parsed.data.reviewerIds, requirementIds);
       // #2436 — the requester may name themselves only where the project allows
       // self-approval and they could approve directly (`requirement.approve`).
       const review = await createReviewRequest(userId, projectId, parsed.data, {
@@ -291,6 +398,7 @@ export function reviewsRouter(): Router {
           issues: parsed.error.flatten(),
         });
       }
+      await refuseDecisionOnHiddenItems(userId, String(req.params.reviewId));
       const result = await recordDecision(
         userId,
         String(req.params.reviewId),

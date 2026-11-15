@@ -25,8 +25,12 @@ vi.mock("@/lib/analysis-api", async (importOriginal) => {
   };
 });
 
-const { ApprovalsPanel, RESTRICTED_CHECKPOINT_NOTICE, describeRestrictedPending } =
-  await import("@/components/analysis/ApprovalsPanel");
+const {
+  ApprovalsPanel,
+  RESTRICTED_CHECKPOINT_NOTICE,
+  describeRestrictedPending,
+  describeRestrictedAdded,
+} = await import("@/components/analysis/ApprovalsPanel");
 
 const ANALYSIS_ID = "an_2554";
 const METADATA = {
@@ -144,6 +148,10 @@ describe("#2554 — a restricted checkpoint offers no decision", () => {
     renderPanel();
     await screen.findByTestId("approvals-added");
     expect(screen.queryByRole("button", { name: /Leave out the/ })).not.toBeInTheDocument();
+    // ...and says why in that section, not only in the Approve all note.
+    expect(screen.getByTestId("leave-out-added-restricted")).toHaveTextContent(
+      describeRestrictedAdded(1),
+    );
   });
 
   it("offers 'leave out the added' when none of the added is restricted", async () => {
@@ -155,6 +163,14 @@ describe("#2554 — a restricted checkpoint offers no decision", () => {
     expect(
       await screen.findByRole("button", { name: "Leave out the 1 added by the analysis" }),
     ).toBeInTheDocument();
+    expect(screen.queryByTestId("leave-out-added-restricted")).not.toBeInTheDocument();
+  });
+
+  it("counts the restricted added requirements", () => {
+    expect(describeRestrictedAdded(1)).toContain(
+      "one of the requirements the analysis added rests",
+    );
+    expect(describeRestrictedAdded(3)).toContain("3 of the requirements the analysis added rest");
   });
 
   it("counts one restricted checkpoint in the singular", () => {

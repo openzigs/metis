@@ -557,10 +557,11 @@ describe("POST .../approvals/approve-all — #939", () => {
     const res = await approveAll({ reviewNote: "  looks right  " });
 
     expect(res.status).toBe(200);
-    expect(approveAllPendingApprovalRequests).toHaveBeenCalledWith("analysis-1", {
-      reviewerId: "user-1",
-      reviewNote: "looks right",
-    });
+    expect(approveAllPendingApprovalRequests).toHaveBeenCalledWith(
+      "analysis-1",
+      { reviewerId: "user-1", reviewNote: "looks right" },
+      expect.any(Array),
+    );
     expect(promoteApprovedRequirements).toHaveBeenCalledTimes(1);
     expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis-1", {
       asApproved: false,
@@ -579,10 +580,11 @@ describe("POST .../approvals/approve-all — #939", () => {
 
     await approveAll();
 
-    expect(approveAllPendingApprovalRequests).toHaveBeenCalledWith("analysis-1", {
-      reviewerId: "user-1",
-      reviewNote: undefined,
-    });
+    expect(approveAllPendingApprovalRequests).toHaveBeenCalledWith(
+      "analysis-1",
+      { reviewerId: "user-1", reviewNote: undefined },
+      expect.any(Array),
+    );
   });
 
   it("rejects a non-string note", async () => {
@@ -814,6 +816,7 @@ describe("ticked vs added requirement approvals — #1129", () => {
       "analysis-1",
       ["REQ-2"],
       expect.objectContaining({ reviewerId: "user-1" }),
+      expect.any(Array),
     );
     expect(res.body.data.rejectedCount).toBe(1);
     expect(promoteApprovedRequirements).toHaveBeenCalledWith("analysis-1", {
@@ -831,10 +834,12 @@ describe("ticked vs added requirement approvals — #1129", () => {
       "/api/projects/proj-1/analyses/analysis-1/approvals/reject-added",
     );
 
-    expect(rejectPendingRequirementApprovals).toHaveBeenCalledWith("analysis-1", [], {
-      reviewerId: "user-1",
-      reviewNote: expect.any(String),
-    });
+    expect(rejectPendingRequirementApprovals).toHaveBeenCalledWith(
+      "analysis-1",
+      [],
+      { reviewerId: "user-1", reviewNote: expect.any(String) },
+      [],
+    );
   });
 
   it("reports the rejections even when promotion fails", async () => {
@@ -977,6 +982,7 @@ describe("ticked vs added follows the recorded #1063 provenance, as the badge do
       "analysis-1",
       ["REQ-1"],
       expect.objectContaining({ reviewerId: "user-1" }),
+      expect.any(Array),
     );
   });
 
@@ -1058,6 +1064,7 @@ describe("a rejected requirement does not take part in the provenance join — #
       "analysis-1",
       expect.not.arrayContaining(["REQ-A"]),
       expect.anything(),
+      expect.any(Array),
     );
   });
 });

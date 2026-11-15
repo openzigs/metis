@@ -667,10 +667,12 @@ async function assertProjectsAccessible(
  * #1754 — assert `actor` may read every requirement a run is asked about: the
  * run reads each one's title, body and stored code links, so access to the
  * run's projects is not enough. A requirement is readable when its own project
- * is, and an unreadable one is refused with the project check's own error
- * ({@link assertProjectsAccessible}). For a member, a requirement that does not
- * exist (or was deleted) gets that same 403, so the answer is no existence
- * oracle; an admin, who can read every project, gets a 404 naming the ids.
+ * is and (#2447) the caller can see its sources. #2554 — for a member, every
+ * unreadable requirement answers the requirements' own 404
+ * `REQUIREMENT_NOT_FOUND` ("Requirement not found", no ids), whether it does
+ * not exist, was deleted, sits in a project they cannot open or rests on a
+ * source they cannot see, so the answer is no existence oracle; an admin, who
+ * can read every project, gets a 404 naming the missing ids.
  *
  * - `"new-source"` (POST /): every requirement must exist and not be deleted.
  * - `"rerun"` (POST /:id/rerun): a requirement gone since is the engine's to
@@ -686,29 +688,33 @@ async function assertRequirementsReadable(
     where: { id: { in: [...requirementIds] } },
     select: { id: true, projectId: true, deletedAt: true, analysisId: true, sourceIds: true },
   });
+  const notFound = () => new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+  const admin = isAdminActor(actor);
   if (mode === "new-source") {
     const live = new Set(rows.filter((r) => !r.deletedAt).map((r) => r.id));
     const missing = requirementIds.filter((id) => !live.has(id));
     if (missing.length > 0) {
-      if (isAdminActor(actor)) {
+      if (admin) {
         throw new AppError(
           404,
           "REQUIREMENT_NOT_FOUND",
           `Unknown requirement(s): ${missing.join(", ")}`,
         );
       }
-      throw new AppError(
-        403,
-        "FORBIDDEN",
-        "You do not have access to one or more requested projects",
-      );
+      throw notFound();
     }
   }
-  await assertProjectsAccessible(actor, [...new Set(rows.map((r) => r.projectId))]);
+  const projectIds = [...new Set(rows.map((r) => r.projectId))];
+  if (admin) {
+    await assertProjectsAccessible(actor, projectIds);
+  } else {
+    const accessible = new Set(await listMemberAccessibleProjectIds(actor));
+    if (projectIds.some((id) => !accessible.has(id))) throw notFound();
+  }
   // #2447 — a requirement resting on a source the caller cannot see is refused:
-  // the run would read its text for them. #2554 — with the not-found answer the
-  // other routes give such a requirement (its project is not the cause), and
-  // audited as the document refusal below is.
+  // the run would read its text for them. #2554 — with the same not-found
+  // answer as an unknown one (above), and audited as the document refusal
+  // below is.
   const restricted = await restrictedIds(
     userSourceReader(actor.id),
     rows.filter((r) => !r.deletedAt),
@@ -722,7 +728,7 @@ async function assertRequirementsReadable(
         metadata: { reason: "source-restricted" },
       });
     }
-    throw new AppError(404, "REQUIREMENT_NOT_FOUND", "Requirement not found");
+    throw notFound();
   }
 }
 

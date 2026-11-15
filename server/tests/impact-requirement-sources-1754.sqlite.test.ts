@@ -1,9 +1,11 @@
 /**
  * #1754 — `POST /api/impact-analyses` with `requirementIds`: the run reads each
  * requirement's text and stored code links, so the caller must be able to read
- * every requirement, not only the run's projects (no IDOR). An unreadable
- * requirement is refused with the project check's own error, and for a member a
- * nonexistent or deleted one gets that same answer (no existence oracle).
+ * every requirement, not only the run's projects (no IDOR). #2554 — for a
+ * member, an unreadable requirement (another workspace's, or one resting on a
+ * source they cannot see) and a nonexistent or deleted one all get the
+ * requirements' own 404 (no existence oracle); a project named in
+ * `projectIds` they cannot open keeps the project check's 403.
  *
  * Workspace `ws1` holds project A (Alice and Bob are members); `ws2` holds
  * project B (Mallory). Project L is legacy (no workspace) and so open to every
@@ -207,14 +209,19 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect((await start("bob", [PA], [REQ.l])).status).toBe(202);
       });
 
-      it("refuses another workspace's requirement with the project check's own error", async () => {
+      it("refuses another workspace's requirement with the requirements' not-found", async () => {
         const viaRequirement = await start("bob", [PA], [REQ.a, REQ.b]);
+        expect(viaRequirement.status).toBe(404);
+        expect(viaRequirement.body.error).toMatchObject({
+          code: "REQUIREMENT_NOT_FOUND",
+          message: "Requirement not found",
+        });
+        // A project named outright keeps the project check's own refusal.
         const viaProject = await post("/api/impact-analyses", "bob", {
           projectIds: [PB],
           text: "x",
         });
-        expect(viaRequirement.status).toBe(403);
-        expect(viaRequirement.body.error).toEqual(viaProject.body.error);
+        expect(viaProject.status).toBe(403);
         expect(triggerSpy).not.toHaveBeenCalled();
       });
 
@@ -222,7 +229,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         const unreadable = await start("bob", [PA], [REQ.b]);
         for (const id of [REQ.missing, REQ.deleted]) {
           const res = await start("bob", [PA], [id]);
-          expect(res.status).toBe(403);
+          expect(res.status).toBe(404);
           expect(res.body.error).toEqual(unreadable.body.error);
         }
         expect(triggerSpy).not.toHaveBeenCalled();
@@ -255,7 +262,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
       it("refuses a re-run that would re-read a requirement the caller cannot read", async () => {
         const res = await post(`/api/impact-analyses/${runFromReqB}/rerun`, "bob");
-        expect(res.status).toBe(403);
+        expect(res.status).toBe(404);
+        expect(res.body.error.code).toBe("REQUIREMENT_NOT_FOUND");
         expect(triggerSpy).not.toHaveBeenCalled();
       });
     });

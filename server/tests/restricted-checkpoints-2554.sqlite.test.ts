@@ -59,7 +59,9 @@ vi.mock("../src/lib/impact-analysis/impact-analysis-engine.js", async () => {
 
 const { initAnalysisRouter } = await import("../src/routes/analysis.js");
 const { impactAnalysisRouter } = await import("../src/routes/impact-analysis.js");
-const { projectReviewsRouter } = await import("../src/routes/reviews.js");
+const { projectReviewsRouter, reviewsRouter } = await import("../src/routes/reviews.js");
+const { approveAllPendingApprovalRequests, rejectPendingRequirementApprovals } =
+  await import("../src/lib/analysis/approval-checkpoint.js");
 const { audit } = await import("../src/lib/audit/audit-service.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
@@ -143,6 +145,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       a.use("/api/analyses", analysis.topLevel);
       a.use("/api/impact-analyses", impactAnalysisRouter());
       a.use("/api/projects/:projectId/reviews", projectReviewsRouter());
+      a.use("/api/reviews", reviewsRouter());
       a.use(notFoundHandler);
       a.use(errorHandler);
       return a;
@@ -448,6 +451,111 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         // An id of no requirement here is still the item resolution's 404.
         expect((await ask("bob", "req-2554-nope")).status).toBe(404);
       });
+
+      it("Alice cannot name Bob reviewer of a requirement he cannot see; nothing is written", async () => {
+        const ask = (reviewerIds: string[], requirementId: string) =>
+          post("alice", `/api/projects/${P}/reviews`, {
+            title: "Sign off",
+            reviewerIds,
+            items: [{ requirementId }],
+          });
+        const before = await db.reviewRequest.count();
+        for (const reviewerIds of [["bob"], ["root", "bob"]]) {
+          const res = await ask(reviewerIds, REQ_SECRET);
+          expect(res.status).toBe(403);
+          expect(res.body.error.code).toBe("REVIEWER_CANNOT_SEE_ITEMS");
+          expect(res.body.error.details).toEqual({ reviewerIds: ["bob"] });
+        }
+        expect(await db.reviewRequest.count()).toBe(before);
+        expect(deniedActions()).toEqual(["review.create.denied", "review.create.denied"]);
+        // Bob may review what he can see, and Root what no one but Alice reads.
+        expect((await ask(["bob"], REQ_OPEN)).status).toBe(201);
+        expect((await ask(["root"], REQ_SECRET)).status).toBe(201);
+      });
+
+      it("an assigned reviewer cannot decide a review of a requirement he cannot see; an admin can", async () => {
+        const review = async (id: string, requirementId: string) =>
+          db.reviewRequest.create({
+            data: {
+              id,
+              projectId: P,
+              title: id,
+              status: "in_review",
+              policy: "all",
+              requestedById: "alice",
+              items: { create: [{ requirementId, pinnedVersion: 1 }] },
+              assignments: { create: [{ reviewerId: "bob" }, { reviewerId: "root" }] },
+            },
+          });
+        // As if the payroll document were restricted after the review was asked for.
+        await review("rv-2554-secret", REQ_SECRET);
+        await review("rv-2554-open", REQ_OPEN);
+        const decide = (who: Who, id: string, decision: string) =>
+          post(who, `/api/reviews/${id}/decision`, { decision });
+        for (const decision of ["approved", "rejected"]) {
+          const bob = await decide("bob", "rv-2554-secret", decision);
+          expect(bob.status).toBe(403);
+          expect(bob.body.error.code).toBe("REVIEW_ITEM_RESTRICTED");
+        }
+        expect(
+          (await db.reviewerAssignment.findMany({ where: { reviewRequestId: "rv-2554-secret" } }))
+            .map((a) => a.decision)
+            .sort(),
+        ).toEqual(["pending", "pending"]);
+        expect(deniedActions()).toEqual(["review.decision.denied", "review.decision.denied"]);
+        // Someone not assigned still gets the decision's own uniform refusal.
+        const alice = await decide("alice", "rv-2554-secret", "approved");
+        expect(alice.status).toBe(403);
+        expect(alice.body.error.code).not.toBe("REVIEW_ITEM_RESTRICTED");
+        expect((await decide("root", "rv-2554-secret", "approved")).status).toBe(200);
+        expect((await decide("bob", "rv-2554-open", "approved")).status).toBe(200);
+      });
+    });
+
+    describe("bulk decisions write only the checkpoints checked", () => {
+      it("approve all and leave out the added leave a checkpoint they were not given pending", async () => {
+        // A checkpoint created after the route's check is not in the ids it passes.
+        expect(
+          await approveAllPendingApprovalRequests(RUN, { reviewerId: "alice" }, [AP_OPEN]),
+        ).toEqual({ approvedCount: 1 });
+        expect(await pendingOf([AP_SECRET, AP_NEW, AP_EVIDENCE])).toBe(3);
+        expect(await approveAllPendingApprovalRequests(RUN, { reviewerId: "alice" }, [])).toEqual({
+          approvedCount: 0,
+        });
+        expect(
+          await rejectPendingRequirementApprovals(
+            RUN,
+            ["s-secret", "s-new"],
+            { reviewerId: "alice" },
+            [AP_NEW],
+          ),
+        ).toEqual({ rejectedCount: 1 });
+        expect(await pendingOf([AP_SECRET, AP_EVIDENCE])).toBe(2);
+      });
+    });
+
+    describe("a restricted checkpoint's review note", () => {
+      it("is not sent to Bob, and is to Alice", async () => {
+        await db.approvalRequest.update({
+          where: { id: AP_SECRET },
+          data: {
+            status: "rejected",
+            reviewerId: "alice",
+            reviewNote: "Payroll bands quoted",
+            reviewedAt: new Date(),
+          },
+        });
+        const noteFor = async (who: Who) =>
+          (
+            (await get(who, `${approvals}/${RUN}/approvals`)).body.data.items as Array<{
+              id: string;
+              reviewNote: string | null;
+            }>
+          ).find((a) => a.id === AP_SECRET)?.reviewNote;
+        expect(await noteFor("bob")).toBeNull();
+        expect(await noteFor("alice")).toBe("Payroll bands quoted");
+        expect(await noteFor("root")).toBe("Payroll bands quoted");
+      });
     });
 
     describe("a run whose source document was deleted since", () => {
@@ -512,6 +620,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           projectIds: [P],
         });
         expect(alice.status).toBe(202);
+      });
+
+      it("answers an unknown requirement exactly as a restricted one, so neither is an oracle", async () => {
+        const start = (requirementIds: string[]) =>
+          post("bob", "/api/impact-analyses", { requirementIds, projectIds: [P] });
+        const restricted = await start([REQ_SECRET]);
+        const unknown = await start(["req-2554-nope"]);
+        expect(unknown.status).toBe(404);
+        expect(unknown.body.error).toEqual(restricted.body.error);
+        expect(triggerSpy).not.toHaveBeenCalled();
       });
     });
   },

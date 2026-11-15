@@ -405,6 +405,7 @@ describe("analyses/:id/* — cross-project scope (#1097)", () => {
       expect(approveAllPendingApprovalRequests).toHaveBeenCalledWith(
         "ana-b",
         expect.objectContaining({ reviewerId: expect.any(String) }),
+        expect.any(Array),
       );
     });
   });
@@ -432,6 +433,7 @@ describe("analyses/:id/* — cross-project scope (#1097)", () => {
         "ana-b",
         expect.any(Array),
         expect.objectContaining({ reviewerId: expect.any(String) }),
+        expect.any(Array),
       );
     });
   });
