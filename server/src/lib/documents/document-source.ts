@@ -10,7 +10,7 @@
  * - `clarification` a clarification answer kept as project knowledge
  *   (`clarifications/clarification-knowledge.ts`, #2310)
  */
-import { type DocumentSource, documentSourceSchema } from "@metis/shared";
+import { CONNECTOR_CODE_SOURCES, type DocumentSource, documentSourceSchema } from "@metis/shared";
 
 // #547 — the closed set is defined once, in `@metis/shared`.
 export type { DocumentSource };
@@ -25,9 +25,4 @@ export function asDocumentSource(value: string): DocumentSource {
   return parsed.success ? parsed.data : "upload";
 }
 
-/**
- * Issue #525 — the repository and database connectors' sources: the rows an
- * analysis's default document set leaves out (formerly every `connector:`
- * filename, which an upload could also carry).
- */
-export const CONNECTOR_CODE_SOURCES: readonly DocumentSource[] = ["repo", "db"];
+export { CONNECTOR_CODE_SOURCES };

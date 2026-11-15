@@ -200,6 +200,13 @@ export const DOCUMENT_SOURCES = [
 export const documentSourceSchema = z.enum(DOCUMENT_SOURCES);
 export type DocumentSource = z.infer<typeof documentSourceSchema>;
 
+/**
+ * Issue #525 — the repository and database connectors' sources: the rows an
+ * analysis's default document set leaves out. Defined once, here, so the
+ * server's run and the UI's summary of it cannot drift apart.
+ */
+export const CONNECTOR_CODE_SOURCES: readonly DocumentSource[] = ["repo", "db"];
+
 /** #717 — the retrievers a hybrid hit can come from. */
 export const RETRIEVAL_MATCHERS = ["dense", "lexical"] as const;
 export type RetrievalMatcher = (typeof RETRIEVAL_MATCHERS)[number];

@@ -36,7 +36,7 @@ describe("AnalysisRunSummary (#907)", () => {
       />,
     );
     expect(screen.getByTestId("analysis-run-summary")).toHaveTextContent(
-      "This run uses all the project's documents + requirements provided: no.",
+      "This run uses all the project's ready documents, not its repository or database rows + requirements provided: no.",
     );
     expect(screen.getByTestId("analysis-run-summary")).not.toHaveTextContent("25");
   });

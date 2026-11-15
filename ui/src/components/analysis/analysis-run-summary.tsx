@@ -33,7 +33,10 @@ function documentsLabel(
   listIsPartial: boolean,
 ): string {
   if (docCount > 0) return plural(docCount);
-  if (listIsPartial) return "all the project's documents";
+  // The loaded page may hold only connector rows (a repository adds one per
+  // file), so a partial list cannot say "no documents" or give a count.
+  if (listIsPartial)
+    return "all the project's ready documents, not its repository or database rows";
   if (availableDocCount === 0) return "no documents";
   if (availableDocCount === 1) return "the project's 1 document";
   return `all ${plural(availableDocCount)}`;

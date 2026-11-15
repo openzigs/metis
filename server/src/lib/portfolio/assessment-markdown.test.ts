@@ -688,6 +688,10 @@ describe("summaryAfterCoverage (#1749)", () => {
       "Covers items in the Orders queue.",
     );
     expect(summaryAfterCoverage("Not checkedout yet.", "Not checked")).toBe("Not checkedout yet.");
+    // A hyphen or apostrophe joins the next word to the label's own.
+    expect(summaryAfterCoverage("Restricted-access repos.", "Restricted")).toBe(
+      "Restricted-access repos.",
+    );
     // A label followed by punctuation or a bracket still counts.
     expect(summaryAfterCoverage("Covers it, via the Orders API.", "Covers it")).toBe(
       "Via the Orders API.",

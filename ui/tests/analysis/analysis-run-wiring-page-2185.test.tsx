@@ -296,9 +296,24 @@ describe("Analysis page — the run summary's document count (#1749, #2185)", ()
     });
     open();
     await waitFor(async () =>
-      expect(await summary()).toHaveTextContent("This run uses all the project's documents"),
+      expect(await summary()).toHaveTextContent("This run uses all the project's ready documents"),
     );
     expect(await summary()).not.toHaveTextContent(/\d+ documents/);
+  });
+
+  it("never says 'no documents' or all of them when a full first page holds only repository rows", async () => {
+    listDocuments.mockResolvedValue({
+      items: Array.from({ length: 25 }, () => docRow("repo")),
+      total: 90,
+      limit: 25,
+      offset: 0,
+      nextCursor: "after-25",
+    });
+    open();
+    await waitFor(async () =>
+      expect(await summary()).toHaveTextContent("not its repository or database rows"),
+    );
+    expect(await summary()).not.toHaveTextContent("no documents");
   });
 
   it("does not count the repository and database rows a run with no selection leaves out", async () => {

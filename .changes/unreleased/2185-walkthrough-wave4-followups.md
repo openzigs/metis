@@ -4,8 +4,10 @@ section: Fixed
 ---
 
 - The analysis start form's summary no longer counts repository and database connector rows as
-  documents. A run with no document ticked does not read them as documents, so a project with only
-  a connected repository now reads "no documents" instead of "all 40 documents".
+  documents. A run with no document ticked does not read them as documents, so a project whose
+  loaded rows are all from a connected repository now reads "no documents". When the project has
+  more rows than one page, it reads "all the project's ready documents, not its repository or
+  database rows" rather than a count.
 - A product's per-service document now labels a shared-table link "writes a shared table" or
   "reads a shared table", as the Service Map and Data Flow diagrams do, instead of `produces` or
   `consumes`.
