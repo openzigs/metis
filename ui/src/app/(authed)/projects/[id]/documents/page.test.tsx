@@ -217,12 +217,25 @@ describe("Documents page — surrounding behaviour", () => {
   });
 
   it("deletes a document through the API", async () => {
+    // #2548 — `document.delete` is an admin's by default; the server refuses anyone else.
+    viewer = { id: "u-root", role: "admin" };
     listDocuments.mockResolvedValue(page([doc()]));
     renderPage();
     await screen.findByTestId("document-row-d1");
 
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(removeDocument).toHaveBeenCalledWith(PROJECT_ID, "d1"));
+  });
+
+  it("#2548 — offers a role without document.delete no Delete that ends in a 403", async () => {
+    listDocuments.mockResolvedValue(page([doc()]));
+    renderPage();
+    await screen.findByTestId("document-row-d1");
+
+    const del = screen.getByRole("button", { name: "Delete" });
+    expect(del).toBeDisabled();
+    fireEvent.click(del);
+    expect(removeDocument).not.toHaveBeenCalled();
   });
 
   it("disables uploads on an archived project", async () => {

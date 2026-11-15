@@ -32,6 +32,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import type { AnalysisSnapshot } from "@/lib/analysis-api";
+import { ApiError } from "@/lib/api-client";
 import { impactAnalysisApi } from "@/lib/impact-analysis-api";
 import { impactAnalysisKeys, useCreateImpactAnalysis } from "@/lib/impact-analysis-hooks";
 import { portfolioApi } from "@/lib/portfolio-api";
@@ -59,18 +60,41 @@ const VERDICT_LABEL: Record<string, string> = {
 
 const live = (status: string) => status === "pending" || status === "running";
 
-/** The requirements a check of this change request reads: not rejected, not deferred. */
+/**
+ * The requirements a check of this change request reads: not rejected, not
+ * deferred. #2548 — nor one the viewer cannot see (`restricted`): the server
+ * leaves it out of a check they start, so it is counted apart.
+ */
 export function checkedRequirements(snapshot: Pick<AnalysisSnapshot, "requirements">): {
   count: number;
   unapproved: number;
+  restricted: number;
 } {
-  const checked = snapshot.requirements.filter(
+  const candidates = snapshot.requirements.filter(
     (r) => r.reviewStatus !== "rejected" && r.reviewStatus !== "deferred",
   );
+  const checked = candidates.filter((r) => !r.restricted);
   return {
     count: checked.length,
     unapproved: checked.filter((r) => r.reviewStatus !== "approved").length,
+    restricted: candidates.length - checked.length,
   };
+}
+
+/** #2548 — what the checks say when the viewer's access leaves requirements out. */
+export function restrictedCheckCopy(count: number, restricted: number): string | null {
+  if (restricted === 0) return null;
+  if (count === 0) {
+    return "Every requirement of this change request draws on sources you don't have access to, so there is nothing you can check. Someone who can see them can run the checks.";
+  }
+  return `${restricted === 1 ? "1 requirement" : `${restricted} requirements`} you don't have access to ${restricted === 1 ? "is" : "are"} left out.`;
+}
+
+/** #2548 — a refused start says why when the server does (its own sentence). */
+export function startErrorMessage(err: unknown): string {
+  return err instanceof ApiError && err.code === "NO_REQUIREMENTS" && err.message
+    ? err.message
+    : "Could not start the portfolio check. Try again.";
 }
 
 /**
@@ -127,7 +151,8 @@ export function ChangeRequestChecks({ projectId, snapshot, title, canRun }: Prop
   const runImpact = useCreateImpactAnalysis();
   const runPortfolio = useCreatePortfolioAssessment();
 
-  const { count, unapproved } = checkedRequirements(snapshot);
+  const { count, unapproved, restricted } = checkedRequirements(snapshot);
+  const restrictedCopy = restrictedCheckCopy(count, restricted);
   const nothing = count === 0;
   const hrefs = changeRequestFormHrefs(projectId, analysisId, title);
 
@@ -143,9 +168,12 @@ export function ChangeRequestChecks({ projectId, snapshot, title, canRun }: Prop
           Impact and portfolio
         </h3>
         <p className="text-xs text-muted-foreground" data-testid="change-request-checks-source">
-          {nothing
-            ? "No draft or approved requirements to check yet."
-            : `Checks this change request's ${count} requirement${count === 1 ? "" : "s"} (draft and approved; rejected and deferred ones are left out).`}
+          {nothing && restricted > 0
+            ? restrictedCopy
+            : nothing
+              ? "No draft or approved requirements to check yet."
+              : `Checks this change request's ${count} requirement${count === 1 ? "" : "s"} (draft and approved; rejected and deferred ones are left out).`}
+          {!nothing && restrictedCopy ? ` ${restrictedCopy}` : ""}
           {impactCheckedCopy(count) ? ` ${impactCheckedCopy(count)}` : ""}
           {!nothing && unapproved > 0
             ? ` ${unapproved} ${unapproved === 1 ? "is" : "are"} not approved yet: a portfolio check now is labelled as run on unapproved requirements.`
@@ -226,7 +254,7 @@ export function ChangeRequestChecks({ projectId, snapshot, title, canRun }: Prop
           </div>
           {runPortfolio.error ? (
             <p role="alert" className="text-xs text-destructive">
-              Could not start the portfolio check. Try again.
+              {startErrorMessage(runPortfolio.error)}
             </p>
           ) : null}
           <PortfolioResults query={checks} />

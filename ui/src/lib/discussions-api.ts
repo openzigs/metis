@@ -55,6 +55,11 @@ export interface DiscussionRequirementRef {
   analysisId: string;
   /** Set on picker results; tells apart same-titled requirements of two runs. */
   createdAt?: string;
+  /**
+   * #2548 — the viewer cannot see a source it rests on: `title` is the
+   * "Restricted" placeholder (#2546), and the header says why. Thread list only.
+   */
+  restricted?: true;
 }
 
 /** #2187 — where a requirement opens: its run's Requirements tab, scrolled to it. */

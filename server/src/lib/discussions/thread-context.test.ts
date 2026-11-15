@@ -22,6 +22,7 @@ const {
   ANCHOR_MAX_CRITERIA,
   ANCHOR_SPEC_SUMMARY_MAX_CHARS,
   RESPONDER_HISTORY_LIMIT,
+  RESTRICTED_REQUIREMENT_REPLY_GUIDANCE,
   loadRecentHistory,
   renderAnchorContext,
   specSummary,
@@ -167,6 +168,9 @@ describe("renderAnchorContext", () => {
     const text = renderAnchorContext({ kind: "restrictedRequirement" });
     expect(text).toContain("a requirement whose sources are restricted");
     expect(text).not.toContain("Requirement:");
+    // #2548 — a reader on its access list is pointed at it, not told to ask for access.
+    expect(text).toContain(RESTRICTED_REQUIREMENT_REPLY_GUIDANCE);
+    expect(text).toContain("do not say or imply that the person asking lacks access");
   });
 
   it("counts an analysis's restricted requirements apart from the overflow", () => {

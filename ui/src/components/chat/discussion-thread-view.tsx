@@ -228,6 +228,12 @@ export function DiscussionThreadView({
       const id = evt.messageId;
       setMessages((prev) => {
         const existing = prev.find((m) => m.id === id);
+        // #2548 — the end-of-stream marker for a reply this view has no row
+        // of: nothing to finish. The requester streamed it into its own SSE
+        // placeholder (`ai-local-*`); an empty settled row under the server id
+        // would make `mergeServerMessages` keep that placeholder beside the
+        // `message:new` row, and the reply showed twice until a reload.
+        if (!existing && evt.done) return prev;
         if (!existing) {
           // First chunk for a not-yet-seen AI message: create a placeholder.
           return upsert(prev, {

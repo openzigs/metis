@@ -466,6 +466,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         ]);
         // The run's narrative rests on the run as a whole: d-secret included.
         expect(snapshot.agents[0]!.summary).toBeNull();
+        // #2548 — and the page is told, once, how much it hid and that the narrative went.
+        expect(snapshot.restrictedView).toEqual({ narrative: true, rows: 4 });
       });
 
       it("hides the narrative of a shared run every row of which records its sources", async () => {
@@ -549,6 +551,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             crossDoc: [],
           });
           expect(JSON.stringify(res.body)).toContain(SECRET);
+          expect(res.body.data.restrictedView).toBeUndefined();
         }
       });
 

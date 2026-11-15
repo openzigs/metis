@@ -2305,6 +2305,23 @@ A change request Metis named after such a document is named by its date for you 
 every page that shows it, including the statement of a portfolio check started from it.
 [#2546]
 
+When a change request read a document you can't see, its page says so once, at the top:
+"This analysis read documents you can't see; results that may draw on them are hidden."
+Its **Summary** keeps the **Outcome** heading and says the outcome is hidden, its settings
+read "Web research: skipped (restricted material)" when the run withheld web research for
+that reason, and its **Requirements** list says on each hidden row why you can't open, edit
+or approve it. A hidden finding offers no **Review**. The **Impact and portfolio** card counts
+only the requirements you can check, and when every one is hidden it says so instead of
+offering a check. A discussion about such a requirement says why it reads **Restricted**,
+and its AI reply, which the whole project reads, points a reader of the requirement to its
+change request instead of telling them to ask for access. Before you start a change request
+on every document, the form says how many documents you can't read it leaves out. **Delete**
+on the Documents page is disabled, with the reason, for a role without `document.delete`
+(an admin's by default) and on a document restricted from you, and uploading a file the
+project already holds under the same name warns that it is a second copy (only for a copy
+you can read). The top-level Documents page says "awaiting review" for a quarantined
+document, as the project's page does. [#2548]
+
 To check several requirements at once, tick them on a project's **Requirements** tab and
 click **Check N selected across portfolio**. Each requirement you ticked is checked on its
 own, in the order you ticked them, up to 100 in one check (the button is disabled past that

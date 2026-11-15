@@ -454,6 +454,15 @@ export function RequirementsList({ projectId }: { projectId: string }) {
                 ) : null}
                 <div className="min-w-0 flex-1 space-y-0.5">
                   <p className="break-words font-medium">{row.title}</p>
+                  {/* #2548 — the reason in view, not only on the disabled buttons' hover. */}
+                  {row.restricted ? (
+                    <p
+                      className="text-xs text-muted-foreground"
+                      data-testid={`requirements-restricted-${row.id}`}
+                    >
+                      {RESTRICTED_REQUIREMENT_HINT}
+                    </p>
+                  ) : null}
                   <p className="text-xs text-muted-foreground">
                     <Link
                       href={analysisHref(projectId, row.changeRequest.id)}

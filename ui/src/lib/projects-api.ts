@@ -450,6 +450,14 @@ export interface EnhancedUsageSummary {
   rows: EnhancedUsageRow[];
 }
 
+/** What `POST /projects/:id/documents` answers. */
+export interface DocumentUploadResult {
+  document: DocumentRow;
+  ingest: { status: string; chunkCount: number };
+  /** #2548 — the earliest live copy of the same file, same name, the uploader can read. */
+  duplicateOf?: { id: string; uploadedAt: string };
+}
+
 export const documentsApi = {
   list: (projectId: string, params?: { limit?: number; offset?: number }) =>
     apiFetch<DocumentListPage>(`/projects/${projectId}/documents`, { params }),
@@ -464,11 +472,12 @@ export const documentsApi = {
     apiFetch<void>(`/projects/${projectId}/documents/${documentId}`, {
       method: "DELETE",
     }),
-  /** Multipart upload — bypasses `apiFetch`'s JSON encoding. */
-  upload: async (
-    projectId: string,
-    file: File,
-  ): Promise<{ document: DocumentRow; ingest: { status: string; chunkCount: number } }> => {
+  /**
+   * Multipart upload — bypasses `apiFetch`'s JSON encoding. #2548 —
+   * `duplicateOf` names an earlier copy of the same file under the same name
+   * the uploader can read: the upload is kept, and the page warns.
+   */
+  upload: async (projectId: string, file: File): Promise<DocumentUploadResult> => {
     const fd = new FormData();
     fd.append("file", file);
     const res = await fetch(`${API_BASE}/projects/${projectId}/documents`, {
@@ -492,10 +501,7 @@ export const documentsApi = {
         payload?.error?.code,
       );
     }
-    return payload?.data as {
-      document: DocumentRow;
-      ingest: { status: string; chunkCount: number };
-    };
+    return payload?.data as DocumentUploadResult;
   },
   /** Issue #132 — fetch a public URL on the server, then ingest it. */
   createFromUrl: (projectId: string, body: { url: string; filename?: string }) =>

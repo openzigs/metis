@@ -8,11 +8,20 @@
  *
  * #2437 — and how many restricted files the run left out, and why.
  *
+ * #2548 — when the viewer cannot see all of it, one line at the top says why
+ * results read "Restricted", and the settings say web research was skipped when
+ * the run withheld it for reading restricted material.
+ *
  * Every string here is rendered as React text, never as HTML or Markdown: a
  * title or a document name holding markup shows the markup as typed.
  */
 import { useState } from "react";
-import { CHANGE_REQUEST_TITLE_MAX, normaliseChangeRequestTitle } from "@metis/shared";
+import {
+  CHANGE_REQUEST_TITLE_MAX,
+  RESTRICTED_READ_WEB_RESEARCH_NOTICE,
+  RESTRICTED_RUN_NOTICE,
+  normaliseChangeRequestTitle,
+} from "@metis/shared";
 import { Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +30,17 @@ import { analysisApi, type AnalysisSnapshot } from "@/lib/analysis-api";
 import { queryKeys } from "@/lib/query-keys";
 import { useAppMutation } from "@/lib/use-app-mutation";
 import { RestrictedLeftOutNotice } from "./restricted-left-out-notice";
+
+/**
+ * #2548 — web research was asked for and not run, because the run read
+ * restricted material (#2506): the flag every viewer is sent, or the notice a
+ * viewer who sees the whole run reads in `webResearch` (a run from before the flag).
+ */
+function webResearchWithheld(metadata: Record<string, unknown> | null | undefined): boolean {
+  if (metadata?.webResearchWithheld === true) return true;
+  const research = metadata?.webResearch as { notice?: unknown } | null | undefined;
+  return research?.notice === RESTRICTED_READ_WEB_RESEARCH_NOTICE;
+}
 
 /** The settings a run used, in words, from its stored metadata. */
 export function runSettingsSummary(
@@ -37,11 +57,17 @@ export function runSettingsSummary(
     enableClarification?: unknown;
     enableWebResearch?: unknown;
   };
+  const webResearch =
+    enhancement.enableWebResearch !== true
+      ? "off"
+      : webResearchWithheld(metadata)
+        ? "skipped (restricted material)"
+        : "on";
   const lines = [
     keys.length > 0 ? `Agents: ${keys.map(agentName).join(", ")}` : null,
     `Model: ${model ?? "chosen automatically"}`,
     `Clarifying questions: ${enhancement.enableClarification === true ? "on" : "off"}`,
-    `Web research: ${enhancement.enableWebResearch === true ? "on" : "off"}`,
+    `Web research: ${webResearch}`,
   ].filter((l): l is string => l !== null);
   return { defaults: metadata?.startedWithDefaults === true, lines };
 }
@@ -82,6 +108,16 @@ export function ChangeRequestSummary({
 
   return (
     <div className="space-y-2" data-testid="change-request-summary">
+      {snapshot.restrictedView ? (
+        // #2548 — said once, here, rather than only on each "Restricted" row.
+        <p
+          className="rounded border border-dashed border-border bg-muted/20 px-3 py-2 text-sm text-muted-foreground"
+          role="note"
+          data-testid="change-request-restricted-notice"
+        >
+          {RESTRICTED_RUN_NOTICE}
+        </p>
+      ) : null}
       {editing ? (
         <form
           className="flex flex-wrap items-center gap-2"
@@ -143,7 +179,10 @@ export function ChangeRequestSummary({
           <span className="font-medium text-foreground">Started from: </span>
           {sources.documents.length === 0 && sources.importedItems.length === 0 ? (
             <span>
-              {sources.allDocuments ? "all of the project's documents" : "nothing recorded"}
+              {/* #2548 — a run reads documents with its starter's access (#2506). */}
+              {sources.allDocuments
+                ? "all of the project's documents its starter could read"
+                : "nothing recorded"}
             </span>
           ) : (
             <ul className="inline">

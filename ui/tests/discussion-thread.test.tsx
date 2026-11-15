@@ -724,6 +724,39 @@ describe("DiscussionThreadView", () => {
     await waitFor(() => expect(screen.queryByText("partial")).not.toBeInTheDocument());
   });
 
+  it("#2548 — shows the requester's reply once when the room's done frame lands before message:new", async () => {
+    postMessageMock.mockResolvedValue(humanMsg({ id: "server-1", body: "@AI hi" }));
+    streamAiReplyMock.mockReturnValue(
+      gen([{ type: "delta", content: "the reply" }, { type: "done" }]),
+    );
+    const user = userEvent.setup();
+    renderView({ aiResponseMode: "on_mention" });
+    await screen.findByLabelText("Message");
+    await user.type(screen.getByLabelText("Message"), "@AI hi");
+    await user.click(screen.getByRole("button", { name: /send/i }));
+    expect(await screen.findByText("the reply")).toBeInTheDocument();
+
+    // What the server sends the room after the reply: the end-of-stream frame
+    // under the real id (its deltas carry none), then the persisted row.
+    act(() =>
+      socketHandler("message:stream")!({
+        threadId: "t1",
+        messageId: "ai-real",
+        delta: "",
+        done: true,
+        ts: 8,
+      }),
+    );
+    act(() =>
+      socketHandler("message:new")!({
+        threadId: "t1",
+        message: aiMsg({ id: "ai-real", body: "the reply" }),
+        ts: 9,
+      }),
+    );
+    await waitFor(() => expect(screen.getAllByText("the reply")).toHaveLength(1));
+  });
+
   it("renders inline + toasts when the AI stream throws a non-abort error", async () => {
     postMessageMock.mockResolvedValue(humanMsg({ id: "server-1", body: "@AI go" }));
     streamAiReplyMock.mockReturnValue(throwingGen(new Error("connection reset")));

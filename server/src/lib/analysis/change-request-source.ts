@@ -130,13 +130,25 @@ export function restrictedNotChecked(source: ChangeRequestSource): PortfolioNotC
   ];
 }
 
-/** A change request with no requirement to check is a 400, said in words. */
+/**
+ * #2548 — why a change request has nothing for this reader to check when every
+ * requirement it holds rests on a source they cannot see. A count only.
+ */
+export const ALL_REQUIREMENTS_RESTRICTED_MESSAGE =
+  "Every requirement of this change request draws on sources you don't have access to, so there is nothing you can check. Someone who can see them can run the check.";
+
+/**
+ * A change request with no requirement to check is a 400, said in words.
+ * #2548 — when the reader's access left every one out, the words say that.
+ */
 export function assertHasRequirements(source: ChangeRequestSource): void {
   if (source.requirements.length === 0) {
     throw new AppError(
       400,
       "NO_REQUIREMENTS",
-      "This change request has no draft or approved requirements to check yet.",
+      source.restrictedLeftOut > 0
+        ? ALL_REQUIREMENTS_RESTRICTED_MESSAGE
+        : "This change request has no draft or approved requirements to check yet.",
     );
   }
 }

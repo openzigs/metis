@@ -10,10 +10,19 @@ import { notFound, useParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { hasPermission } from "@metis/shared";
 import { useAuth } from "@/lib/auth-context";
-import { documentsApi, projectsApi, type DocumentRow } from "@/lib/projects-api";
-import { isUnreadableDocument } from "@/lib/document-access";
+import { documentsApi, projectsApi } from "@/lib/projects-api";
+import {
+  DELETE_DOCUMENT_HINT,
+  DELETE_RESTRICTED_HINT,
+  isUnreadableDocument,
+} from "@/lib/document-access";
 import { ApiError } from "@/lib/api-client";
-import { isDocumentAwaitingReview, quarantineHref } from "@/lib/project-pipeline";
+import {
+  documentStatusLabel,
+  isDocumentAwaitingReview,
+  quarantineHref,
+} from "@/lib/project-pipeline";
+import { HoverHint } from "@/components/spec-kit/hover-hint";
 import { queryKeys } from "@/lib/query-keys";
 import { useProjectDocuments } from "@/hooks/use-project-documents";
 import { Button } from "@/components/ui/button";
@@ -30,16 +39,6 @@ import { PortfolioCheckLink } from "@/components/portfolio/portfolio-check-link"
 import { AclEditor } from "@/components/projects/acl-editor";
 import { RestrictedBadge } from "@/components/projects/restricted-badge";
 
-/**
- * #69 — what one row says about itself. A quarantined document keeps
- * `status = processing`, so printing the raw status called it "processing"
- * indefinitely with nothing pointing at the reviewer queue it is actually
- * waiting on.
- */
-function documentStatusLabel(d: DocumentRow): string {
-  return isDocumentAwaitingReview(d) ? "awaiting review" : d.status;
-}
-
 export default function ProjectDocumentsPage() {
   const params = useParams<{ id: string }>();
   const id = params?.id ?? "";
@@ -47,6 +46,8 @@ export default function ProjectDocumentsPage() {
   const { user } = useAuth();
   // #2547 — `PATCH /documents/:id/acl` checks `document.upload`.
   const canEditAccess = user ? hasPermission(user.role, "document.upload") : false;
+  // #2548 — `DELETE /documents/:id` checks `document.delete` (an admin's, by default).
+  const canDelete = user ? hasPermission(user.role, "document.delete") : false;
   const [accessOpenFor, setAccessOpenFor] = useState<string | null>(null);
 
   const project = useQuery({
@@ -125,6 +126,11 @@ export default function ProjectDocumentsPage() {
               // not change its list (the server refuses it) nor start a check from it.
               const unreadable = isUnreadableDocument(d);
               const accessOpen = accessOpenFor === d.id;
+              const deleteHint = !canDelete
+                ? DELETE_DOCUMENT_HINT
+                : unreadable
+                  ? DELETE_RESTRICTED_HINT
+                  : undefined;
               return (
                 <li
                   key={d.id}
@@ -159,7 +165,8 @@ export default function ProjectDocumentsPage() {
                           your analyses don&apos;t read it.
                         </p>
                       ) : null}
-                      {isDocumentAwaitingReview(d) ? (
+                      {/* #2548 — the reviewer queue shows a non-reader nothing to review. */}
+                      {isDocumentAwaitingReview(d) && !unreadable ? (
                         <Link
                           href={quarantineHref(id)}
                           className="text-xs underline"
@@ -189,14 +196,17 @@ export default function ProjectDocumentsPage() {
                           {accessOpen ? "Close access" : "Access"}
                         </Button>
                       ) : null}
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => removeDoc.mutate(d.id)}
-                        disabled={removeDoc.isPending}
-                      >
-                        Delete
-                      </Button>
+                      <HoverHint hint={deleteHint}>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => removeDoc.mutate(d.id)}
+                          disabled={deleteHint !== undefined || removeDoc.isPending}
+                          data-testid={`document-delete-${d.id}`}
+                        >
+                          Delete
+                        </Button>
+                      </HoverHint>
                     </div>
                   </div>
                   {accessOpen ? (

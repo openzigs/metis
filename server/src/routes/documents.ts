@@ -252,7 +252,15 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       const ingest = await handleIngest(document.id, actor.id);
       const refreshed = await prisma.document.findUnique({ where: { id: document.id } });
       const httpStatus = ingest.queued ? 202 : 201;
-      res.status(httpStatus).json(ok({ document: publicDocumentRow(refreshed), ingest }));
+      // #2548 — the same file under the same name is accepted, and said.
+      const duplicateOf = await readableDuplicate(actor.id, document);
+      res.status(httpStatus).json(
+        ok({
+          document: publicDocumentRow(refreshed),
+          ingest,
+          ...(duplicateOf ? { duplicateOf } : {}),
+        }),
+      );
     },
   );
 
@@ -776,6 +784,34 @@ async function readableDocumentRows<
       ? { ...publicDocumentRow(row), access: documentAccessOf(row, true) }
       : { ...restrictedDocumentRow(publicDocumentRow(row)), access: documentAccessOf(row, false) },
   );
+}
+
+/**
+ * #2548 — an earlier live document of the project with the same name and the
+ * same content (checksum) as `doc`, which `userId` may read: the upload is kept
+ * (a second copy may be meant) and the page warns. One the uploader cannot read
+ * is never named, nor its existence confirmed: an upload is not a probe of a
+ * restricted document's content.
+ */
+async function readableDuplicate(
+  userId: string,
+  doc: { id: string; projectId: string; filename: string; checksum: string },
+): Promise<{ id: string; uploadedAt: Date } | null> {
+  const same = await prisma.document.findMany({
+    where: {
+      projectId: doc.projectId,
+      filename: doc.filename,
+      checksum: doc.checksum,
+      deletedAt: null,
+      id: { not: doc.id },
+    },
+    orderBy: [{ uploadedAt: "asc" }, { id: "asc" }],
+    select: { id: true, uploadedAt: true, aclSubjects: true },
+  });
+  if (same.length === 0) return null;
+  const sees = await documentVisibilityFor(userId, same);
+  const first = same.find(sees);
+  return first ? { id: first.id, uploadedAt: first.uploadedAt } : null;
 }
 
 /** One row (or none) as `userId` may see it: see {@link readableDocumentRows}. */

@@ -588,6 +588,38 @@ describe("redactAnalysisSnapshot (#2447)", () => {
   it("shows everything to a reader who can see every source", () => {
     const out = redactAnalysisSnapshot(snapshot, sources, guardFor(ALICE));
     expect(out).toEqual(snapshot);
+    expect("restrictedView" in out).toBe(false);
+  });
+
+  it("#2548 — keeps the web-research-withheld flag for a reader who cannot see the run, not the research", () => {
+    const withResearch = {
+      ...snapshot,
+      id: "other-run",
+      metadata: {
+        enhancement: { enableWebResearch: true, enableClarification: false },
+        webResearch: { digests: [{ summary: "secret" }], notice: "skipped" },
+        webResearchWithheld: true,
+      },
+    } as unknown as AnalysisSnapshot;
+    const out = redactAnalysisSnapshot(withResearch, sources, guardFor(ALICE));
+    expect(out.metadata).toEqual({
+      enhancement: { enableWebResearch: true, enableClarification: false },
+      webResearchWithheld: true,
+    });
+  });
+
+  it("#2548 — counts what it hid from this reader, and whether the narrative went", () => {
+    // Bob sees the run as a whole but not one finding, requirement and cross-doc finding.
+    expect(redactAnalysisSnapshot(snapshot, sources, guardFor(BOB)).restrictedView).toEqual({
+      narrative: false,
+      rows: 3,
+    });
+    // Alice cannot see this run as a whole: its narrative and the row resting on it go.
+    const starter = { ...snapshot, id: "other-run" } as AnalysisSnapshot;
+    expect(redactAnalysisSnapshot(starter, sources, guardFor(ALICE)).restrictedView).toEqual({
+      narrative: true,
+      rows: 1,
+    });
   });
 
   it("empties an agent's narrative when the reader cannot see the run as a whole", () => {

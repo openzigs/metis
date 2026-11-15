@@ -18,6 +18,7 @@ import type {
   AnalysisCodeContinuationQuote,
   AnalysisLedgerUsage,
   AnalysisLiveAgent,
+  AnalysisRestrictedView,
   AnalysisSkippedRepo,
   DocumentSource,
   FindingSupportPanel,
@@ -427,6 +428,8 @@ export interface AnalysisSnapshot extends AnalysisListItem {
   ledgerUsage?: AnalysisLedgerUsage | null;
   /** Issue #766 — agents running right now, e.g. a Regenerate in progress. */
   liveAgents?: AnalysisLiveAgent[];
+  /** #2548 — what of this run the viewer is shown as restricted; absent when nothing is. */
+  restrictedView?: AnalysisRestrictedView;
   /** Issue #1131 — the budget Continue would run with; present only while it is offered. */
   codeContinuation?: AnalysisCodeContinuationQuote | null;
   metadata: Record<string, unknown> | null;
@@ -479,6 +482,7 @@ type AnalysisSnapshotPayload = AnalysisListItem &
     liveAgents: AnalysisLiveAgent[];
     ledgerUsage: AnalysisLedgerUsage | null;
     codeContinuation: AnalysisCodeContinuationQuote | null;
+    restrictedView: AnalysisRestrictedView;
   }>;
 
 export interface AnalysisCostCapStatus {

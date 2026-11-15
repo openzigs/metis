@@ -94,6 +94,17 @@ export interface RestrictedRequirementAnchor {
   kind: "restrictedRequirement";
 }
 
+/**
+ * #2548 — what the shared reply says about a restricted anchored requirement.
+ * It never assumes the asker lacks access: a member on the access list reads
+ * the requirement on its change request, or in their own chat, where their own
+ * access applies.
+ */
+export const RESTRICTED_REQUIREMENT_REPLY_GUIDANCE =
+  "If asked about it, do not say or imply that the person asking lacks access: they may have it. " +
+  "Say that a shared discussion cannot quote it, and that anyone who can see its sources can read it " +
+  "on its change request's Requirements tab, or ask about it in their own chat.";
+
 /** An anchored analysis run, as the prompt shows it. */
 export interface AnalysisAnchor {
   kind: "analysis";
@@ -186,9 +197,14 @@ export function renderAnchorContext(anchor: ThreadAnchor): string {
     return lines.join("\n");
   }
   if (anchor.kind === "restrictedRequirement") {
+    // #2548 — the asker may well be able to see it (the reply is withheld for
+    // the whole project, not for them), so the reply must not tell them to
+    // "ask someone with access": it points at where a reader can see it.
     return [
       "Context: this discussion is about a requirement whose sources are restricted.",
-      "Its text is not available to this reply. Do not guess at what it says.",
+      "This discussion is shared with the whole project and some members cannot see those sources,",
+      "so its text is not available to this reply. Do not guess at what it says.",
+      RESTRICTED_REQUIREMENT_REPLY_GUIDANCE,
     ].join("\n");
   }
   if (anchor.kind === "requirement") {

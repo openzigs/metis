@@ -85,7 +85,7 @@ import { GoverningFindingsPanel } from "@/components/analysis/governing-findings
 import { StakeholdersPanel } from "@/components/analysis/StakeholdersPanel";
 import { stakeholderApi } from "@/lib/stakeholder-api";
 import { AnalysisRunSummary } from "@/components/analysis/analysis-run-summary";
-import { defaultRunDocumentCount } from "@/lib/project-pipeline";
+import { defaultRunDocumentCount, restrictedRunDocumentCount } from "@/lib/project-pipeline";
 import { AnalysisCapabilityBanner } from "@/components/analysis/analysis-capability-banner";
 import { RequirementInputAccountPanel } from "@/components/analysis/requirement-input-account-panel";
 import { AnalysisLimitsPanel } from "@/components/analysis/analysis-limits-panel";
@@ -1070,6 +1070,7 @@ export default function AnalysisPage(): React.ReactElement {
             <AnalysisRunSummary
               docCount={selectedDocs.length}
               availableDocCount={defaultRunDocumentCount(allDocs)}
+              restrictedDocCount={restrictedRunDocumentCount(allDocs)}
               listIsPartial={Boolean(docs.data?.nextCursor)}
               hasRequirements={
                 extraInstructions.trim().length > 0 || importedRequirementIds.length > 0
@@ -1286,6 +1287,7 @@ export default function AnalysisPage(): React.ReactElement {
                       detail.data.metadata,
                       detail.data.requirements.length,
                     )}
+                    narrativeHidden={detail.data.restrictedView?.narrative === true}
                   />
 
                   {/* Issue #859 (Epic #852) — whether database-aware schema analysis ran
@@ -1815,7 +1817,8 @@ export default function AnalysisPage(): React.ReactElement {
                                   confidence={f.confidence}
                                   agentResultId={f.agentResultId}
                                   onReview={
-                                    f.derivation === "ambiguous"
+                                    // #2548 — nothing to review on a restricted placeholder.
+                                    f.derivation === "ambiguous" && !f.restricted
                                       ? async () => {
                                           await findingsApi.acknowledgeReview(f.id);
                                         }

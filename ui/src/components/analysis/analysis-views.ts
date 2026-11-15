@@ -528,13 +528,21 @@ export function approvalsNoneMessage(
  * The number shown on each tab. Questions and Approvals count what is still
  * OUTSTANDING (open ambiguities, pending approvals) rather than a total, since
  * that is what a reader goes there to clear. `undefined` = no count to show.
+ *
+ * #2548 — while the approval gate holds the requirements back, none is stored
+ * yet: "Requirements 0" beside "Checkpoints 20" read as "none found". The tab
+ * shows no number then, and its content says they wait on the checkpoints.
  */
 export function analysisTabCounts(
   snapshot: Pick<AnalysisSnapshot, "agentResults" | "requirements" | "metadata">,
   ticketStatus: TicketStatus | undefined,
 ): Partial<Record<AnalysisTab, number>> {
+  const held =
+    snapshot.requirements.length === 0 &&
+    (snapshot.metadata as { promotionBlocked?: { blocked?: unknown } } | null)?.promotionBlocked
+      ?.blocked === true;
   return {
-    requirements: snapshot.requirements.length,
+    requirements: held ? undefined : snapshot.requirements.length,
     findings: collectFindings(snapshot).length,
     // #2348 — the same function Home's "Waiting on your answers" counts with.
     // Issue #1081 (from the #1084 review) — when extraction failed there is no

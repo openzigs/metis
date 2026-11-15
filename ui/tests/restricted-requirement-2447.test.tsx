@@ -82,6 +82,11 @@ describe("a restricted requirement on the Requirements list (#2447)", () => {
     expect(edit).toBeDisabled();
     expect(hintOf(edit)).toBe(RESTRICTED_REQUIREMENT_HINT);
     expect(screen.queryByLabelText("Choose Restricted for a review")).toBeNull();
+    // #2548 — the reason is in view on the row, not only on a disabled button's hover.
+    expect(screen.getByTestId("requirements-restricted-r-hidden")).toHaveTextContent(
+      RESTRICTED_REQUIREMENT_HINT,
+    );
+    expect(screen.queryByTestId("requirements-restricted-r-open")).toBeNull();
 
     // The row the viewer can see is untouched.
     expect(screen.getByTestId("requirements-approve-r-open")).toBeEnabled();

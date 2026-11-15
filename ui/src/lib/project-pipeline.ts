@@ -162,6 +162,29 @@ export function defaultRunDocumentCount(
   ).length;
 }
 
+/**
+ * #2548 — the ready documents a run with none ticked leaves out because they
+ * are restricted from the caller: the count the run form says it leaves out.
+ */
+export function restrictedRunDocumentCount(
+  docs: ReadonlyArray<{ status: string; source: string; restricted?: boolean }>,
+): number {
+  return docs.filter(
+    (d) =>
+      d.status === "ready" && d.restricted && !CONNECTOR_CODE_SOURCES.some((s) => s === d.source),
+  ).length;
+}
+
+/**
+ * #69 — what a document row says of its state. A quarantined document keeps
+ * its own `status`, so printing that alone called it "processing" (or "ready")
+ * with nothing pointing at the reviewer queue it is waiting on. #2548 — one
+ * label for the project's and the top-level Documents pages, so they agree.
+ */
+export function documentStatusLabel(d: { status: string; indexState?: string | null }): string {
+  return isDocumentAwaitingReview(d) ? "awaiting review" : d.status;
+}
+
 /** Where quarantined documents are approved or rejected. */
 export function quarantineHref(projectId: string): string {
   return `/projects/${projectId}/settings#quarantine`;

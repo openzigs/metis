@@ -613,6 +613,8 @@ describe("#215 — orchestrator creates approval requests after extraction/clari
     expect(persisted.enhancement.find((e) => "webResearch" in e)).toMatchObject({
       id: "ana-wr-starter",
       webResearch: { digests: [], notice: "restricted-read notice" },
+      // #2548 — the flag a reader who cannot see `webResearch` reads.
+      webResearchWithheld: true,
     });
     expect((await approvalSvc.listApprovalRequests("ana-wr-starter")).map((r) => r.type)).toEqual([
       "requirement",

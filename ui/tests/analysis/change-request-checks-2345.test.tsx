@@ -124,8 +124,8 @@ describe("#2345 — the pre-fill", () => {
           req("d", "deferred"),
         ]),
       ),
-    ).toEqual({ count: 2, unapproved: 1 });
-    expect(checkedRequirements(snapshot([]))).toEqual({ count: 0, unapproved: 0 });
+    ).toEqual({ count: 2, unapproved: 1, restricted: 0 });
+    expect(checkedRequirements(snapshot([]))).toEqual({ count: 0, unapproved: 0, restricted: 0 });
   });
 
   it("pre-fills both full forms from the change request", () => {
