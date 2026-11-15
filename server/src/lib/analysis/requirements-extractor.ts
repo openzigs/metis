@@ -198,6 +198,42 @@ export function buildSourceExtractionInput(
 export const SOURCE_EXTRACTION_BATCH_STATEMENTS = 20;
 
 /**
+ * #2530 — the most batch calls in flight at once. One batch took 70 to 90
+ * seconds on Sonnet 5.5, and the 61 KB corpus document is 18 batches: one at a
+ * time, that is over 20 minutes before the analyst sees a question.
+ */
+export const SOURCE_EXTRACTION_CONCURRENCY = 4;
+
+/**
+ * `fn` over `items`, at most `limit` in flight, results in input order. Once
+ * one call rejects no new item starts (its spend would be for nothing) and the
+ * first rejection is the result. The pool in `portfolio/gap-engine.ts` does the
+ * same, but importing it would bring Prisma into this module.
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  let failed = false;
+  const worker = async (): Promise<void> => {
+    while (!failed && next < items.length) {
+      const i = next++;
+      try {
+        out[i] = await fn(items[i]!);
+      } catch (err) {
+        failed = true;
+        throw err;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return out;
+}
+
+/**
  * #2530 — `statements` in document order, split into the fewest batches of at
  * most `size`, as even as they come (21 are 11 and 10, not 20 and 1), so no
  * batch is a lone statement read without its neighbours.
@@ -453,12 +489,14 @@ export class RequirementsExtractor {
    * {@link buildSourceExtractionInput} over `sources`.
    *
    * #2530 — past {@link SOURCE_EXTRACTION_BATCH_STATEMENTS} statements, one
-   * call per batch ({@link batchSourceStatements}), in document order, each
-   * with `rawInput`'s instructions and its own statements; the requirements are
-   * concatenated. A requirement's `sourceIds` resolve against the statements its
-   * call was given, and the uncited scan runs once, over every statement. A
-   * batch whose reply cannot be read fails the extraction, as one call did:
-   * a list missing a batch's requirements would pass for a complete one.
+   * call per batch ({@link batchSourceStatements}), each with `rawInput`'s
+   * instructions and its own statements, {@link SOURCE_EXTRACTION_CONCURRENCY}
+   * at a time; the requirements are concatenated in document order. A
+   * requirement's `sourceIds` resolve against the statements its call was
+   * given, and the uncited scan runs once, over every statement. A batch whose
+   * reply cannot be read fails the extraction, as one call did, and no further
+   * batch is started: a list missing a batch's requirements would pass for a
+   * complete one.
    */
   async extract(
     rawInput: string,
@@ -475,23 +513,25 @@ export class RequirementsExtractor {
 
     const batches = batchSourceStatements(sources);
     const lead = batches.length > 1 ? sourceExtractionLead(rawInput, sources) : "";
-    const requirements: StructuredRequirement[] = [];
     // #2296 — what the requirements cite, including paragraphs past the ceiling.
     const citedRefs = new Set<string>();
-    for (const [i, batch] of batches.entries()) {
-      const input = batches.length > 1 ? buildSourceExtractionInput(batch, lead) : rawInput;
-      if (batches.length > 1) {
-        log.info("Extracting a batch of source statements", {
-          batch: i + 1,
-          of: batches.length,
-          statements: batch.length,
-        });
-      }
-      const rawReqs = await this.request(input, true, signal);
-      requirements.push(
-        ...this.toStructured(rawReqs, input, new Map(batch.map((s) => [s.ref, s])), citedRefs),
-      );
-    }
+    const perBatch = await mapWithConcurrency(
+      [...batches.entries()],
+      SOURCE_EXTRACTION_CONCURRENCY,
+      async ([i, batch]) => {
+        const input = batches.length > 1 ? buildSourceExtractionInput(batch, lead) : rawInput;
+        if (batches.length > 1) {
+          log.info("Extracting a batch of source statements", {
+            batch: i + 1,
+            of: batches.length,
+            statements: batch.length,
+          });
+        }
+        const rawReqs = await this.request(input, true, signal);
+        return this.toStructured(rawReqs, input, new Map(batch.map((s) => [s.ref, s])), citedRefs);
+      },
+    );
+    const requirements = perBatch.flat();
     // #2275 — the GtWR rules scan EVERY statement, not only the cited ones: a
     // statement no requirement cites (the model left it out, or cited the wrong
     // one) would otherwise get no rule hits at all. #2530 — across every batch:

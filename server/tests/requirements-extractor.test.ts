@@ -8,6 +8,7 @@ import {
   RequirementsExtractionError,
   RequirementsExtractor,
   SOURCE_EXTRACTION_BATCH_STATEMENTS,
+  SOURCE_EXTRACTION_CONCURRENCY,
   SOURCE_EXTRACTION_SUFFIX,
   batchSourceStatements,
   buildSourceExtractionInput,
@@ -841,13 +842,46 @@ describe("extract — source mode, a batch of statements at a time (#2530)", () 
         sourceIds: [ref],
       })),
     });
-  /** The labels a call's user message lists. */
-  const labelsIn = (provider: AIProvider, call: number): string[] =>
-    [
-      ...String(vi.mocked(provider.chat).mock.calls[call]![0][1]!.content).matchAll(
-        /^\[(REQ-\d+)\]$/gm,
-      ),
-    ].map((m) => m[1]!);
+  /** The labels a user message lists, in order. */
+  const labelsOf = (content: unknown): string[] =>
+    [...String(content).matchAll(/^\[(REQ-\d+)\]$/gm)].map((m) => m[1]!);
+  /**
+   * The batch calls run concurrently, so a reply is chosen by the batch a call
+   * is about (the first label it lists), never by call order. `delayMs` holds
+   * a batch's reply back, so later batches can answer first.
+   */
+  function byBatch(
+    reply: (firstLabel: string) => string | Error,
+    delayMs: (firstLabel: string) => number = () => 0,
+  ): AIProvider & { inFlight: { now: number; max: number } } {
+    const inFlight = { now: 0, max: 0 };
+    const chat = vi.fn(async (messages: Parameters<AIProvider["chat"]>[0]) => {
+      const first = labelsOf(messages[1]!.content)[0]!;
+      inFlight.max = Math.max(inFlight.max, ++inFlight.now);
+      try {
+        await new Promise((r) => setTimeout(r, delayMs(first)));
+        const next = reply(first);
+        if (next instanceof Error) throw next;
+        return {
+          content: next,
+          usage: { promptTokens: 10, completionTokens: 20, totalTokens: 30 },
+          model: "test-model",
+          provider: "offline-stub",
+        } as ChatResponse;
+      } finally {
+        inFlight.now--;
+      }
+    });
+    return { ...mockProvider(""), chat, inFlight } as AIProvider & {
+      inFlight: { now: number; max: number };
+    };
+  }
+  /** Every call's labels, ordered by the batch they are about. */
+  const batchesAsked = (provider: AIProvider): string[][] =>
+    vi
+      .mocked(provider.chat)
+      .mock.calls.map(([messages]) => labelsOf(messages[1]!.content))
+      .sort((a, b) => a[0]!.localeCompare(b[0]!));
   /** A batch-1 statement the GtWR rules flag, worded as "Search results load quickly." */
   const withFlaggedFourth = () => {
     const statements = many(45);
@@ -859,7 +893,12 @@ describe("extract — source mode, a batch of statements at a time (#2530)", () 
     return statements;
   };
   const SEARCH_REPLY = JSON.stringify({
-    requirements: [{ title: "Search results load", description: "Search results load quickly." }],
+    requirements: [
+      {
+        title: "Search results load",
+        description: "Search results load quickly.",
+      },
+    ],
   });
 
   it("splits the statements into even batches in document order, none over the size", () => {
@@ -881,19 +920,16 @@ describe("extract — source mode, a batch of statements at a time (#2530)", () 
 
   it("asks one call per batch, each listing only its statements, and concatenates the requirements", async () => {
     const statements = many(45);
-    const provider = sequenceProvider([citing("REQ-001"), citing("REQ-016"), citing("REQ-031")]);
+    const provider = byBatch((first) => citing(first));
     const result = await new RequirementsExtractor({ provider }).extract(
       buildSourceExtractionInput(statements, "Focus on orders."),
       undefined,
       statements,
     );
 
-    expect(provider.chat).toHaveBeenCalledTimes(3);
-    expect(labelsIn(provider, 0)).toEqual(statements.slice(0, 15).map((s) => s.ref));
-    expect(labelsIn(provider, 1)).toEqual(statements.slice(15, 30).map((s) => s.ref));
-    expect(labelsIn(provider, 2)).toEqual(statements.slice(30).map((s) => s.ref));
-    for (let call = 0; call < 3; call++) {
-      const [system, user] = vi.mocked(provider.chat).mock.calls[call]![0];
+    const refs = statements.map((s) => s.ref);
+    expect(batchesAsked(provider)).toEqual([refs.slice(0, 15), refs.slice(15, 30), refs.slice(30)]);
+    for (const [[system, user]] of vi.mocked(provider.chat).mock.calls) {
       // Every batch is a source-mode call, with the analyst's instructions first.
       expect(String(system!.content)).toContain(SOURCE_EXTRACTION_SUFFIX);
       expect(String(user!.content).startsWith("Focus on orders.\n\n[REQ-")).toBe(true);
@@ -909,34 +945,73 @@ describe("extract — source mode, a batch of statements at a time (#2530)", () 
     );
   });
 
+  it("keeps document order when a later batch answers first", async () => {
+    const statements = many(45);
+    // Batch 1 answers last, batch 3 first.
+    const provider = byBatch(
+      (first) => citing(first),
+      (first) => ({ "REQ-001": 30, "REQ-016": 15, "REQ-031": 0 })[first] ?? 0,
+    );
+    const result = await new RequirementsExtractor({ provider }).extract(
+      buildSourceExtractionInput(statements),
+      undefined,
+      statements,
+    );
+    expect(result.requirements.map((r) => r.sources?.[0]?.ref)).toEqual([
+      "REQ-001",
+      "REQ-016",
+      "REQ-031",
+    ]);
+  });
+
+  it(`has at most SOURCE_EXTRACTION_CONCURRENCY (${SOURCE_EXTRACTION_CONCURRENCY}) calls in flight`, async () => {
+    const statements = many(9 * SOURCE_EXTRACTION_BATCH_STATEMENTS);
+    const provider = byBatch(
+      (first) => citing(first),
+      () => 5,
+    );
+    const result = await new RequirementsExtractor({ provider }).extract(
+      buildSourceExtractionInput(statements),
+      undefined,
+      statements,
+    );
+    expect(provider.chat).toHaveBeenCalledTimes(9);
+    expect(provider.inFlight.max).toBe(SOURCE_EXTRACTION_CONCURRENCY);
+    expect(result.requirements).toHaveLength(9);
+  });
+
   it("resolves a requirement's sourceIds against its own batch only", async () => {
     const statements = many(45);
     // Batch 2 names REQ-001, which it was never shown, alongside its own REQ-020.
-    const provider = sequenceProvider([
-      citing("REQ-002"),
-      JSON.stringify({
-        requirements: [
-          { title: "Mixed", description: "Mixed.", sourceIds: ["REQ-001", "REQ-020"] },
-        ],
-      }),
-      citing("REQ-040"),
-    ]);
+    const provider = byBatch((first) =>
+      first === "REQ-016"
+        ? JSON.stringify({
+            requirements: [
+              {
+                title: "Mixed",
+                description: "Mixed.",
+                sourceIds: ["REQ-001", "REQ-020"],
+              },
+            ],
+          })
+        : citing(first),
+    );
     const result = await new RequirementsExtractor({ provider }).extract(
       buildSourceExtractionInput(statements),
       undefined,
       statements,
     );
     expect(result.requirements.map((r) => r.sources?.map((s) => s.ref))).toEqual([
-      ["REQ-002"],
+      ["REQ-001"],
       ["REQ-020"],
-      ["REQ-040"],
+      ["REQ-031"],
     ]);
   });
 
   it("scans every statement of every batch, matching an uncited one to a requirement from any batch", async () => {
     const statements = withFlaggedFourth();
     // REQ-004 is in batch 1 and nothing cites it; batch 3 writes its requirement.
-    const provider = sequenceProvider([citing("REQ-001"), citing("REQ-016"), SEARCH_REPLY]);
+    const provider = byBatch((first) => (first === "REQ-031" ? SEARCH_REPLY : citing(first)));
     const result = await new RequirementsExtractor({ provider }).extract(
       buildSourceExtractionInput(statements),
       undefined,
@@ -950,7 +1025,9 @@ describe("extract — source mode, a batch of statements at a time (#2530)", () 
 
   it("does not hand a statement one batch cites to a requirement another batch wrote", async () => {
     const statements = withFlaggedFourth();
-    const provider = sequenceProvider([citing("REQ-004"), citing("REQ-016"), SEARCH_REPLY]);
+    const provider = byBatch((first) =>
+      first === "REQ-001" ? citing("REQ-004") : first === "REQ-031" ? SEARCH_REPLY : citing(first),
+    );
     const result = await new RequirementsExtractor({ provider }).extract(
       buildSourceExtractionInput(statements),
       undefined,
@@ -965,18 +1042,45 @@ describe("extract — source mode, a batch of statements at a time (#2530)", () 
     expect(result.totalAmbiguities).toBe(2);
   });
 
-  it("fails the whole extraction when one batch cannot be read, asking no later batch", async () => {
+  it("fails the whole extraction when one batch cannot be read", async () => {
     const statements = many(45);
-    const provider = sequenceProvider([citing("REQ-001"), "not json", "still not json"]);
+    const provider = byBatch((first) => (first === "REQ-016" ? "not json" : citing(first)));
     await expect(
       new RequirementsExtractor({ provider }).extract(
         buildSourceExtractionInput(statements),
         undefined,
         statements,
       ),
-    ).rejects.toMatchObject({ name: "RequirementsExtractionError", reason: "unparseable" });
-    // Batch 1, then batch 2 and its one re-prompt; batch 3 is never asked.
-    expect(provider.chat).toHaveBeenCalledTimes(3);
+    ).rejects.toMatchObject({
+      name: "RequirementsExtractionError",
+      reason: "unparseable",
+    });
+    // Batch 2 was asked twice (its one re-prompt); batches 1 and 3 once each.
+    expect(provider.chat).toHaveBeenCalledTimes(4);
+  });
+
+  it("starts no batch after one has failed", async () => {
+    const statements = many(9 * SOURCE_EXTRACTION_BATCH_STATEMENTS);
+    // Batch 1 fails at once; the other calls in flight take longer.
+    const provider = byBatch(
+      (first) => (first === "REQ-001" ? new Error("upstream 503") : citing(first)),
+      (first) => (first === "REQ-001" ? 0 : 10),
+    );
+    await expect(
+      new RequirementsExtractor({ provider }).extract(
+        buildSourceExtractionInput(statements),
+        undefined,
+        statements,
+      ),
+    ).rejects.toMatchObject({
+      name: "RequirementsExtractionError",
+      reason: "provider-error",
+    });
+    // The rejection comes first; let the calls still in flight finish, which is
+    // when a worker would pick up the next batch.
+    await new Promise((r) => setTimeout(r, 50));
+    // The first SOURCE_EXTRACTION_CONCURRENCY batches were in flight; none of the other five started.
+    expect(provider.chat).toHaveBeenCalledTimes(SOURCE_EXTRACTION_CONCURRENCY);
   });
 
   it("refuses an input that is not the statements' own, rather than repeat it in every batch", async () => {
