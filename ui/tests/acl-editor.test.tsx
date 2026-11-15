@@ -45,23 +45,22 @@ describe("AclEditor", () => {
     fireEvent.change(screen.getByTestId("acl-kind-select"), {
       target: { value: "role" },
     });
-    fireEvent.change(screen.getByTestId("acl-value-input"), {
-      target: { value: "manager" },
+    fireEvent.change(screen.getByTestId("acl-role-select"), {
+      target: { value: "reader" },
     });
     fireEvent.click(screen.getByTestId("acl-add"));
-    expect(screen.getByTestId("acl-subjects")).toHaveTextContent("role");
-    expect(screen.getByTestId("acl-subjects")).toHaveTextContent("manager");
+    expect(screen.getByTestId("acl-subjects")).toHaveTextContent("the reader role");
     fireEvent.click(screen.getByTestId("acl-save"));
     await waitFor(() =>
       expect(updateMock).toHaveBeenCalledWith("proj_1", "doc_1", [
-        { kind: "role", value: "manager" },
+        { kind: "role", value: "reader" },
       ]),
     );
   });
 
   it("removes a subject", () => {
     renderEditor([{ kind: "user", value: "u1" }]);
-    fireEvent.click(screen.getByRole("button", { name: /Remove user u1/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove a person not in this project/i }));
     expect(screen.queryByTestId("acl-subjects")).not.toBeInTheDocument();
   });
 
@@ -81,15 +80,16 @@ describe("AclEditor", () => {
     ]);
     expect(screen.getAllByTestId("acl-group-warning")).toHaveLength(1);
     expect(screen.getByTestId("acl-group-warning")).toHaveTextContent(/grants no access/i);
-    fireEvent.click(screen.getByRole("button", { name: /Remove group eng-team/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Remove the eng-team group/i }));
     expect(screen.queryByTestId("acl-group-warning")).not.toBeInTheDocument();
-    expect(screen.getByTestId("acl-subjects")).toHaveTextContent("u1");
+    expect(screen.getByTestId("acl-subjects")).toHaveTextContent("a person not in this project");
   });
 
-  it("ignores empty draft values", () => {
-    renderEditor();
-    fireEvent.click(screen.getByTestId("acl-add"));
-    expect(screen.queryByTestId("acl-subjects")).not.toBeInTheDocument();
+  // #2555 — a role already on the list is not offered again.
+  it("does not add a role twice", () => {
+    renderEditor([{ kind: "role", value: "coordinator" }]);
+    fireEvent.change(screen.getByTestId("acl-kind-select"), { target: { value: "role" } });
+    expect(screen.getByTestId("acl-add")).toBeDisabled();
   });
 
   // #2356 — a refused save says why: another editor saved at the same time.

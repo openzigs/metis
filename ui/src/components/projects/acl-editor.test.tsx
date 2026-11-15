@@ -3,11 +3,14 @@
  * and the quarantine reviewer: it edits the list, saves it through
  * `PATCH /documents/:id/acl`, re-reads the lists that show the badge, and warns
  * an editor who is about to shut themselves out.
+ *
+ * #2555 — a person is picked by name from the project's people and a role from
+ * the role list; every subject is listed by name, never by internal id.
  */
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AclSubject } from "@/lib/projects-api";
+import type { AclSubject, AclUserName } from "@/lib/projects-api";
 
 let viewer: { id: string; role: string } | null = { id: "u-bob", role: "developer" };
 vi.mock("@/lib/auth-context", () => ({ useAuth: () => ({ user: viewer }) }));
@@ -16,10 +19,22 @@ vi.mock("@/lib/projects-api", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/lib/projects-api")>()),
   aclApi: { update: (...a: unknown[]) => updateAcl(...a) },
 }));
+const apiFetch = vi.fn();
+vi.mock("@/lib/api-client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api-client")>()),
+  apiFetch: (...a: unknown[]) => apiFetch(...a),
+}));
 
 const { AclEditor, aclLocksOut } = await import("./acl-editor");
 
-function renderEditor(initialSubjects: AclSubject[] = [], onSaved = vi.fn()) {
+const ALICE: AclUserName = { id: "u-alice", username: "asmith", displayName: "Alice Smith" };
+const BOB: AclUserName = { id: "u-bob", username: "bjones", displayName: "Bob Jones" };
+
+function renderEditor(
+  initialSubjects: AclSubject[] = [],
+  onSaved = vi.fn(),
+  initialUsers?: AclUserName[],
+) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const invalidate = vi.spyOn(qc, "invalidateQueries");
   render(
@@ -28,6 +43,7 @@ function renderEditor(initialSubjects: AclSubject[] = [], onSaved = vi.fn()) {
         projectId="p1"
         documentId="d1"
         initialSubjects={initialSubjects}
+        initialUsers={initialUsers}
         onSaved={onSaved}
       />
     </QueryClientProvider>,
@@ -35,16 +51,24 @@ function renderEditor(initialSubjects: AclSubject[] = [], onSaved = vi.fn()) {
   return { invalidate, onSaved };
 }
 
-function addSubject(kind: "user" | "role", value: string) {
-  fireEvent.change(screen.getByTestId("acl-kind-select"), { target: { value: kind } });
-  fireEvent.change(screen.getByTestId("acl-value-input"), { target: { value } });
+function addRole(role: string) {
+  fireEvent.change(screen.getByTestId("acl-kind-select"), { target: { value: "role" } });
+  fireEvent.change(screen.getByTestId("acl-role-select"), { target: { value: role } });
   fireEvent.click(screen.getByTestId("acl-add"));
+}
+
+async function addPerson(term: string, person: AclUserName) {
+  fireEvent.change(screen.getByTestId("acl-kind-select"), { target: { value: "user" } });
+  fireEvent.change(screen.getByTestId("acl-person-search"), { target: { value: term } });
+  fireEvent.click(await screen.findByTestId(`acl-person-option-${person.id}`));
 }
 
 beforeEach(() => {
   viewer = { id: "u-bob", role: "developer" };
   updateAcl.mockReset();
   updateAcl.mockResolvedValue({ chunkCount: 2, aclSubjects: [] });
+  apiFetch.mockReset();
+  apiFetch.mockResolvedValue([ALICE, BOB]);
 });
 
 describe("aclLocksOut (#2547)", () => {
@@ -73,20 +97,21 @@ describe("AclEditor (#2547)", () => {
     expect(screen.getByText(/No restrictions/)).toBeInTheDocument();
   });
 
-  it("adds and removes subjects, ignoring a blank value", () => {
+  it("adds and removes subjects, never twice", () => {
     renderEditor([{ kind: "role", value: "coordinator" }]);
-    expect(screen.getByTestId("acl-subjects")).toHaveTextContent("role · coordinator");
-    addSubject("user", "   ");
-    expect(screen.getByTestId("acl-subjects").querySelectorAll("li")).toHaveLength(1);
-    addSubject("user", " u-bob ");
-    expect(screen.getByTestId("acl-subjects")).toHaveTextContent("user · u-bob");
-    fireEvent.click(screen.getByRole("button", { name: "Remove role coordinator" }));
+    expect(screen.getByTestId("acl-subjects")).toHaveTextContent("the coordinator role");
+    fireEvent.change(screen.getByTestId("acl-kind-select"), { target: { value: "role" } });
+    fireEvent.change(screen.getByTestId("acl-role-select"), { target: { value: "coordinator" } });
+    expect(screen.getByTestId("acl-add")).toBeDisabled();
+    addRole("reader");
+    expect(screen.getByTestId("acl-subjects").querySelectorAll("li")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Remove the coordinator role" }));
     expect(screen.getByTestId("acl-subjects")).not.toHaveTextContent("coordinator");
   });
 
   it("saves the edited list, re-reads the quarantine and Documents lists, and reports saved", async () => {
     const { invalidate, onSaved } = renderEditor();
-    addSubject("role", "developer");
+    addRole("developer");
     fireEvent.click(screen.getByTestId("acl-save"));
     await waitFor(() =>
       expect(updateAcl).toHaveBeenCalledWith("p1", "d1", [{ kind: "role", value: "developer" }]),
@@ -107,17 +132,79 @@ describe("AclEditor (#2547)", () => {
     expect(onSaved).not.toHaveBeenCalled();
   });
 
-  it("warns an editor whose list would leave them out, and not one it names", () => {
+  it("warns an editor whose list would leave them out, and not one it names", async () => {
     renderEditor();
     expect(screen.queryByTestId("acl-lockout-warning")).toBeNull();
-    addSubject("role", "coordinator");
+    addRole("coordinator");
     expect(screen.getByTestId("acl-lockout-warning")).toHaveTextContent(/not on this list/);
-    addSubject("user", "u-bob");
+    await addPerson("bob", BOB);
     expect(screen.queryByTestId("acl-lockout-warning")).toBeNull();
   });
 
   it("still lists a legacy group subject with its warning", () => {
     renderEditor([{ kind: "group", value: "finance" }]);
     expect(screen.getByTestId("acl-group-warning")).toBeInTheDocument();
+  });
+});
+
+describe("AclEditor — people by name (#2555)", () => {
+  it("finds a person among the project's people by name and adds them by id", async () => {
+    renderEditor();
+    await addPerson("ali", ALICE);
+    // Searched in this project only.
+    expect(apiFetch).toHaveBeenCalledWith("/users?search=ali&limit=8&projectId=p1");
+    const list = screen.getByTestId("acl-subjects");
+    expect(list).toHaveTextContent("Alice Smith");
+    expect(list).toHaveTextContent("@asmith");
+    expect(list).not.toHaveTextContent("u-alice");
+    // The search clears, and Alice is not offered again.
+    expect(screen.getByTestId("acl-person-search")).toHaveValue("");
+    fireEvent.change(screen.getByTestId("acl-person-search"), { target: { value: "a" } });
+    await screen.findByTestId("acl-person-option-u-bob");
+    expect(screen.queryByTestId("acl-person-option-u-alice")).toBeNull();
+    fireEvent.click(screen.getByTestId("acl-save"));
+    await waitFor(() =>
+      expect(updateAcl).toHaveBeenCalledWith("p1", "d1", [{ kind: "user", value: "u-alice" }]),
+    );
+  });
+
+  it("lists the people a document starts with by the names the server sent", () => {
+    renderEditor([{ kind: "user", value: "u-alice" }], vi.fn(), [ALICE]);
+    expect(screen.getByTestId("acl-subjects")).toHaveTextContent("Alice Smith @asmith");
+    expect(screen.getByRole("button", { name: "Remove Alice Smith" })).toBeInTheDocument();
+  });
+
+  it("calls a person the server did not name someone outside the project, never their id", () => {
+    renderEditor([{ kind: "user", value: "cmurr3lo11r2nns9kfurops14" }]);
+    const list = screen.getByTestId("acl-subjects");
+    expect(list).toHaveTextContent("a person not in this project");
+    expect(list).not.toHaveTextContent("cmurr3lo11r2nns9kfurops14");
+  });
+
+  it("says when no one else matches, and when the search failed", async () => {
+    apiFetch.mockResolvedValueOnce([ALICE]);
+    renderEditor([{ kind: "user", value: "u-alice" }], vi.fn(), [ALICE]);
+    fireEvent.change(screen.getByTestId("acl-person-search"), { target: { value: "alice" } });
+    expect(await screen.findByTestId("acl-person-none")).toHaveTextContent(
+      "No one else in this project matches",
+    );
+    apiFetch.mockRejectedValueOnce(new Error("down"));
+    fireEvent.change(screen.getByTestId("acl-person-search"), { target: { value: "zed" } });
+    expect(await screen.findByTestId("acl-person-error")).toBeInTheDocument();
+  });
+
+  it("offers the role list, not a free-text value", () => {
+    renderEditor();
+    expect(screen.queryByTestId("acl-value-input")).toBeNull();
+    fireEvent.change(screen.getByTestId("acl-kind-select"), { target: { value: "role" } });
+    const roles = Array.from(
+      (screen.getByTestId("acl-role-select") as HTMLSelectElement).options,
+    ).map((o) => o.value);
+    // Not `admin`: an admin reads every restricted document already, so it
+    // grants nothing, and it is not the default an Add without a choice takes.
+    expect(roles).toEqual(["coordinator", "developer", "reader"]);
+    expect((screen.getByTestId("acl-role-select") as HTMLSelectElement).value).toBe("coordinator");
+    // No search runs for a role.
+    expect(apiFetch).not.toHaveBeenCalled();
   });
 });

@@ -5,6 +5,7 @@
 import { describe, it, expect } from "vitest";
 import {
   defaultRunDocumentCount,
+  runAwaitingReviewCount,
   derivePipelineStages,
   isChecklistComplete,
   isIngestRunning,
@@ -881,5 +882,33 @@ describe("defaultRunDocumentCount", () => {
         { source: "upload", status: "ready", restricted: false },
       ]),
     ).toBe(2);
+  });
+});
+
+// #2555 — "uses all 3 documents" counted one still awaiting review, unsaid.
+describe("runAwaitingReviewCount", () => {
+  const doc = (id: string, over: Record<string, unknown> = {}) => ({
+    id,
+    source: "upload",
+    status: "ready",
+    indexState: "indexed" as string | null,
+    ...over,
+  });
+  const docs = [
+    doc("a"),
+    doc("q1", { indexState: "quarantined" }),
+    doc("q2", { indexState: "quarantined" }),
+    // Neither is read by a run with nothing ticked.
+    doc("q-hidden", { indexState: "quarantined", restricted: true }),
+    doc("q-repo", { indexState: "quarantined", source: "repo" }),
+  ];
+
+  it("counts the awaiting-review documents a run with nothing ticked reads", () => {
+    expect(runAwaitingReviewCount(docs, [])).toBe(2);
+  });
+
+  it("counts only the ticked ones when some are ticked", () => {
+    expect(runAwaitingReviewCount(docs, ["a", "q2"])).toBe(1);
+    expect(runAwaitingReviewCount(docs, ["a"])).toBe(0);
   });
 });

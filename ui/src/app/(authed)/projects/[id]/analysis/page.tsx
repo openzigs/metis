@@ -85,7 +85,7 @@ import { GoverningFindingsPanel } from "@/components/analysis/governing-findings
 import { StakeholdersPanel } from "@/components/analysis/StakeholdersPanel";
 import { stakeholderApi } from "@/lib/stakeholder-api";
 import { AnalysisRunSummary } from "@/components/analysis/analysis-run-summary";
-import { defaultRunDocumentCount } from "@/lib/project-pipeline";
+import { defaultRunDocumentCount, runAwaitingReviewCount } from "@/lib/project-pipeline";
 import { AnalysisCapabilityBanner } from "@/components/analysis/analysis-capability-banner";
 import { RequirementInputAccountPanel } from "@/components/analysis/requirement-input-account-panel";
 import { AnalysisLimitsPanel } from "@/components/analysis/analysis-limits-panel";
@@ -1073,6 +1073,7 @@ export default function AnalysisPage(): React.ReactElement {
             <AnalysisRunSummary
               docCount={selectedDocs.length}
               availableDocCount={defaultRunDocumentCount(allDocs)}
+              awaitingReviewCount={runAwaitingReviewCount(allDocs, selectedDocs)}
               listIsPartial={Boolean(docs.data?.nextCursor)}
               hasRequirements={
                 extraInstructions.trim().length > 0 || importedRequirementIds.length > 0

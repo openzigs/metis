@@ -222,7 +222,7 @@ describe("Top-level /documents — #2547 a document the caller cannot read", () 
     }));
     renderPage();
     expect(await screen.findByTestId("documents-top-restricted-d1")).toHaveTextContent(
-      "Readable by role coordinator and admins",
+      "Readable by the coordinator role and admins",
     );
     expect(screen.getByTestId("documents-spec-toggle-d1")).toBeInTheDocument();
   });

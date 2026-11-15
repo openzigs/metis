@@ -15,6 +15,8 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import {
+  type AclSubject,
+  aclSubjectsSchema,
   type ApiResponse,
   MAX_DOCUMENT_BYTES,
   retrieveQuerySchema,
@@ -39,13 +41,17 @@ import { getProject } from "../lib/projects/project-service.js";
 import { approveDocument, rejectDocument } from "../lib/rag/quarantine.js";
 import {
   AclEditForbiddenError,
+  AclGroupUnsupportedError,
+  newGroupSubjects,
   resolveAclActor,
   saveDocumentAcl,
+  serializeAclSubjects,
   type AclActor,
 } from "../lib/rag/acl.js";
 import { aclSaveErrorAsHttp, inactiveCallerAsUnauthenticated } from "./acl-errors.js";
 import { createChildLogger } from "../lib/logger.js";
 import {
+  aclUserNames,
   canSeeDocument,
   documentAccessOf,
   documentVisibilityFor,
@@ -111,6 +117,36 @@ function auditManageDenied(actorId: string, documentId: string, projectId: strin
     target: { type: "document", id: documentId },
     metadata: { projectId, reason: "document_restricted" },
   });
+}
+
+/**
+ * #2555 — the access list a file upload is restricted to from the start, so
+ * the document is never open to the whole project while it is indexed and
+ * reviewed: the row is created with it, and ingest and approval copy the
+ * document's own list onto every chunk (#2435). It arrives as the multipart
+ * field `aclSubjects`, a JSON array of subjects. Absent or empty: unrestricted,
+ * as before. A `group` subject is refused as `PATCH /acl` refuses a new one
+ * (#2261: METIS stores no group membership, so it would match no one).
+ */
+function uploadAclSubjects(raw: unknown): AclSubject[] {
+  if (raw === undefined || raw === "") return [];
+  let value: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      throw new AppError(400, "VALIDATION_ERROR", "aclSubjects must be a JSON array of subjects");
+    }
+  }
+  const parsed = aclSubjectsSchema.safeParse(value);
+  if (!parsed.success) {
+    throw new AppError(400, "VALIDATION_ERROR", "Invalid ACL payload", {
+      issues: parsed.error.flatten(),
+    });
+  }
+  const groups = newGroupSubjects([], parsed.data);
+  if (groups.length > 0) throw aclSaveErrorAsHttp(new AclGroupUnsupportedError(groups));
+  return parsed.data;
 }
 
 async function ensureProjectActive(projectId: string) {
@@ -219,6 +255,10 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       if (!validation.ok) {
         throw new AppError(validation.status, validation.code, validation.message);
       }
+      // #2555 — checked before anything is stored, so a refused list writes nothing.
+      const aclSubjects = uploadAclSubjects(
+        (req.body as Record<string, unknown> | undefined)?.aclSubjects,
+      );
 
       const stored = await storage.write({ projectId, buffer: file.buffer });
       const document = await prisma.document.create({
@@ -231,6 +271,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
           checksum: stored.checksum,
           uploadedById: actor.id,
           status: "pending",
+          ...(aclSubjects.length > 0 ? { aclSubjects: serializeAclSubjects(aclSubjects) } : {}),
         },
       });
       audit({
@@ -242,6 +283,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
           filename: validation.filename,
           sizeBytes: stored.sizeBytes,
           deduplicated: stored.deduplicated,
+          ...(aclSubjects.length > 0 ? { aclSubjects } : {}),
         },
       });
 
@@ -422,7 +464,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       const page = rows.slice(0, limit);
       res.json(
         ok({
-          items: await readableDocumentRows(actorFromReq(req).id, page),
+          items: await readableDocumentRows(actorFromReq(req).id, projectId, page),
           limit,
           nextCursor: rows.length > limit ? encodeDocumentCursor(page[page.length - 1]) : null,
         }),
@@ -438,7 +480,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
     const items = rows.slice(0, limit);
     res.json(
       ok({
-        items: await readableDocumentRows(actorFromReq(req).id, items),
+        items: await readableDocumentRows(actorFromReq(req).id, projectId, items),
         total,
         limit,
         offset,
@@ -455,7 +497,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       where: { id: documentId, projectId, deletedAt: null },
     });
     if (!document) throw new AppError(404, "DOCUMENT_NOT_FOUND", "Document not found");
-    const [row] = await readableDocumentRows(actorFromReq(req).id, [document]);
+    const [row] = await readableDocumentRows(actorFromReq(req).id, projectId, [document]);
     res.json(ok(row));
   });
 
@@ -496,7 +538,9 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         const result = await approveDocument(documentId, { id: actor.id });
         const refreshed = await prisma.document.findUnique({ where: { id: documentId } });
         // #2546 — the row as the caller may see it, as the list shows it.
-        res.json(ok({ document: await readableDocumentRow(actor.id, refreshed), ...result }));
+        res.json(
+          ok({ document: await readableDocumentRow(actor.id, projectId, refreshed), ...result }),
+        );
       } catch (err) {
         // #108 — the cleanup exception stays in the server log.
         log.warn("document approve failed", { documentId, error: String(err) });
@@ -526,7 +570,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
       try {
         await rejectDocument(documentId, { id: actor.id }, reason);
         const refreshed = await prisma.document.findUnique({ where: { id: documentId } });
-        res.json(ok({ document: await readableDocumentRow(actor.id, refreshed) }));
+        res.json(ok({ document: await readableDocumentRow(actor.id, projectId, refreshed) }));
       } catch (err) {
         // #108 — the cleanup exception stays in the server log.
         log.warn("document reject failed", { documentId, error: String(err) });
@@ -615,7 +659,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         target: { type: "document", id: documentId },
         metadata: { projectId, autoApproveTrusted: parsed.data.autoApproveTrusted },
       });
-      res.json(ok(await readableDocumentRow(actor.id, updated)));
+      res.json(ok(await readableDocumentRow(actor.id, projectId, updated)));
     },
   );
 
@@ -647,7 +691,7 @@ export function documentsRouter(deps: DocumentsRouterDeps = {}): Router {
         target: { type: "document", id: documentId },
         metadata: { projectId, isSpec },
       });
-      res.json(ok(await readableDocumentRow(actor.id, updated)));
+      res.json(ok(await readableDocumentRow(actor.id, projectId, updated)));
     },
   );
 
@@ -762,6 +806,7 @@ async function readableDocumentRows<
   T extends { aclSubjects: string; filename: string; errorMessage: string | null },
 >(
   userId: string,
+  projectId: string,
   rows: readonly T[],
 ): Promise<
   Array<
@@ -770,10 +815,12 @@ async function readableDocumentRows<
   >
 > {
   const sees = await documentVisibilityFor(userId, rows);
+  // #2555 — the people a list names, resolved only from the rows they may read.
+  const names = await aclUserNames(projectId, rows.filter(sees));
   // #2547 — each row's `access`: who reads it, only to one who may read it.
   return rows.map((row) =>
     sees(row)
-      ? { ...publicDocumentRow(row), access: documentAccessOf(row, true) }
+      ? { ...publicDocumentRow(row), access: documentAccessOf(row, true, names) }
       : { ...restrictedDocumentRow(publicDocumentRow(row)), access: documentAccessOf(row, false) },
   );
 }
@@ -781,8 +828,8 @@ async function readableDocumentRows<
 /** One row (or none) as `userId` may see it: see {@link readableDocumentRows}. */
 async function readableDocumentRow<
   T extends { aclSubjects: string; filename: string; errorMessage: string | null },
->(userId: string, row: T | null) {
-  return row ? (await readableDocumentRows(userId, [row]))[0]! : null;
+>(userId: string, projectId: string, row: T | null) {
+  return row ? (await readableDocumentRows(userId, projectId, [row]))[0]! : null;
 }
 
 function clampInt(raw: unknown, fallback: number, min: number, max: number): number {
