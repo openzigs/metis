@@ -454,6 +454,34 @@ describe("only the active sub-view mounts", () => {
     expect(await screen.findByRole("button", { name: "Regenerate" })).toBeInTheDocument();
   });
 
+  // #2554 — a run that read a document the viewer cannot read: the server
+  // refuses Regenerate and Cancel, so neither is offered.
+  it("offers no Regenerate on a run the viewer cannot see in full", async () => {
+    apiMock.get.mockResolvedValue({ ...SNAPSHOT, runRestricted: true });
+    nav.search = new URLSearchParams("tab=agents");
+    renderPage();
+    expect(await screen.findByTestId("agent-card-code")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Regenerate" })).not.toBeInTheDocument();
+  });
+
+  it("offers Cancel on a running run", async () => {
+    apiMock.get.mockResolvedValue({ ...SNAPSHOT, status: "running", completedAt: null });
+    renderPage();
+    expect(await screen.findByRole("button", { name: "Cancel" })).toBeInTheDocument();
+  });
+
+  it("offers no Cancel on a running run the viewer cannot see in full", async () => {
+    apiMock.get.mockResolvedValue({
+      ...SNAPSHOT,
+      status: "running",
+      completedAt: null,
+      runRestricted: true,
+    });
+    renderPage();
+    await screen.findByTestId("analysis-run-spend");
+    expect(screen.queryByRole("button", { name: "Cancel" })).not.toBeInTheDocument();
+  });
+
   // PR #416 review — ApprovalsPanel renders nothing when a run has none.
   it("says so when the run has no approval checkpoints", async () => {
     nav.search = new URLSearchParams("tab=approvals");
