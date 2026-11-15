@@ -793,6 +793,27 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
     });
 
+    describe("#2546 panel round 2 — a quarantine decision answers with the reader's row", () => {
+      it("Bob's reject answers with the restricted row, Alice's with the document", async () => {
+        const reject = async (who: Who) => {
+          await db.document.update({ where: { id: PAYROLL }, data: { indexState: "quarantined" } });
+          return post(who, `/api/projects/${P}/documents/${PAYROLL}/reject`, {});
+        };
+        try {
+          const bob = await reject("bob");
+          expect(bob.status).toBe(200);
+          expect(JSON.stringify(bob.body)).not.toMatch(LEAKS);
+          expect(bob.body.data.document).toMatchObject({ id: PAYROLL, restricted: true });
+          expect(bob.body.data.document).not.toHaveProperty("aclSubjects");
+          const alice = await reject("alice");
+          expect(alice.status).toBe(200);
+          expect(alice.body.data.document.filename).toBe(PAYROLL_NAME);
+        } finally {
+          await db.document.update({ where: { id: PAYROLL }, data: { indexState: "indexed" } });
+        }
+      });
+    });
+
     describe("#2546 review — the quarantine list", () => {
       it("lists the restricted document to Bob without its name, and names it to Alice", async () => {
         await db.document.update({ where: { id: PAYROLL }, data: { indexState: "quarantined" } });
