@@ -336,4 +336,20 @@ describe("Analysis page — the run summary's document count (#1749, #2185)", ()
       expect(await summary()).toHaveTextContent("This run uses all 2 documents"),
     );
   });
+
+  it("#2555 — counts a quarantined document among them and says it is awaiting review", async () => {
+    listDocuments.mockResolvedValue({
+      items: [docRow("upload"), { ...docRow("upload"), indexState: "quarantined" }],
+      total: 2,
+      limit: 50,
+      offset: 0,
+      nextCursor: null,
+    });
+    open();
+    await waitFor(async () =>
+      expect(await summary()).toHaveTextContent(
+        "This run uses all 2 documents (1 awaiting review)",
+      ),
+    );
+  });
 });
