@@ -69,7 +69,9 @@ const { projectsRouter } = await import("../src/routes/projects.js");
 const { audit } = await import("../src/lib/audit/audit-service.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
-const { resolveChatSubject } = await import("../src/lib/ai/chat-subject.js");
+const { resolveChatSubject, chatSubjectContextBlock } =
+  await import("../src/lib/ai/chat-subject.js");
+const { listReviews } = await import("../src/lib/reviews/review-service.js");
 const { attachChangeRequests } = await import("../src/lib/reviews/review-change-requests.js");
 const { userSourceReader } = await import("../src/lib/analysis/source-redaction.js");
 
@@ -701,6 +703,69 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           }
         } finally {
           await db.analysis.update({ where: { id: RUN }, data: { sourceAccess: "starter" } });
+        }
+      });
+    });
+
+    describe("#2546 panel — test gaps", () => {
+      it("the documents list's cursor page names the restricted document to no one it leaves out", async () => {
+        // Oldest, so it falls on the page read by cursor, not the first one.
+        await db.document.update({
+          where: { id: PAYROLL },
+          data: { uploadedAt: new Date("2000-01-01T00:00:00Z") },
+        });
+        try {
+          const first = await get("bob", `/api/projects/${P}/documents?limit=1`);
+          expect(first.body.data.items.map((r: { id: string }) => r.id)).toEqual([BRIEF]);
+          const next = await get(
+            "bob",
+            `/api/projects/${P}/documents?limit=1&cursor=${first.body.data.nextCursor}`,
+          );
+          expect(next.status).toBe(200);
+          expect(JSON.stringify(next.body)).not.toMatch(LEAKS);
+          expect(next.body.data.items).toEqual([
+            expect.objectContaining({ id: PAYROLL, restricted: true }),
+          ]);
+          const alice = await get(
+            "alice",
+            `/api/projects/${P}/documents?limit=1&cursor=${first.body.data.nextCursor}`,
+          );
+          expect(alice.body.data.items[0].filename).toBe(PAYROLL_NAME);
+        } finally {
+          await db.document.update({ where: { id: PAYROLL }, data: { uploadedAt: new Date() } });
+        }
+      });
+
+      it("a chat about the change request tells the model no source document Bob cannot see", async () => {
+        const ref = { kind: "change-request" as const, id: RUN };
+        const bob = await chatSubjectContextBlock(payload("bob"), { projectId: P }, ref);
+        expect(bob).toContain("Its source documents:");
+        expect(bob).not.toMatch(LEAKS);
+        const alice = await chatSubjectContextBlock(payload("alice"), { projectId: P }, ref);
+        expect(alice).toContain(PAYROLL_NAME);
+      });
+
+      it("the Reviews list labels a review of its requirements without it, for the caller", async () => {
+        await db.reviewRequest.create({
+          data: {
+            id: "review-2546",
+            projectId: P,
+            title: "Review",
+            requestedById: "alice",
+            items: { create: [{ requirementId: REQ_OPEN, pinnedVersion: 1 }] },
+          },
+        });
+        try {
+          const labels = async (who: Who) =>
+            (
+              (await listReviews(who, { projectId: P, page: 1, pageSize: 25 })).reviews as Array<{
+                changeRequests: Array<{ id: string; title: string }>;
+              }>
+            )[0]!.changeRequests;
+          expect(await labels("bob")).toEqual([{ id: RUN, title: BOB_TITLE }]);
+          expect(await labels("alice")).toEqual([{ id: RUN, title: PAYROLL_NAME }]);
+        } finally {
+          await db.reviewRequest.delete({ where: { id: "review-2546" } });
         }
       });
     });
