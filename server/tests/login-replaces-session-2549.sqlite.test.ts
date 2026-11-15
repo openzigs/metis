@@ -4,13 +4,11 @@
  * sign-in as `coordinator` landed on the dashboard while `/api/auth/me`
  * answered `reader`, the account the browser had used before.
  *
- * Over the real auth routes (cookie-parser included, as `app.ts` mounts it) and
- * a real SQLite database built from the migration chain: only the audit sink is
- * stubbed. Every assertion reads what a browser would send next — the cookies
- * the sign-in set — back through the routes.
+ * Over the production app (`createApp`: cookie-parser, the CSRF guard, the auth
+ * routes) and a real SQLite database built from the migration chain: only the
+ * audit sink is stubbed. Every assertion reads what a browser would send next —
+ * the cookies the sign-in set — back through the routes.
  */
-import cookieParser from "cookie-parser";
-import express from "express";
 import request from "supertest";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
@@ -38,9 +36,8 @@ vi.mock("../src/lib/prisma.js", async () => {
 });
 vi.mock("../src/lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 
-const { authRouter } = await import("../src/routes/auth.js");
-const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
-const { csrfProtection, CSRF_HEADER } = await import("../src/middleware/csrf-protection.js");
+const { createApp } = await import("../src/app.js");
+const { CSRF_HEADER } = await import("../src/middleware/csrf-protection.js");
 const { verifyAccessToken } = await import("../src/lib/auth/jwt.js");
 const { revocationStore } = await import("../src/lib/auth/revocation-store.js");
 
@@ -66,18 +63,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
   () => {
     let sqlite: MigratedSqlite;
     let db: PrismaClient;
-
-    // As `app.ts` mounts them: cookie-parser, then the CSRF guard (#913).
-    const app = () => {
-      const a = express();
-      a.use(express.json());
-      a.use(cookieParser());
-      a.use(csrfProtection());
-      a.use("/api/auth", authRouter());
-      a.use(notFoundHandler);
-      a.use(errorHandler);
-      return a;
-    };
+    let application: ReturnType<typeof createApp>;
+    const app = () => application;
     /** A cookie-borne request as the UI proxy sends it: with the CSRF header. */
     const withCookies = (req: request.Test, cookies: Record<string, string>) =>
       req.set("Cookie", cookieHeader(cookies)).set(CSRF_HEADER, "1");
@@ -90,6 +77,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       sqlite = createMigratedSqlite("2549-login-replaces-session");
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
+      application = createApp();
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
     afterAll(async () => {
