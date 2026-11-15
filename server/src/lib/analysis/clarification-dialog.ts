@@ -41,7 +41,12 @@ import type {
   StructuredRequirements,
   UncertaintyKind,
 } from "./types/requirements.js";
-import { citationFor, selectQuestionsToAsk, type GeneratedQuestion } from "./question-selection.js";
+import {
+  ambiguitiesToQuestion,
+  citationFor,
+  selectQuestionsToAsk,
+  type GeneratedQuestion,
+} from "./question-selection.js";
 import { fallbackQuestionsFor, matchQuestionsToAmbiguities } from "./question-ambiguity-match.js";
 
 const log = createChildLogger("clarification-dialog");
@@ -91,7 +96,8 @@ export const ORPHAN_RETRY_MAX_MS = 60 * 60_000;
 export const ORPHAN_RETRY_MAX_ENTRIES = 1_000;
 const orphanRetries = new Map<string, { attempts: number; nextAt: number }>();
 
-const ESCALATION_THRESHOLD = 0.6; // >60% unresolved → escalate to Sonnet
+/** >60% unresolved → escalate to Sonnet. #2534 — exported for the eval's second round. */
+export const ESCALATION_THRESHOLD = 0.6;
 
 // ── Prompts ────────────────────────────────────────────────────────────
 
@@ -947,6 +953,7 @@ export class ClarificationDialog {
       round: state.currentRound,
       addressed,
       sourceQuestions,
+      askFirst: this.askFirst,
       model: this.getModel(state),
       analysisId: state.analysisId,
       signal,
@@ -1176,9 +1183,14 @@ const LEGACY_QUESTIONS_SHAPE =
  * One round's clarifying questions for `requirements`' open ambiguities: one
  * model call (and one re-prompt on an unreadable reply), each question filed
  * under the open ambiguity it asks about and cited to its requirement's
- * verified source. Nothing is selected here; that is `selectQuestionsToAsk`'s.
+ * verified source. Which are asked is `selectQuestionsToAsk`'s to decide.
  * #2271 — a function of its own, so the document-understanding eval's arm R
  * generates exactly the questions an analysis's dialog does.
+ *
+ * #2534 — in source mode, questions are written for at most
+ * `QUESTION_CANDIDATES_PER_ROUND` open ambiguities (`ambiguitiesToQuestion`),
+ * not all of them: hundreds of open ambiguities overran the reply's output cap.
+ * The legacy mode asks every question raised (#2275), so it writes them all.
  */
 export async function generateClarifyingQuestions(
   provider: AIProvider,
@@ -1189,13 +1201,34 @@ export async function generateClarifyingQuestions(
     addressed: Set<string>;
     /** #2275 — #2235's classifying prompt; otherwise the pre-#2235 one. */
     sourceQuestions: boolean;
+    /** #2534 — requirements whose ambiguities are chosen first (#1129). */
+    askFirst?: ReadonlySet<string>;
     model?: string;
     /** Named in the log line only. */
     analysisId?: string;
     signal?: AbortSignal;
   },
 ): Promise<GeneratedQuestion[]> {
-  const { requirements, addressed, sourceQuestions, model, signal } = input;
+  const { sourceQuestions, model, signal } = input;
+  let { requirements, addressed } = input;
+  if (sourceQuestions) {
+    // #2534 — questions are written only for the ambiguities chosen to be
+    // considered this round, so the reply stays well inside the output cap
+    // however many are open. The rest are left out of the prompt (as if
+    // addressed, for this call only) and stay open for a later round.
+    const chosen = ambiguitiesToQuestion(requirements, addressed, { askFirst: input.askFirst });
+    const open = requirements.flatMap((r) => ambiguityKeys(r).filter((k) => !addressed.has(k)));
+    if (chosen.size < open.length) {
+      log.info("Clarifying questions written for the ambiguities chosen this round", {
+        analysisId: input.analysisId,
+        round: input.round,
+        open: open.length,
+        chosen: chosen.size,
+      });
+      addressed = new Set([...addressed, ...open.filter((k) => !chosen.has(k))]);
+      requirements = requirements.filter((r) => ambiguityKeys(r).some((k) => chosen.has(k)));
+    }
+  }
   const messages = buildQuestionMessages(
     requirements,
     input.round,

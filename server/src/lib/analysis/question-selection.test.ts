@@ -4,6 +4,8 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_QUESTIONS_PER_ROUND,
+  QUESTION_CANDIDATES_PER_ROUND,
+  ambiguitiesToQuestion,
   citationFor,
   holdsWord,
   selectQuestionsToAsk,
@@ -154,5 +156,73 @@ describe("citationFor (#2235)", () => {
   it("cites nothing for a requirement with no verified source", () => {
     expect(citationFor({ ambiguities: [] }, "scope")).toBeUndefined();
     expect(citationFor(undefined, "scope")).toBeUndefined();
+  });
+});
+
+describe("ambiguitiesToQuestion (#2534)", () => {
+  const req = (
+    id: string,
+    fields: string[],
+    priority: StructuredRequirement["priority"] = "should-have",
+  ) => ({
+    id,
+    priority,
+    ambiguities: fields.map((field) => ({ field, description: "", suggestedQuestion: "" })),
+  });
+
+  it("chooses every open ambiguity when there are fewer than the cap", () => {
+    const chosen = ambiguitiesToQuestion([req("r1", ["a", "b"]), req("r2", ["c"])], new Set());
+    expect([...chosen]).toEqual(["r1:a", "r2:c", "r1:b"]);
+  });
+
+  it("chooses at most QUESTION_CANDIDATES_PER_ROUND of hundreds, three times the round's cap", () => {
+    expect(QUESTION_CANDIDATES_PER_ROUND).toBe(3 * MAX_QUESTIONS_PER_ROUND);
+    // The size of the clinic-booking FRD: 61 requirements, 243 open ambiguities.
+    const many = Array.from({ length: 61 }, (_, i) => req(`r${i}`, ["a", "b", "c", "d"]));
+    const chosen = ambiguitiesToQuestion(many, new Set());
+    expect(chosen.size).toBe(QUESTION_CANDIDATES_PER_ROUND);
+    // One per requirement, in document order, before any requirement's second.
+    expect([...chosen]).toEqual(
+      Array.from({ length: QUESTION_CANDIDATES_PER_ROUND }, (_, i) => `r${i}:a`),
+    );
+  });
+
+  it("takes each requirement's next ambiguity in turn once each has given one", () => {
+    const chosen = ambiguitiesToQuestion(
+      [req("r1", ["a", "b", "c"]), req("r2", ["d"]), req("r3", ["e", "f"])],
+      new Set(),
+      { cap: 5 },
+    );
+    expect([...chosen]).toEqual(["r1:a", "r2:d", "r3:e", "r1:b", "r3:f"]);
+  });
+
+  it("leads with the ticked items, then ranks by priority, then by document order", () => {
+    const chosen = ambiguitiesToQuestion(
+      [
+        req("nice", ["a"], "nice-to-have"),
+        req("should", ["a"]),
+        req("must", ["a"], "must-have"),
+        req("ticked", ["a"], "nice-to-have"),
+        // A priority the model made up ranks as should-have.
+        req("odd", ["a"], "urgent" as StructuredRequirement["priority"]),
+      ],
+      new Set(),
+      { askFirst: new Set(["ticked"]) },
+    );
+    expect([...chosen]).toEqual(["ticked:a", "must:a", "should:a", "odd:a", "nice:a"]);
+  });
+
+  it("never chooses an addressed ambiguity, and moves on to what is still open", () => {
+    const chosen = ambiguitiesToQuestion(
+      [req("r1", ["a", "b"]), req("r2", ["a", "a"])],
+      new Set(["r1:a", "r2:a"]),
+    );
+    // #2451 — the second "a" of r2 has its own key.
+    expect([...chosen]).toEqual(["r1:b", "r2:a#2"]);
+  });
+
+  it("chooses nothing when nothing is open", () => {
+    expect(ambiguitiesToQuestion([req("r1", ["a"])], new Set(["r1:a"])).size).toBe(0);
+    expect(ambiguitiesToQuestion([], new Set()).size).toBe(0);
   });
 });
