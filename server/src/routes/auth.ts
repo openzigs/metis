@@ -91,6 +91,24 @@ async function ensureUserRow(
   return { id: row.id, username: row.username, role, authMode: providerName };
 }
 
+/**
+ * #2549 — end the session whose refresh cookie a sign-in request carries.
+ * Best-effort: a token that is not a live one of ours ends nothing, and a
+ * failed revocation never costs the user their sign-in.
+ */
+async function revokePresentedRefreshToken(req: Request): Promise<void> {
+  const cookies = (req as unknown as { cookies?: Record<string, string> }).cookies;
+  const presented = cookies?.refreshToken;
+  if (!presented) return;
+  try {
+    const decoded = await verifyRefreshToken(presented);
+    const expiresAt = decoded.exp !== undefined ? new Date(decoded.exp * 1000) : new Date();
+    await revokeRefreshToken(decoded.tokenId, decoded.userId, expiresAt);
+  } catch {
+    /* Already invalid, or the store is unreachable: the sign-in goes on. */
+  }
+}
+
 export function authRouter(): Router {
   const r = Router();
 
@@ -132,6 +150,10 @@ export function authRouter(): Router {
       authMode: userRow.authMode,
     });
 
+    // #2549 — the session this sign-in replaces in this browser ends here, as
+    // a sign-out would end it: a refresh still carrying its token (one started
+    // before the sign-in and answered after it) cannot bring it back.
+    await revokePresentedRefreshToken(req);
     res.cookie("accessToken", tokens.accessToken, {
       ...cookieOptions(),
       maxAge: 60 * 60 * 1000,

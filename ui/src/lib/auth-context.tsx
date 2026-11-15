@@ -11,7 +11,13 @@ import {
   type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
-import { ApiError, apiFetch, refreshAccessToken, setOnRefreshFailure } from "@/lib/api-client";
+import {
+  ApiError,
+  apiFetch,
+  refreshAccessToken,
+  setOnRefreshFailure,
+  settleInFlightRefresh,
+} from "@/lib/api-client";
 import { queryKeys } from "@/lib/query-keys";
 import { workspaceListQuery, writeStoredActiveWorkspaceId } from "@/lib/active-workspace";
 import { writeStoredActiveProjectId } from "@/lib/active-project";
@@ -89,24 +95,33 @@ export function AuthProvider({
   // which is registered once and must read the current value.
   const [isSigningOut, setIsSigningOut] = useState(false);
   const signingOutRef = useRef(false);
+  // #2549 — counts sign-ins. A `/auth/me` asked before one answers for the
+  // session the sign-in replaced, so its answer is dropped.
+  const signInsRef = useRef(0);
 
   const refresh = useCallback(async () => {
+    const signIns = signInsRef.current;
+    let next: AuthUser | null;
     try {
-      const data = await apiFetch<{ user: AuthUser }>("/auth/me");
-      setUser(data.user);
+      next = (await apiFetch<{ user: AuthUser }>("/auth/me")).user;
     } catch {
-      setUser(null);
+      next = null;
     }
+    if (signInsRef.current === signIns) setUser(next);
   }, []);
 
   const login = useCallback(
     async ({ username, password }: LoginCredentials) => {
       setError(null);
       try {
+        // #2549 — a refresh already in flight carries the old session's
+        // token; its cookies must land before the sign-in's, never after.
+        await settleInFlightRefresh();
         const data = await apiFetch<LoginResponse>("/auth/login", {
           method: "POST",
           body: { username, password },
         });
+        signInsRef.current += 1;
         signingOutRef.current = false;
         setIsSigningOut(false);
         setUser(data.user);

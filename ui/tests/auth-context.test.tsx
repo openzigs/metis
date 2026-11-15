@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { PROACTIVE_REFRESH_MS, useAuth } from "@/lib/auth-context";
-import { _resetAuthRetryState, apiFetch } from "@/lib/api-client";
+import { _resetAuthRetryState, apiFetch, refreshAccessToken } from "@/lib/api-client";
+import type { AuthUser } from "@/lib/auth-types";
 import { makeWrapper, TEST_USER } from "./test-utils";
 import { QueryClient } from "@tanstack/react-query";
 import { workspaceListQuery } from "@/lib/active-workspace";
@@ -597,5 +598,105 @@ describe("AuthProvider — the realtime socket ends with the session (#1391)", (
     expect(b.result.current).not.toBe(socketA);
     expect(ioMock).toHaveBeenCalledTimes(2);
     expect(socketA.disconnect).toHaveBeenCalledTimes(1);
+  });
+});
+
+// #2549 — a sign-in in a browser that still held another session. In the
+// 2026-11-15 walkthrough a sign-in as `coordinator` landed on the dashboard
+// while `/api/auth/me` answered `reader`, the account used there before.
+describe("AuthProvider — a sign-in replaces the session the browser held (#2549)", () => {
+  const READER: AuthUser = { ...TEST_USER, id: "u-reader", username: "reader", role: "reader" };
+  const COORDINATOR: AuthUser = {
+    ...TEST_USER,
+    id: "u-coord",
+    username: "coordinator",
+    role: "coordinator",
+  };
+
+  /** A response the test hands back when it chooses. */
+  function deferred() {
+    let resolve!: (r: Response) => void;
+    const promise = new Promise<Response>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  }
+
+  it("waits for a refresh already in flight, so its cookies land before the sign-in's", async () => {
+    const refresh = deferred();
+    const urls: string[] = [];
+    fetchMock.mockImplementation((url: string) => {
+      urls.push(url);
+      if (url === "/api/auth/refresh") return refresh.promise;
+      if (url === "/api/auth/login") {
+        return Promise.resolve(ok({ success: true, data: { user: COORDINATOR } }));
+      }
+      return Promise.reject(new Error(`unexpected ${url}`));
+    });
+    const { result } = renderHook(() => useAuth(), {
+      wrapper: makeWrapper({ initialUser: READER }),
+    });
+
+    // The old session's refresh is in flight when the sign-in starts.
+    const pending = refreshAccessToken();
+    let signedIn!: Promise<void>;
+    await act(async () => {
+      signedIn = result.current.login({ username: "coordinator", password: "password" });
+      await Promise.resolve();
+    });
+    expect(urls).toEqual(["/api/auth/refresh"]);
+
+    await act(async () => {
+      refresh.resolve(ok({ success: true, data: {} }));
+      await pending;
+      await signedIn;
+    });
+    expect(urls).toEqual(["/api/auth/refresh", "/api/auth/login"]);
+    expect(result.current.user).toEqual(COORDINATOR);
+  });
+
+  it("drops a /auth/me answer for the old session that arrives after the sign-in", async () => {
+    const me = deferred();
+    fetchMock.mockImplementation((url: string) => {
+      if (url === "/api/auth/me") return me.promise;
+      if (url === "/api/auth/login") {
+        return Promise.resolve(ok({ success: true, data: { user: COORDINATOR } }));
+      }
+      return Promise.reject(new Error(`unexpected ${url}`));
+    });
+    // Mounting asks /auth/me with the cookies the browser still holds.
+    const { result } = renderHook(() => useAuth(), {
+      wrapper: makeWrapper({ withAuth: true }),
+    });
+
+    await act(async () => {
+      await result.current.login({ username: "coordinator", password: "password" });
+    });
+    expect(result.current.user).toEqual(COORDINATOR);
+
+    await act(async () => {
+      me.resolve(ok({ success: true, data: { user: READER } }));
+    });
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    expect(result.current.user).toEqual(COORDINATOR);
+  });
+
+  it("still takes a /auth/me answer asked after the sign-in", async () => {
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(
+        ok({ success: true, data: { user: url === "/api/auth/me" ? READER : COORDINATOR } }),
+      ),
+    );
+    const { result } = renderHook(() => useAuth(), {
+      wrapper: makeWrapper({ initialUser: TEST_USER }),
+    });
+    await act(async () => {
+      await result.current.login({ username: "coordinator", password: "password" });
+    });
+    // A later re-hydration answers for the session the browser now holds.
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(result.current.user).toEqual(READER);
   });
 });

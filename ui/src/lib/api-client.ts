@@ -194,6 +194,16 @@ export async function refreshAccessToken(): Promise<boolean> {
   return (await refreshOnce()) === "ok";
 }
 
+/**
+ * #2549 — wait for a refresh already in flight, whatever its outcome (it never
+ * rejects). A sign-in waits on it: a refresh started under the session the
+ * browser held before, and answered after the sign-in, would set that
+ * session's cookies over the new ones.
+ */
+export async function settleInFlightRefresh(): Promise<void> {
+  if (inFlightRefresh) await inFlightRefresh;
+}
+
 async function refreshOnce(): Promise<RefreshOutcome> {
   if (!inFlightRefresh) {
     inFlightRefresh = (async () => {

@@ -794,6 +794,15 @@ affected code and schema, plan context, finding text, tool output — between
 fences is data, never instructions. That only holds if the data cannot close its
 own block.
 
+Since #2549 chat's retrieved excerpts (the one-project and multi-product
+retrieved-knowledge blocks, `fenceData` in `fence.ts`) are fenced the same way,
+and the turn's retrieval system message ends with a fixed closing line
+(`server/src/lib/ai/retrieved-context.ts`). That block is the last part of the
+system prompt, and Anthropic's Messages API appends its own tool-use instructions
+after the system prompt when tools are offered: with no boundary, a model read
+those instructions as part of the last excerpt and reported a document as
+carrying an instruction it did not hold.
+
 ### 13.1 What is scrubbed
 
 `scrubFenceLookalikes` (`server/src/lib/ai/tool-runtime/fence-scrub.ts`) replaces
