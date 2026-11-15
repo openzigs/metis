@@ -38,6 +38,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from "@/components/ui/dialog";
+import { useResetOnHint } from "@/hooks/use-reset-on-hint";
 
 export interface RequirementLinksPanelProps {
   projectId: string;
@@ -317,6 +318,8 @@ export function RequirementLinksPanel({
 }: RequirementLinksPanelProps): React.ReactElement {
   const qc = useQueryClient();
   const [dialogOpen, setDialogOpen] = useState(false);
+  // #2180 — close it for good, or it reopens unasked when the hint clears.
+  useResetOnHint(writeHint, () => setDialogOpen(false));
 
   const links = useQuery({
     queryKey: requirementLinksKey(requirementId),

@@ -16,6 +16,7 @@ import type { Assignment } from "@/lib/collaboration-api";
 import { apiFetch } from "@/lib/api-client";
 import { cn } from "@/lib/utils";
 import { HoverHint } from "@/components/spec-kit/hover-hint";
+import { useResetOnHint } from "@/hooks/use-reset-on-hint";
 
 interface User {
   id: string;
@@ -63,6 +64,12 @@ export function AssigneePicker({
   const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [open, setOpen] = useState(false);
+  // #2180 — close it and drop the search, or the user search keeps running
+  // while hidden and the popover reopens with it when the hint clears.
+  useResetOnHint(writeHint, () => {
+    setOpen(false);
+    setSearch("");
+  });
 
   const { data: assignments = [] } = useQuery<Assignment[]>({
     queryKey: assignmentQueryKey(requirementId),

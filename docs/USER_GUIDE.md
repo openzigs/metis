@@ -2137,6 +2137,10 @@ The **Data Mappings** panel appears directly below each requirement card on the 
 
 Saved mappings are shown as badges in the format `schema.table` or `schema.table.column`, each with a confidence percentage. You can remove any mapping at any time using the **Remove** button next to it.
 
+#### Who can change mappings
+
+**Add mapping**, **Suggest mappings**, **Accept** on a suggestion and **Remove** all need the `connector.write` permission (coordinator or admin by default). Anyone else sees the mappings, and those buttons greyed out with "Requires connector.write" when you point at them (#1591). If your permission is taken away while the add form or the suggestions are open, they close, and they stay closed when the permission comes back: click **Add mapping** again to start over (#2180).
+
 ---
 
 ### 12.8 Linking Requirements to Each Other (Requirement Links)
@@ -2166,6 +2170,10 @@ METIS guards against invalid links: self-links, duplicates, and `depends_on` cyc
 #### Removing a link
 
 Click **Unlink** on any row to remove the relationship; the panel updates immediately.
+
+#### Who can change links
+
+**Add link** and **Unlink** need the `project.update` permission (coordinator or admin by default), and so do both answers to a duplicate warning below: **Mark as duplicate** and **Not a duplicate**. Anyone else sees the links and the warning, with those buttons greyed out and "Requires project.update" when you point at them (#1591). If your permission is taken away while the add-link dialog is open, it closes, and it stays closed when the permission comes back (#2180).
 
 Once links exist, they roll up to a workspace-wide picture — see [Section 12.10](#1210-workspace-traceability-rollup).
 

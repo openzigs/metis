@@ -304,3 +304,91 @@ describe("#1591 — a coordinator keeps every link, duplicate and mapping write"
     expect(screen.getByLabelText("Table")).toBeInTheDocument();
   });
 });
+
+/**
+ * #2180 — hiding a control behind `open && !writeHint` left its state set, so
+ * when the hint cleared (the auth refetch restored the permission) the dialog,
+ * form, suggestions or popover came back with no user action. Each test opens
+ * the control as a coordinator, sets the developer hint, then clears it again.
+ */
+describe("#2180 — a control hidden by a hint does not reopen when the hint clears", () => {
+  it("linked requirements: the add-link dialog stays closed", async () => {
+    const links = (hint: string | undefined) => (
+      <RequirementLinksPanel
+        projectId="p1"
+        requirementId="req-1"
+        workspaceId="ws-1"
+        writeHint={hint}
+      />
+    );
+    const { rerender } = renderWith(links(linkHint("coordinator")));
+    fireEvent.click(await screen.findByRole("button", { name: "Add link" }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+
+    rerender(links(linkHint("developer")));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    rerender(links(linkHint("coordinator")));
+    expect(screen.getByRole("button", { name: "Add link" })).toBeEnabled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("data mappings: the add form, its draft and the suggestions stay gone", async () => {
+    api.mappings.suggest.mockResolvedValue({
+      candidates: [
+        {
+          dbConnectorId: "db-1",
+          schemaName: "public",
+          tableName: "invoices",
+          columnName: "total",
+          confidence: 0.8,
+          lowConfidence: false,
+          rationale: "Totals",
+        },
+      ],
+      note: null,
+    });
+    const mappings = (hint: string | undefined) => (
+      <DataMappingsPanel projectId="p1" requirementId="req-1" writeHint={hint} />
+    );
+    const { rerender } = renderWith(mappings(mappingHint("coordinator")));
+    fireEvent.click(await screen.findByRole("button", { name: "Add mapping" }));
+    fireEvent.change(screen.getByLabelText("Table"), { target: { value: "orders" } });
+    fireEvent.click(screen.getByRole("button", { name: "Suggest mappings" }));
+    await screen.findByRole("button", { name: "Accept suggestion public.invoices.total" });
+
+    rerender(mappings(mappingHint("developer")));
+    rerender(mappings(mappingHint("coordinator")));
+    expect(screen.queryByLabelText("Table")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("data-mapping-suggestions")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add mapping" })).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+
+    // Opened again by hand, the form starts from an empty draft.
+    fireEvent.click(screen.getByRole("button", { name: "Add mapping" }));
+    expect(screen.getByLabelText("Table")).toHaveValue("");
+    expect(api.mappings.create).not.toHaveBeenCalled();
+  });
+
+  it("assignee picker: the popover stays closed and its search is cleared", async () => {
+    apiFetch.mockResolvedValue([{ id: "u-3", username: "sam", displayName: "Sam" }]);
+    const picker = (hint: string | undefined) => (
+      <AssigneePicker requirementId="req-1" projectId="p1" writeHint={hint} />
+    );
+    const { rerender } = renderWith(picker(linkHint("coordinator")));
+    fireEvent.click(await screen.findByRole("button", { name: "Add assignee" }));
+    fireEvent.change(screen.getByPlaceholderText("Search users…"), { target: { value: "sa" } });
+    await screen.findByRole("option", { name: /Sam/ });
+
+    rerender(picker(linkHint("developer")));
+    rerender(picker(linkHint("coordinator")));
+    expect(screen.queryByPlaceholderText("Search users…")).not.toBeInTheDocument();
+
+    // Opened again by hand, the search box is empty and offers no stale result.
+    fireEvent.click(screen.getByRole("button", { name: "Add assignee" }));
+    expect(screen.getByPlaceholderText("Search users…")).toHaveValue("");
+    expect(screen.queryByRole("option", { name: /Sam/ })).not.toBeInTheDocument();
+    expect(api.assignments.assign).not.toHaveBeenCalled();
+  });
+});

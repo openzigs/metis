@@ -32,6 +32,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useResetOnHint } from "@/hooks/use-reset-on-hint";
 
 export interface DataMappingsPanelProps {
   projectId: string;
@@ -144,6 +145,14 @@ export function DataMappingsPanel({
     setForm({ dbConnectorId: "", schemaName: "", tableName: "", columnName: "", note: "" });
     setShowForm(false);
   }
+
+  // #2180 — drop the form, its draft and the suggestions, or all three come
+  // back unasked when the hint clears.
+  useResetOnHint(writeHint, () => {
+    resetForm();
+    setCandidates(null);
+    setSuggestNote(null);
+  });
 
   function submitForm(e: React.FormEvent): void {
     e.preventDefault();

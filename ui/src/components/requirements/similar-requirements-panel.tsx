@@ -533,21 +533,22 @@ function DuplicateWarning({
 export function SimilarRequirementsPanel({
   projectId,
   requirementId,
-  canEdit = false,
   writeHint,
 }: {
   projectId: string;
   requirementId: string;
-  /** #1840 — the viewer may edit the requirement (`project.update`): offers "Start from these citations". */
-  canEdit?: boolean;
   /**
    * #1591 — why the viewer cannot answer the duplicate warning: "Mark as
    * duplicate" adds a requirement link and "Not a duplicate" is remembered for
    * the pair, both `project.update` writes server-side. Set: both are disabled
-   * and carry this hint. Omitted: they are enabled.
+   * and carry this hint, and "Start from these citations" (#1840, also a
+   * `project.update` write) is not offered. Omitted: all three are.
    */
   writeHint?: string;
 }): React.ReactElement {
+  // #2180 — one permission, one prop: a separate `canEdit` could be set apart
+  // from the hint.
+  const canEdit = !writeHint;
   const query = useQuery({
     queryKey: similarRequirementsKey(projectId, requirementId),
     queryFn: ({ signal }) =>

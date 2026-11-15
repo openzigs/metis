@@ -51,6 +51,7 @@ import {
   SimilarRequirementsPanel,
 } from "./similar-requirements-panel";
 import { TraceabilityView } from "@/components/traceability/traceability-view";
+import { REQUIRES_PROJECT_UPDATE } from "@/lib/permission-hints";
 
 const P = "p1";
 const SELF = "r-self";
@@ -164,7 +165,11 @@ function route(path: string, opts: { method?: string; body?: unknown } = {}): un
 function mount({ canEdit, qc = newClient() }: { canEdit: boolean; qc?: QueryClient }) {
   return render(
     <QueryClientProvider client={qc}>
-      <SimilarRequirementsPanel projectId={P} requirementId={SELF} canEdit={canEdit} />
+      <SimilarRequirementsPanel
+        projectId={P}
+        requirementId={SELF}
+        writeHint={canEdit ? undefined : REQUIRES_PROJECT_UPDATE}
+      />
       <TraceabilityView projectId={P} requirementId={SELF} />
     </QueryClientProvider>,
   );
@@ -258,7 +263,7 @@ describe("Start from these citations (#1840)", () => {
     const user = userEvent.setup();
     render(
       <QueryClientProvider client={qc}>
-        <SimilarRequirementsPanel projectId={P} requirementId={SELF} canEdit />
+        <SimilarRequirementsPanel projectId={P} requirementId={SELF} />
         <SimilarRequirementsPanel projectId={P} requirementId="r-other" />
         <SimilarRequirementsPanel projectId={P} requirementId="r-unrelated" />
       </QueryClientProvider>,
@@ -292,7 +297,7 @@ describe("Start from these citations (#1840)", () => {
     const user = userEvent.setup();
     render(
       <QueryClientProvider client={newClient()}>
-        <SimilarRequirementsPanel projectId={P} requirementId={SELF} canEdit />
+        <SimilarRequirementsPanel projectId={P} requirementId={SELF} />
         <SimilarRequirementsPanel projectId={P} requirementId="r-loading" />
       </QueryClientProvider>,
     );
@@ -321,7 +326,7 @@ describe("Start from these citations (#1840)", () => {
     const user = userEvent.setup();
     render(
       <QueryClientProvider client={newClient()}>
-        <SimilarRequirementsPanel projectId={P} requirementId={SELF} canEdit />
+        <SimilarRequirementsPanel projectId={P} requirementId={SELF} />
         <SimilarRequirementsPanel projectId={P} requirementId="r-other" />
         <SimilarRequirementsPanel projectId={P} requirementId="r-broken" />
       </QueryClientProvider>,
@@ -362,7 +367,7 @@ describe("Start from these citations (#1840)", () => {
     const qc = newClient();
     const panels = (late: boolean) => (
       <QueryClientProvider client={qc}>
-        <SimilarRequirementsPanel projectId={P} requirementId={SELF} canEdit />
+        <SimilarRequirementsPanel projectId={P} requirementId={SELF} />
         <SimilarRequirementsPanel projectId={P} requirementId="r-other" />
         <TraceabilityView projectId={P} requirementId={SELF} />
         {late ? <SimilarRequirementsPanel projectId={P} requirementId="r-late" /> : null}
@@ -412,7 +417,7 @@ describe("Start from these citations (#1840)", () => {
     const user = userEvent.setup();
     render(
       <QueryClientProvider client={newClient()}>
-        <SimilarRequirementsPanel projectId={P} requirementId={SELF} canEdit />
+        <SimilarRequirementsPanel projectId={P} requirementId={SELF} />
         <SimilarRequirementsPanel projectId={P} requirementId="r-other" />
         <TraceabilityView projectId={P} requirementId={SELF} />
         <SimilarRequirementsPanel projectId={P} requirementId="r-racing" />
@@ -598,7 +603,7 @@ describe("Start from these citations: code already linked (#1964)", () => {
     const user = userEvent.setup();
     render(
       <QueryClientProvider client={newClient()}>
-        <SimilarRequirementsPanel projectId={P} requirementId={SELF} canEdit />
+        <SimilarRequirementsPanel projectId={P} requirementId={SELF} />
       </QueryClientProvider>,
     );
     await user.click(await screen.findByRole("button", { name: ACTION }));
@@ -619,7 +624,7 @@ describe("Start from these citations: code already linked (#1964)", () => {
     const user = userEvent.setup();
     render(
       <QueryClientProvider client={newClient()}>
-        <SimilarRequirementsPanel projectId={P} requirementId={SELF} canEdit />
+        <SimilarRequirementsPanel projectId={P} requirementId={SELF} />
       </QueryClientProvider>,
     );
     await user.click(await screen.findByRole("button", { name: ACTION }));

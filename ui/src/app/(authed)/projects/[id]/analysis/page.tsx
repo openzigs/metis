@@ -1682,7 +1682,6 @@ export default function AnalysisPage(): React.ReactElement {
                             <SimilarRequirementsPanel
                               projectId={projectId}
                               requirementId={req.id}
-                              canEdit={canEditRequirements}
                               writeHint={requirementWriteHint}
                             />
                             <div className="mt-3 border-t border-border pt-3">
