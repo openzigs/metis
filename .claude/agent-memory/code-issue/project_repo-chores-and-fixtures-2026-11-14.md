@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-- **Prettier** (#2480): `prettier --write` run from `server/` rewrites all of docs/ARCHITECTURE.md (~2,900 lines). Run it on that file from the repo root.
+- **Prettier** (#2480): `prettier --write` run from `server/` rewrites all of docs/ARCHITECTURE.md (~2,900 lines). Run it on that file from the repo root. (#2561) Safer still: `prettier --write` on ARCHITECTURE.md or the eval-data README rewraps the whole file: edit in place and let the hook format the staged lines.
 - **Images are gitignored** (#2490, `.gitignore` line 233+): committing walkthrough screenshots needs a reviewed `!path` line, or `git add` silently skips them.
 - **Migration backfill** (#2502): a later migration backfilling a column added by an earlier one in the same release must have the later timestamp in both trees. Guard its JSON reads (`json_valid` on SQLite, `IS JSON ARRAY` on Postgres 16).
 - **Model-default change** (#2512): moves the config and outputHash pinned in `brd-before-1070*.json`. Regenerate with `WRITE_BEFORE_1070_FIXTURE=1`; never hand-edit the model string.
