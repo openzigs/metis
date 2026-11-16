@@ -92,7 +92,7 @@ const HIDING_SECRET: CodeAccessFilter = {
 };
 
 describe("the mode decision", () => {
-  it("reads the platform key, and an unset or unknown value is explore (#2587)", () => {
+  it("reads the platform key: unset is explore (#2587), a set but unknown value is fast", () => {
     expect(DEFAULT_CODE_PASS_MODE).toBe("explore");
     expect(readCodeExplorationSetting()).toBe("explore");
     process.env.ANALYSIS_CODE_EXPLORATION = "fast";
@@ -101,9 +101,12 @@ describe("the mode decision", () => {
     process.env.ANALYSIS_CODE_EXPLORATION = " FAST ";
     __resetConfigSingleton();
     expect(readCodeExplorationSetting()).toBe("fast");
-    process.env.ANALYSIS_CODE_EXPLORATION = "deep";
+    process.env.ANALYSIS_CODE_EXPLORATION = "";
     __resetConfigSingleton();
     expect(readCodeExplorationSetting()).toBe("explore");
+    process.env.ANALYSIS_CODE_EXPLORATION = "deep";
+    __resetConfigSingleton();
+    expect(readCodeExplorationSetting()).toBe("fast");
   });
 
   it("follows the platform with a working tree, and is fast without one", () => {

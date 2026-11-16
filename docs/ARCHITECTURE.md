@@ -1002,6 +1002,13 @@ default `explore` since #2587, after #2568's pre-registered rule held on all fiv
 | Measured cost (A20 vs A3A, Miniflux, 24 items, `claude-sonnet-5-5`) | $0.082 / item, 28 s | $0.120 / item (+46%), 35 s; Recall@5 0.66 → 0.85, edit precision unchanged |
 | Measured through production's pass (A21 vs A3A, #2568 / #2587, `claude-sonnet-5-5`) | Miniflux $0.066 / item; fixture $0.117 | Miniflux $0.128 / item, Recall@5 0.66 → 0.84; fixture $0.155, Recall@5 Δ 0.00; live five-requirement analysis 1.55× fast's cost, 1.35× its time |
 
+Both measurements ran on `claude-sonnet-5-5` only; `explore` has had no smoke run on the
+OpenAI-compatible path (DeepSeek, local runtimes). On a first run there, check the run's
+`codePassMode` reads `explore` and that no pass in `codePassOutcomes` stopped at
+`ANALYSIS_AGENTIC_MAX_TURNS` (`turnsUsed` = `maxTurns`). `ANALYSIS_CODE_EXPLORATION` set to
+anything other than `explore` or `fast` (a typo, `off`, `0`) runs `fast` and logs one warning;
+only unset or empty is the `explore` default, which the registry declares (#2295).
+
 `explore` needs a working tree, so a pass with no clone runs `fast`
 (`resolveCodePassMode` → reason `no-working-tree`). An escalated run's deep and standard
 passes (#739) both use the resolved mode. The run's capability record carries
