@@ -89,6 +89,11 @@ vi.mock("../prisma.js", () => ({
 }));
 
 vi.mock("./cost-cap.js", () => ({ assertCanStartAnalysis: vi.fn(async () => undefined) }));
+// #2569 — the project budget check reads the ledger; these tests' projects have none.
+vi.mock("../finops/budget-enforcer.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../finops/budget-enforcer.js")>()),
+  assertWithinBudget: vi.fn(async () => undefined),
+}));
 vi.mock("../audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 const { AnalysisOrchestrator, AnalysisNotRegeneratableError } = await import("./orchestrator.js");

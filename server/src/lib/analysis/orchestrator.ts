@@ -162,6 +162,7 @@ import {
   detectCodeAgentFailed,
   detectStaticCapability,
   finalizeCapability,
+  recordCodePassCostCeiling,
   recordCodePassMode,
   recordCodePassOutcome,
   recordDroppedCitations,
@@ -172,6 +173,7 @@ import {
   type RestrictedLeftOutCounts,
   type RestrictedLeftOutReport,
 } from "./analysis-capability.js";
+import { type CodePassCostCeiling, createCodePassCostCeiling } from "./code-pass-cost-ceiling.js";
 import {
   buildExploreCodePass,
   codePassOutcome,
@@ -188,6 +190,7 @@ import {
 import { cloneDirPath, resolveExistingCloneDir } from "./clone-availability.js";
 import { prepareAnalysisClone } from "./clone-restore.js";
 import { assertCanStartAnalysis, getProjectMonthlyAnalysisTokens } from "./cost-cap.js";
+import { assertWithinBudget } from "../finops/budget-enforcer.js";
 import { notifyAnalysisComplete } from "../teams/notification-hooks.js";
 import { dispatchJobOutcome } from "../notifications/job-notify.js";
 import {
@@ -1100,6 +1103,10 @@ export class AnalysisOrchestrator {
     if (project.status === "archived") {
       throw new Error(`Project ${opts.projectId} is archived`);
     }
+    // #2569 — the project's own monthly budget, as chat and discussions
+    // enforce it: an over-budget project starts nothing (no row, no spend).
+    // `BudgetExceededError` is a 402 `BUDGET_EXCEEDED`.
+    await assertWithinBudget(opts.projectId);
     const agentKeys =
       opts.agentKeys && opts.agentKeys.length > 0
         ? opts.agentKeys
@@ -1200,6 +1207,9 @@ export class AnalysisOrchestrator {
     if ((analysis as { project: { status: string } }).project.status === "archived") {
       throw new Error("Project is archived");
     }
+    // #2569 — a regenerate, a Continue and a resume spend too: refused (402)
+    // while the project is over its monthly budget.
+    await assertWithinBudget(analysis.projectId);
     if (!REGENERATABLE_STATUSES.has((analysis as { status: string }).status)) {
       throw new AnalysisNotRegeneratableError(analysisId, (analysis as { status: string }).status);
     }
@@ -1931,11 +1941,17 @@ export class AnalysisOrchestrator {
         totalBudget,
       );
       cappedOut = skipped;
+      // #2569 — one dollar ceiling across every repository's pass.
+      const costCeiling = createCodePassCostCeiling({
+        requirementCount: requirements.length,
+        multiplier: opts.turnMultiplier,
+      });
       for (const connector of effectiveConnectors) {
         if (input.signal.aborted) break;
         ranConnectorIds.push(connector.id);
         results.push(
           await this.runAgenticCodeAgent({
+            costCeiling,
             ...shared,
             requirements: scopeFor(connector.id),
             projectName: `${input.projectName} [repo: ${connector.label}]`,
@@ -2021,6 +2037,9 @@ export class AnalysisOrchestrator {
     if ((analysis as { project: { status: string } }).project.status === "archived") {
       throw new Error("Project is archived");
     }
+    // #2569 — a regenerate, a Continue and a resume spend too: refused (402)
+    // while the project is over its monthly budget.
+    await assertWithinBudget(analysis.projectId);
     if (!REGENERATABLE_STATUSES.has((analysis as { status: string }).status)) {
       throw new AnalysisNotRegeneratableError(analysisId, (analysis as { status: string }).status);
     }
@@ -2177,9 +2196,12 @@ export class AnalysisOrchestrator {
           resumeConnectors,
           resolveAgentTokenBudget(),
         );
+        // #2569 — one dollar ceiling across every resumed repository's pass.
+        const costCeiling = createCodePassCostCeiling({ requirementCount: requirements.length });
         for (const connector of effectiveConnectors) {
           if (active.cancelled) break;
           const result = await this.runAgenticCodeAgent({
+            costCeiling,
             analysisId: opts.analysisId,
             projectId: analysis.projectId,
             actorId: opts.actorId,
@@ -2939,9 +2961,14 @@ export class AnalysisOrchestrator {
                 this.emitCapability(analysisId, capability);
               }
               const multiResults: AgentRunResult[] = [];
+              // #2569 — one dollar ceiling across every repository's pass.
+              const costCeiling = createCodePassCostCeiling({
+                requirementCount: codeRequirements.length,
+              });
               for (const connector of effectiveConnectors) {
                 if (run.cancelled) break;
                 const result = await this.runAgenticCodeAgent({
+                  costCeiling,
                   analysisId,
                   projectId: opts.projectId,
                   actorId: opts.startedById,
@@ -3939,6 +3966,12 @@ export class AnalysisOrchestrator {
      * in one transaction, and a failed or cancelled one is appended.
      */
     persistMode?: "replace" | "append" | "supersede";
+    /**
+     * #2569 — the dollar ceiling to spend against. A multi-repository run
+     * passes one ceiling to every repository's pass; absent, the pass gets
+     * its own ({@link createCodePassCostCeiling}).
+     */
+    costCeiling?: CodePassCostCeiling;
   }): Promise<AgentRunResult> {
     const startedAt = new Date();
     const agentKey = "code" as const;
@@ -4127,6 +4160,19 @@ export class AnalysisOrchestrator {
         this.noteRequirementsLeftOut(input.analysisId, fused.semanticLeftOut);
 
         const agentBudget = input.tokenBudget ?? resolveAgentTokenBudget();
+        // #2569 — the dollar ceiling: every model call this pass makes (each
+        // loop turn, the final-answer retry, the salvage and repair calls, the
+        // support panel and faithfulness calls, in both escalation passes)
+        // goes through `passProvider`, which refuses a call once the ceiling
+        // is reached. A multi-repository run hands every repository's pass
+        // the same ceiling.
+        const costCeiling =
+          input.costCeiling ??
+          createCodePassCostCeiling({
+            requirementCount: input.requirements.length,
+            multiplier: input.turnMultiplier,
+          });
+        const passProvider = costCeiling.guard(this.deps.provider);
         // #774 — every tool call the loop makes, across every pass, so the run's
         // tool-call error counts can be persisted on the AgentResult. Before
         // #774 the loop's `toolCalls` were returned and DISCARDED here, which is
@@ -4231,7 +4277,7 @@ export class AnalysisOrchestrator {
           // #2565 — explore mode counts the pass's tool calls for its nudge.
           let passToolCalls = 0;
           const loopResult = await runAgentLoop(
-            this.deps.provider,
+            passProvider,
             { systemMessage, userMessage, tools, toolContext },
             {
               ...(nativeTools ? { native: nativeTools } : {}),
@@ -4289,15 +4335,17 @@ export class AnalysisOrchestrator {
           let extraUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
           if (!loopResult.hasFinalAnswer) {
             // The loop (and its one bounded retry) never produced a JSON answer.
-            reason = loopResult.budgetExhausted
-              ? "token-budget"
-              : loopResult.turnsExhausted
-                ? "turn-limit"
-                : // #1314 — `hasFinalAnswer` is schema-aware now, so a response
-                  // that still parses as JSON failed the schema, not the parser.
-                  isJsonFinalAnswer(selectSalvageSource(loopResult))
-                  ? "schema-invalid"
-                  : "non-json-response";
+            reason = loopResult.costCeilingReached
+              ? "cost-ceiling"
+              : loopResult.budgetExhausted
+                ? "token-budget"
+                : loopResult.turnsExhausted
+                  ? "turn-limit"
+                  : // #1314 — `hasFinalAnswer` is schema-aware now, so a response
+                    // that still parses as JSON failed the schema, not the parser.
+                    isJsonFinalAnswer(selectSalvageSource(loopResult))
+                    ? "schema-invalid"
+                    : "non-json-response";
           } else {
             try {
               const parsed = extractJsonObject(loopResult.finalResponse);
@@ -4342,22 +4390,18 @@ export class AnalysisOrchestrator {
             // a finding under any circumstances. `salvageWithRepair` also spends
             // ONE bounded syntax-repair call when the preserved payload was cut
             // off mid-array by an output cap.
-            const salvage = await salvageWithRepair(
-              this.deps.provider,
-              selectSalvageSource(loopResult),
-              {
-                agentKey,
-                model: input.model,
-                signal: input.signal,
-                // #1218 — repair echoes the payload back, so its own cap must
-                // clear the cap that produced it or it truncates in turn.
-                maxOutputTokens: repairMaxOutputTokens(finalAnswerMaxOutputTokens),
-                // #298 — resolve an over-long citation `documentId` here too
-                // (loaded only when a salvaged finding carries one).
-                loadKnownDocuments,
-                findKnownDocumentIds,
-              },
-            );
+            const salvage = await salvageWithRepair(passProvider, selectSalvageSource(loopResult), {
+              agentKey,
+              model: input.model,
+              signal: input.signal,
+              // #1218 — repair echoes the payload back, so its own cap must
+              // clear the cap that produced it or it truncates in turn.
+              maxOutputTokens: repairMaxOutputTokens(finalAnswerMaxOutputTokens),
+              // #298 — resolve an over-long citation `documentId` here too
+              // (loaded only when a salvaged finding carries one).
+              loadKnownDocuments,
+              findKnownDocumentIds,
+            });
             let salvaged = salvage.findings;
             fieldRepairs = salvage.fieldRepairs;
             let leftOutTitles = salvage.leftOutTitles;
@@ -4368,7 +4412,7 @@ export class AnalysisOrchestrator {
             // last tool-call reply.
             let evidenceSalvage: EvidenceSalvageResult | undefined;
             if (salvaged.length === 0) {
-              evidenceSalvage = await salvageFromEvidence(this.deps.provider, {
+              evidenceSalvage = await salvageFromEvidence(passProvider, {
                 agentKey,
                 systemMessage: buildCachedSystemPrompt(systemMessage, []),
                 userMessage,
@@ -4465,8 +4509,12 @@ export class AnalysisOrchestrator {
             requirementCount: passRequirements.length,
             // #1388 review — a pass METIS's own coverage nudge pushed into the cap
             // had already answered: it was not cut short, and offers no Continue.
+            // #2569 — so is a pass the dollar ceiling stopped: what it never
+            // reached is could-not-verify, never a gap.
             exhausted:
-              (loopResult.turnsExhausted || loopResult.budgetExhausted) &&
+              (loopResult.turnsExhausted ||
+                loopResult.budgetExhausted ||
+                loopResult.costCeilingReached === true) &&
               loopResult.answerSentBack !== true,
             // The #729 passive seed returned real code chunks ⇒ the code index is
             // alive. Same evidence the single-shot path trusts below; it proves
@@ -4709,7 +4757,7 @@ export class AnalysisOrchestrator {
           // calls and the findings array is returned untouched.
           const agenticEvidence = collectPanelEvidence(fused.chunks, loopResult.toolCalls);
           const panelled = await applySupportPanel(
-            this.deps.provider,
+            passProvider,
             validated.findings,
             agenticEvidence,
             { ...(input.signal ? { signal: input.signal } : {}) },
@@ -4722,7 +4770,7 @@ export class AnalysisOrchestrator {
           // `supportPanel`, so a flag-off run is byte-identical to a pre-#1318
           // one and nothing downstream can gate on it. Flag off => no call.
           const scored = await applyFindingFaithfulness(
-            this.deps.provider,
+            passProvider,
             validated.findings,
             agenticEvidence,
             { ...(input.signal ? { signal: input.signal } : {}) },
@@ -4803,6 +4851,7 @@ export class AnalysisOrchestrator {
           mergedOutput = only.output;
           mergedUsage = only.usage;
         }
+        this.noteCodePassCostCeiling(input.analysisId, costCeiling);
 
         const result: AgentRunResult = {
           agentKey,
@@ -6765,6 +6814,13 @@ export class AnalysisOrchestrator {
   private noteCodePassMode(analysisId: string, decision: CodePassModeDecision): void {
     const tracker = this.capabilities.get(analysisId);
     if (tracker) recordCodePassMode(tracker, decision);
+  }
+
+  /** #2569 — record the code pass's dollar ceiling on the run, when it has something to say. */
+  private noteCodePassCostCeiling(analysisId: string, ceiling: CodePassCostCeiling): void {
+    const tracker = this.capabilities.get(analysisId);
+    const outcome = ceiling.outcome();
+    if (tracker && outcome) recordCodePassCostCeiling(tracker, outcome);
   }
 
   /** #2565 — record a code pass's spend and ending on the run. No-op without a tracker. */

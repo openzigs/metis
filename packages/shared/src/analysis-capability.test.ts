@@ -186,6 +186,31 @@ describe("#1001 — code investigation cut short by its budget", () => {
   });
 });
 
+describe("#2569 — the code pass's dollar ceiling", () => {
+  it("flags code-pass-cost-ceiling when the ceiling refused a call, after the cut-short reason", () => {
+    expect(
+      deriveCapabilityReasons({
+        ...fullyCapable,
+        codeInvestigationCutShort: true,
+        codePassCostCeilingReached: true,
+      }),
+    ).toEqual(["code-investigation-cut-short", "code-pass-cost-ceiling"]);
+  });
+
+  it("stays silent when the ceiling refused nothing, and outside code analysis", () => {
+    expect(deriveCapabilityReasons({ ...fullyCapable, codePassCostCeilingReached: false })).toEqual(
+      [],
+    );
+    expect(
+      deriveCapabilityReasons({
+        ...fullyCapable,
+        codeAnalysisRequested: false,
+        codePassCostCeilingReached: true,
+      }),
+    ).toEqual([]);
+  });
+});
+
 describe("isAnalysisDegraded", () => {
   it("is false for null and for empty reasons", () => {
     expect(isAnalysisDegraded(null)).toBe(false);

@@ -32,6 +32,7 @@ import {
   createCapabilityTracker,
   detectStaticCapability,
   finalizeCapability,
+  recordCodePassCostCeiling,
   recordRestrictedLeftOut,
 } from "./analysis-capability.js";
 import { __resetConfigSingleton } from "../config/config-service.js";
@@ -299,5 +300,64 @@ describe("restrictedLeftOut", () => {
     const tracker = capable();
     recordRestrictedLeftOut(tracker, { files: 1, symbolIds: ["s-secret"] });
     expect(JSON.stringify(finalizeCapability(tracker))).not.toContain("s-secret");
+  });
+});
+
+describe("recordCodePassCostCeiling (#2569)", () => {
+  const capable = {
+    codeGraphPresent: true,
+    repoSourceIngested: true,
+    fusedCodeRetrievalEnabled: true,
+    schemaContextEnabled: true,
+  };
+  const tracker = () =>
+    createCapabilityTracker({
+      static: capable,
+      codeAnalysisRequested: true,
+      databaseAnalysisRequested: false,
+    });
+
+  it("writes the record and the code-pass-cost-ceiling reason when the ceiling was reached", () => {
+    const t = tracker();
+    recordCodePassCostCeiling(t, { limitUsd: 1, spentUsd: 1.1, reached: true, pricing: "priced" });
+    const cap = finalizeCapability(t);
+    expect(cap.codePassCostCeiling).toEqual({
+      limitUsd: 1,
+      spentUsd: 1.1,
+      reached: true,
+      pricing: "priced",
+    });
+    expect(cap.reasons).toContain("code-pass-cost-ceiling");
+  });
+
+  it("an unpriced ceiling is recorded, with no reason, and a run with none records nothing", () => {
+    const t = tracker();
+    recordCodePassCostCeiling(t, {
+      limitUsd: 1,
+      spentUsd: 0,
+      reached: false,
+      pricing: "cost-ceiling-unpriced",
+    });
+    const cap = finalizeCapability(t);
+    expect(cap.codePassCostCeiling?.pricing).toBe("cost-ceiling-unpriced");
+    expect(cap.reasons).not.toContain("code-pass-cost-ceiling");
+    expect(finalizeCapability(tracker())).not.toHaveProperty("codePassCostCeiling");
+  });
+
+  it("a later record keeps an earlier reached and unpriced", () => {
+    const t = tracker();
+    recordCodePassCostCeiling(t, {
+      limitUsd: 1,
+      spentUsd: 1,
+      reached: true,
+      pricing: "cost-ceiling-unpriced",
+    });
+    recordCodePassCostCeiling(t, { limitUsd: 2, spentUsd: 0.5, reached: false, pricing: "priced" });
+    expect(t.codePassCostCeiling).toEqual({
+      limitUsd: 2,
+      spentUsd: 0.5,
+      reached: true,
+      pricing: "cost-ceiling-unpriced",
+    });
   });
 });

@@ -81,7 +81,12 @@ export interface ProjectCodeExplorationState {
 
 /** Why a code pass ended without a validated answer (the orchestrator's degradation reasons). */
 export type CodePassDegradation =
-  "token-budget" | "turn-limit" | "schema-invalid" | "non-json-response";
+  | "token-budget"
+  | "turn-limit"
+  | "schema-invalid"
+  | "non-json-response"
+  /** #2569 — the pass reached its dollar ceiling (`ANALYSIS_CODE_PASS_MAX_USD`). */
+  | "cost-ceiling";
 
 /**
  * #2565 — what one code pass spent and how it ended, so #2568 can count how often
@@ -100,4 +105,23 @@ export interface CodePassOutcome {
   degradation?: CodePassDegradation;
   /** Tool calls whose (tool, arguments) the pass had already made. */
   repeatedToolCalls: number;
+}
+
+/**
+ * #2569 — the code pass's dollar ceiling, on the capability record when it
+ * stopped a pass or could not price one. `limitUsd` is the run's ceiling
+ * (`ANALYSIS_CODE_PASS_MAX_USD` per requirement, shared by every repository's
+ * pass); `spentUsd` is the priced spend it counted, a lower bound when
+ * `pricing` is `cost-ceiling-unpriced`.
+ */
+export interface CodePassCostCeilingRecord {
+  limitUsd: number;
+  spentUsd: number;
+  /** The ceiling refused a model call, so a pass stopped short. */
+  reached: boolean;
+  /**
+   * `cost-ceiling-unpriced`: a call's model has no ledger rate, so its cost is
+   * unknown (never $0) and the pass was bounded by its token budget.
+   */
+  pricing: "priced" | "cost-ceiling-unpriced";
 }

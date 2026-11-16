@@ -117,7 +117,13 @@ vi.mock("../src/lib/prisma.js", () => ({
         if (!p || p.deletedAt) return null;
         return p;
       }),
+      // #2569 — `assertWithinBudget` reads the project's budget: none here.
+      findUnique: vi.fn(async ({ where }: { where: { id: string } }) =>
+        projects.has(where.id) ? { monthlyTokenBudget: null } : null,
+      ),
     },
+    // #2569 — and its month-to-date ledger: empty here.
+    tokenUsage: { findMany: vi.fn(async () => []) },
     analysis: {
       // #2506 — web research asks whether the run may rest on a restricted
       // read (`mayRestOnRestrictedRead`); an unreadable run fails closed.

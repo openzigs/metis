@@ -22,6 +22,7 @@ import { resolveCapabilities } from "../ai/capabilities.js";
 import { fenceToolResult } from "../ai/tool-runtime/fence.js";
 import type { AgentTool, ToolCallRequest, ToolContext, ToolResult } from "./tools/types.js";
 import { TokenBudget, BudgetExhaustedError } from "./token-budget.js";
+import { isCostCeilingReachedError } from "./code-pass-cost-ceiling.js";
 import type { GraphContextBuilder } from "./graph-context-builder.js";
 import {
   compactTranscript,
@@ -331,6 +332,12 @@ export interface AgentLoopResult {
   turnsUsed: number;
   /** Whether the loop ended due to TOKEN budget exhaustion. */
   budgetExhausted: boolean;
+  /**
+   * #2569 — a model call (a turn, or the final-answer retry) was refused by the
+   * caller's dollar ceiling (`CostCeilingReachedError` from the provider).
+   * The loop stopped there with what it had. Absent when nothing was refused.
+   */
+  costCeilingReached?: true;
   /**
    * #769 — the loop consumed its last turn while the model was STILL emitting a
    * tool call, i.e. it never got the chance to answer. Distinct from
@@ -1459,6 +1466,8 @@ export async function runAgentLoop(
   const totalUsage: TokenUsage = { ...DEFAULT_USAGE };
   const toolCalls: AgentLoopResult["toolCalls"] = [];
   let budgetExhausted = false;
+  // #2569 — the provider's dollar ceiling refused a call.
+  let costCeilingReached = false;
   let graphContextMeta: AgentLoopResult["graphContext"] | undefined;
 
   // Epic #497 / Issue #501 — Inject graph-ranked code context into system prompt
@@ -1617,6 +1626,20 @@ export async function runAgentLoop(
       response = await callModel(messages, chatOpts);
     } catch (err) {
       if ((err as Error).name === "AbortError") throw err;
+      // #2569 — the dollar ceiling refused this turn: no call was made, so it
+      // is not a turn used. Stop with the investigation so far, as on a spent
+      // token budget; the final-answer retry below goes through the same
+      // ceiling and is refused too.
+      if (isCostCeilingReachedError(err)) {
+        costCeilingReached = true;
+        turnsUsed--;
+        log.info("Agent loop stopped at the cost ceiling", {
+          turn,
+          limitUsd: err.limitUsd,
+          spentUsd: err.spentUsd,
+        });
+        break;
+      }
       log.error("Agent loop provider error", { turn, error: (err as Error).message });
       throw err;
     }
@@ -2022,6 +2045,8 @@ export async function runAgentLoop(
       }
     } catch (err) {
       if ((err as Error).name === "AbortError") throw err;
+      // #2569 — refused by the dollar ceiling: no call was made.
+      if (isCostCeilingReachedError(err)) costCeilingReached = true;
       // A failed salvage must never turn a degraded run into a hard failure —
       // the caller still gets the loop's tool calls and can persist partials.
       log.warn("Final-answer retry failed; degrading", { error: (err as Error).message });
@@ -2058,6 +2083,7 @@ export async function runAgentLoop(
     usage: totalUsage,
     turnsUsed,
     budgetExhausted,
+    ...(costCeilingReached ? { costCeilingReached: true as const } : {}),
     turnsExhausted,
     hasFinalAnswer,
     ...(retryMeta ? { finalAnswerRetry: retryMeta } : {}),

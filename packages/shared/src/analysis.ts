@@ -41,7 +41,12 @@ import type { CrossDocFindings } from "./cross-doc.js";
 import type { ImpactAffectedRelation } from "./impact.js";
 import type { TestLinkRelation } from "./traceability.js";
 import type { RequirementApprovalReopened } from "./requirement-approval.js";
-import type { CodePassMode, CodePassModeReason, CodePassOutcome } from "./code-exploration.js";
+import type {
+  CodePassCostCeilingRecord,
+  CodePassMode,
+  CodePassModeReason,
+  CodePassOutcome,
+} from "./code-exploration.js";
 // Type-only, and the dependency runs the other way at runtime: the presentation
 // seam imports this module's types. Erased at build, so no import cycle exists.
 import type { RequirementSupportConfidence } from "./support-panel-view.js";
@@ -3075,6 +3080,13 @@ export const ANALYSIS_CAPABILITY_REASONS = [
    * agent, the counts and the titles that were cut.
    */
   "findings-left-out",
+  /**
+   * Issue #2569 — the code pass reached its dollar ceiling
+   * (`ANALYSIS_CODE_PASS_MAX_USD`) and stopped. What it found stands; the
+   * requirements it did not settle are `could-not-verify`, never gaps.
+   * {@link AnalysisCapability.codePassCostCeiling} carries the figures.
+   */
+  "code-pass-cost-ceiling",
 ] as const;
 export type AnalysisCapabilityReason = (typeof ANALYSIS_CAPABILITY_REASONS)[number];
 
@@ -3477,6 +3489,12 @@ export interface AnalysisCapability {
   codePassModeReason?: CodePassModeReason;
   /** Issue #2565 — each agentic code pass's spend and ending, in run order. */
   codePassOutcomes?: CodePassOutcome[];
+  /**
+   * Issue #2569 — the code pass's dollar ceiling, when it stopped a pass
+   * (`reached`) or a call could not be priced (`cost-ceiling-unpriced`).
+   * Absent otherwise (and on every run persisted before #2569).
+   */
+  codePassCostCeiling?: CodePassCostCeilingRecord;
   /** Derived, enumerated degradation reasons. Empty ⇒ fully capable run. */
   reasons: AnalysisCapabilityReason[];
 }
@@ -3630,6 +3648,8 @@ export interface CapabilityReasonInput {
   codeInvestigationUnreached?: CodeInvestigationGap;
   /** #1143 — citations an agent wrote that were dropped as malformed. */
   droppedCitations?: readonly AnalysisDroppedCitations[];
+  /** #2569 — the code pass's dollar ceiling refused a model call. */
+  codePassCostCeilingReached?: boolean;
   /** #2233 — requirements a stage left out at its limit. */
   requirementsLeftOut?: readonly RequirementsLeftOutNotice[];
   /** #2233 — findings cut from an agent's answer. */
@@ -3878,6 +3898,10 @@ export function deriveCapabilityReasons(input: CapabilityReasonInput): AnalysisC
       if (!gap || gap.unreached > 0) reasons.push("code-investigation-cut-short");
       else if ((gap.inconclusive ?? 0) > 0) reasons.push("code-investigation-inconclusive");
     }
+    // #2569 — the dollar ceiling stopped the code pass. Its unreached
+    // requirements also raise `code-investigation-cut-short` above, which
+    // carries the Continue offer.
+    if (input.codePassCostCeilingReached) reasons.push("code-pass-cost-ceiling");
   }
   if (input.databaseAnalysisRequested && !input.schemaContextEnabled) {
     reasons.push("schema-context-disabled");
