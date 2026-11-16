@@ -8,8 +8,9 @@
  *
  * The selection shown is always the server's: it is read from
  * `GET /api/projects/:id` (`codeExploration` and `codeExplorationResolved`),
- * and a failed save puts the saved value back. With `auto` the card names the
- * platform default the server resolved.
+ * through the settings page's own project query, and a failed save puts the
+ * saved value back. With `auto` the card names the platform default the
+ * server resolved, and names none when the server sent none.
  *
  * The copy is written for a business analyst and is tested to stay free of
  * implementation words. The measured gain is hedged to the product it was
@@ -19,7 +20,8 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { CodeExplorationSetting, CodePassMode } from "@metis/shared";
 import { ApiError } from "@/lib/api-client";
-import { projectsApi } from "@/lib/projects-api";
+import { REQUIRES_PROJECT_UPDATE } from "@/lib/permission-hints";
+import { codeExplorationStateOf, projectsApi } from "@/lib/projects-api";
 import { queryKeys } from "@/lib/query-keys";
 import { useTransientFlag } from "@/hooks/use-transient-toast";
 import { Button } from "@/components/ui/button";
@@ -58,10 +60,13 @@ const MODE_LABEL: Record<CodePassMode, string> = { explore: "Thorough", fast: "F
 
 export function CodeExplorationSettingsCard({ projectId, canEdit }: Props) {
   const qc = useQueryClient();
-  const queryKey = queryKeys.projects.codeExploration(projectId);
+  // The settings page's own project query (same key and fetch): the card
+  // reads its part with `select`, so the page sends one GET, not two.
+  const queryKey = queryKeys.projects.detail(projectId);
   const { data, isLoading, error } = useQuery({
     queryKey,
-    queryFn: () => projectsApi.getCodeExploration(projectId),
+    queryFn: () => projectsApi.get(projectId),
+    select: codeExplorationStateOf,
     enabled: Boolean(projectId),
   });
 
@@ -82,7 +87,6 @@ export function CodeExplorationSettingsCard({ projectId, canEdit }: Props) {
       setFormError(null);
       showSaved();
       qc.invalidateQueries({ queryKey });
-      qc.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
     },
     onError: (err: unknown) => {
       clearSaved();
@@ -160,7 +164,8 @@ export function CodeExplorationSettingsCard({ projectId, canEdit }: Props) {
               </label>
             ))}
           </fieldset>
-          {data.setting === "auto" ? (
+          {/* No resolved default from the server: name none rather than guess one. */}
+          {data.setting === "auto" && data.resolved ? (
             <p className="text-xs font-medium" data-testid="code-exploration-platform-default">
               Platform default: {MODE_LABEL[data.resolved.mode]}
             </p>
@@ -183,7 +188,7 @@ export function CodeExplorationSettingsCard({ projectId, canEdit }: Props) {
                 className="text-xs text-muted-foreground"
                 data-testid="code-exploration-permission-hint"
               >
-                Requires project.update
+                {REQUIRES_PROJECT_UPDATE}
               </span>
             ) : null}
           </div>

@@ -2,13 +2,16 @@
  * #2567 — the analysis depth card (Thorough / Fast / platform default).
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useQuery } from "@tanstack/react-query";
 import {
   ANALYSIS_DEPTH_OPTIONS,
   CodeExplorationSettingsCard,
 } from "@/components/projects/code-exploration-settings-card";
 import { ApiError } from "@/lib/api-client";
-import type { CodeExplorationState } from "@/lib/projects-api";
+import { REQUIRES_PROJECT_UPDATE } from "@/lib/permission-hints";
+import { projectsApi, type CodeExplorationState } from "@/lib/projects-api";
+import { queryKeys } from "@/lib/query-keys";
 import { makeWrapper } from "./test-utils";
 
 vi.mock("@/lib/api-client", async (orig) => ({
@@ -31,7 +34,7 @@ function project(state: CodeExplorationState) {
     createdAt: "",
     updatedAt: "",
     codeExploration: state.setting,
-    codeExplorationResolved: state.resolved,
+    ...(state.resolved ? { codeExplorationResolved: state.resolved } : {}),
   };
 }
 
@@ -49,6 +52,13 @@ function serve(gets: CodeExplorationState[], patch: () => Promise<unknown> = asy
 }
 
 const patches = () => fetchMock.mock.calls.filter(([, init]) => init?.method === "PATCH");
+
+/**
+ * Let a mutation that was started run: TanStack's `mutate` calls `mutationFn`
+ * after a tick, not synchronously, so a "no PATCH" check made straight after a
+ * click would pass whether or not the click started one.
+ */
+const settle = () => act(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
 
 const AUTO_FAST: CodeExplorationState = {
   setting: "auto",
@@ -149,14 +159,44 @@ describe("CodeExplorationSettingsCard", () => {
     renderCard(false);
     await waitFor(() => expect(radio("auto").checked).toBe(true));
     expect(screen.getByTestId("code-exploration-permission-hint")).toHaveTextContent(
-      "Requires project.update",
+      REQUIRES_PROJECT_UPDATE,
     );
     for (const value of ["explore", "fast", "auto"]) expect(radio(value)).toBeDisabled();
     const save = screen.getByTestId("code-exploration-save-button");
     expect(save).toBeDisabled();
     fireEvent.click(radio("fast"));
     fireEvent.click(save);
+    await settle();
     expect(patches()).toHaveLength(0);
+  });
+
+  it("with auto and no resolved default from the server, names no platform default", async () => {
+    serve([{ setting: "auto" }]);
+    renderCard();
+    await waitFor(() => expect(radio("auto").checked).toBe(true));
+    expect(screen.queryByTestId("code-exploration-platform-default")).toBeNull();
+    expect(screen.queryByText(/Platform default/)).toBeNull();
+  });
+
+  it("reads the project through the settings page's query: one GET for page and card", async () => {
+    serve([FAST]);
+    const Wrapper = makeWrapper({});
+    function Page() {
+      // What the settings page runs (`page.tsx`): the project detail query.
+      useQuery({
+        queryKey: queryKeys.projects.detail("proj_1"),
+        queryFn: () => projectsApi.get("proj_1"),
+      });
+      return <CodeExplorationSettingsCard projectId="proj_1" canEdit />;
+    }
+    render(
+      <Wrapper>
+        <Page />
+      </Wrapper>,
+    );
+    await waitFor(() => expect(radio("fast").checked).toBe(true));
+    await settle();
+    expect(fetchMock.mock.calls.filter(([url]) => url === "/projects/proj_1")).toHaveLength(1);
   });
 
   it("a failed save shows an error and leaves the saved choice selected", async () => {
@@ -189,8 +229,9 @@ describe("CodeExplorationSettingsCard", () => {
       container.textContent ?? "",
       ...ANALYSIS_DEPTH_OPTIONS.flatMap((o) => [o.label, o.description]),
     ].join(" ");
+    // Whole words only: "return" or "management" are not "turn" or "agent".
     for (const word of ["agent", "token", "turn", "recall"]) {
-      expect(copy.toLowerCase()).not.toContain(word);
+      expect(copy).not.toMatch(new RegExp(`\\b${word}s?\\b`, "i"));
     }
     // The measured gain is hedged to the product it was measured on.
     expect(copy).toContain("On a real product we tested");

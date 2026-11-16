@@ -55,7 +55,6 @@ export const queryKeys = {
     /** Epic #882 (#894) — resolved sql-lineage state. */
     sqlLineage: (id: string) => [...queryKeys.projects.all, "sql-lineage", id] as const,
     /** #2567 — the analysis depth (code exploration) setting. */
-    codeExploration: (id: string) => [...queryKeys.projects.all, "code-exploration", id] as const,
   },
   documents: {
     all: ["documents"] as const,
