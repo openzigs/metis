@@ -54,7 +54,10 @@ import {
   CodeCitationRepoNamesContext,
   useCodeCitationRepo,
 } from "@/components/findings/code-citation-repo-context";
-import { DerivationBadge } from "@/components/findings/derivation-badge";
+import {
+  DerivationBadge,
+  UNBACKED_VERIFICATION_STATUSES,
+} from "@/components/findings/derivation-badge";
 import { PersonaTag } from "@/components/findings/persona-tag";
 import { agentSourcePersonas } from "@/components/findings/agent-source-persona";
 import { DeepDiveDialog, type DeepDiveDialogFinding } from "@/components/findings/deep-dive-dialog";
@@ -1865,6 +1868,10 @@ export default function AnalysisPage(): React.ReactElement {
                                   derivation={f.derivation}
                                   confidence={f.confidence}
                                   agentResultId={f.agentResultId}
+                                  // #2593 — no "90%" beside a check that did not back it.
+                                  withholdConfidence={UNBACKED_VERIFICATION_STATUSES.has(
+                                    f.verificationStatus ?? "",
+                                  )}
                                   onReview={
                                     // #2548 — nothing to review on a restricted placeholder.
                                     f.derivation === "ambiguous" && !f.restricted

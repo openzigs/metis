@@ -473,3 +473,73 @@ describe("ChangedRequirementGroup — ruled-out column proposals (#1051)", () =>
     expect(screen.queryByTestId("unchecked-column-proposals")).not.toBeInTheDocument();
   });
 });
+
+// #2593 — "no tables" is not "no database change" when the database was never read.
+describe("ChangedRequirementGroup database-not-checked note (#2593)", () => {
+  const table: ImpactAffectedTableView = {
+    id: "t-1",
+    objectKind: "table",
+    tableName: "api_keys",
+    columnName: null,
+    columnType: null,
+    changeKind: "reference",
+    suggestedDdl: null,
+    source: "mybatis",
+    reconciliation: "matched",
+    confidence: 0.6,
+    relevanceTier: "likely",
+    relevanceRationale: null,
+  };
+
+  it("shows when the run did not read the database and the card lists no table", () => {
+    render(<ChangedRequirementGroup item={item("strong")} databaseConnected={false} />);
+    expect(screen.getByTestId("database-not-checked")).toHaveTextContent(
+      "Database impact not checked (no database connection)",
+    );
+  });
+
+  it("gives schema analysis being off as the reason when the run was started without it", () => {
+    render(
+      <ChangedRequirementGroup
+        item={item("strong")}
+        databaseConnected={false}
+        databaseNotCheckedReason="schema-off"
+      />,
+    );
+    const note = screen.getByTestId("database-not-checked");
+    expect(note).toHaveTextContent(
+      "Database impact not checked (schema analysis was off for this run)",
+    );
+    expect(note).not.toHaveTextContent("no database connection");
+  });
+
+  it("does not show over a card that lists a table, primary or tangential", () => {
+    const { unmount } = render(
+      <ChangedRequirementGroup
+        item={item("strong", { affectedTables: [table] })}
+        databaseConnected={false}
+      />,
+    );
+    expect(screen.queryByTestId("database-not-checked")).not.toBeInTheDocument();
+    unmount();
+    render(
+      <ChangedRequirementGroup
+        item={item("strong", {
+          affectedTablesSecondary: [{ ...table, relevanceTier: "unlikely" }],
+        })}
+        databaseConnected={false}
+      />,
+    );
+    expect(screen.queryByTestId("database-not-checked")).not.toBeInTheDocument();
+  });
+
+  it("does not show when the database was read, or when it is unknown", () => {
+    const { unmount } = render(
+      <ChangedRequirementGroup item={item("strong")} databaseConnected={true} />,
+    );
+    expect(screen.queryByTestId("database-not-checked")).not.toBeInTheDocument();
+    unmount();
+    render(<ChangedRequirementGroup item={item("strong")} />);
+    expect(screen.queryByTestId("database-not-checked")).not.toBeInTheDocument();
+  });
+});

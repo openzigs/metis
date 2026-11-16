@@ -1257,7 +1257,7 @@ After METIS ingests a repository for **Code Discovery**, you can view a determin
 Every finding on a project's analysis page now carries a **derivation badge** that tells you how METIS arrived at that finding:
 
 - **EXTRACTED** (green check) — pulled directly from a comment, JSDoc, or docstring in the source. Confidence is implicit at 1.0 and not shown.
-- **INFERRED N%** (yellow sparkle) — the LLM inferred this finding; the percentage is the model's reported confidence rounded to a whole number. Hover the badge for the raw confidence to two decimals and the originating agent run id.
+- **INFERRED N%** (yellow sparkle) — the LLM inferred this finding; the percentage is the model's reported confidence rounded to a whole number. Hover the badge for the raw confidence to two decimals and the originating agent run id. When the code check did not back the finding (**Could not verify**, **Unverified** or **Not checked against code**), the badge reads **INFERRED** with no percentage: the number is only the model's own rating, and the check did not confirm it. The tooltip still gives it. [#2593]
 - **AMBIGUOUS** (orange question-mark) — METIS could not unambiguously attribute the finding to a single source. Hover for the same metadata, and click **Review** to record an audit acknowledgement that a human looked at it.
 
 The **Review** action only opens the dialog; the underlying finding row is never mutated. METIS records who reviewed it and when via the audit log so you can always reconstruct the chain of custody.
@@ -2940,7 +2940,16 @@ dependencies).
 3. Select **two or more projects** to compare the change against. Each project's
    source must already be ingested into the code graph.
 4. Click **Run impact analysis**. METIS starts the run and opens the results
-   view, which updates automatically as the analysis completes.
+   view, which updates automatically as the analysis completes. Its header
+   leads with what the change touches: *"2 requirements · 7 files to edit · 1
+   project"*, counted the same way as each requirement's card and the markdown
+   export. Below it, **Reach** gives every code symbol the graph walk touched
+   (callers, importers, related code): material to review, not the size of the
+   change. The header also shows what the run's model calls cost, from the same
+   ledger as **Usage & cost** (*"Cost (as recorded): $0.4700"*). A run made
+   before this release reads *"Cost: none recorded for this run"*. On a change
+   request, each impact run lists the number of requirements it affected.
+   [#2593]
 5. The report is grouped **per project**. For each impacted requirement you see a
    **severity** badge and **impact score**, and the affected code as two lists:
    - **Files to edit** — a short list of the files the change most likely has to
@@ -2994,6 +3003,21 @@ dependencies).
 
    With every one of those options off, the card looks exactly as described
    above.
+
+   **Low-confidence match.** A card warns *"Low-confidence match — results may
+   be incomplete"* when the requirement's wording matched code poorly. The
+   export prints the same warning and the same grade (**Match quality**), from
+   the same source. When the code agent's citations led most of the files to
+   edit, a match spread across several areas is not a weak match, and no warning
+   shows. If they led only a few, the warning stays.
+
+   **Database impact not checked.** When the project has no database connection
+   (or the run could not read it), a card that lists no affected table says
+   *"Database impact not checked (no database connection)"*, and the summaries
+   never say the impact is confined to code. Connect the project's database to
+   have it checked. A run started with schema analysis turned off says
+   *"Database impact not checked (schema analysis was off for this run)"*
+   instead. [#2593]
 6. Projects with nothing to show are listed together below the report, in a
    collapsed **Not affected or not checked** group, each with what happened:
    **Checked: nothing affected** (METIS searched it and nothing matched),

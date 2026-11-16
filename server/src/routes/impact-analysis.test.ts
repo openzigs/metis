@@ -58,9 +58,16 @@ vi.mock("../lib/impact-analysis/impact-analysis-engine.js", async () => {
 
 const listImpactAnalyses = vi.fn(async () => []);
 const getImpactAnalysisDetail = vi.fn(async () => null as unknown);
+// #2593 — the detail route adds the run's cost from the usage ledger.
+const readImpactRunCost = vi.fn(async (_id: string, _projectIds: readonly string[]) => ({
+  calls: 3,
+  costUsd: 0.47,
+  unpricedTokens: 0,
+}));
 vi.mock("../lib/impact-analysis/impact-analysis-read.js", () => ({
   listImpactAnalyses,
   getImpactAnalysisDetail,
+  readImpactRunCost,
 }));
 
 // #963 — the export + Jira-publish routes resolve project display names / Jira
@@ -373,6 +380,22 @@ describe("impact-analyses router", () => {
       const res = await request(app).get("/impact-analyses/ia-1");
       expect(res.status).toBe(200);
       expect(res.body.data.id).toBe("ia-1");
+      // #2593 — with the run's cost, summed over the run's own projects.
+      expect(readImpactRunCost).toHaveBeenCalledWith("ia-1", ["project-001", "project-002"]);
+      expect(res.body.data.cost).toEqual({ calls: 3, costUsd: 0.47, unpricedTokens: 0 });
+    });
+
+    it("reads the cost once the run has settled, not on every poll of a running run", async () => {
+      for (const status of ["pending", "running"]) {
+        getImpactAnalysisDetail.mockResolvedValue({ ...detail, status });
+        const res = await request(app).get("/impact-analyses/ia-1");
+        expect(res.status).toBe(200);
+        expect(res.body.data.cost).toBeNull();
+      }
+      expect(readImpactRunCost).not.toHaveBeenCalled();
+      getImpactAnalysisDetail.mockResolvedValue({ ...detail, status: "failed" });
+      const res = await request(app).get("/impact-analyses/ia-1");
+      expect(res.body.data.cost).toEqual({ calls: 3, costUsd: 0.47, unpricedTokens: 0 });
     });
 
     it("returns 404 when the analysis does not exist", async () => {

@@ -17,6 +17,11 @@
  */
 import {
   IMPACT_TIER_LABEL,
+  impactCountLabel,
+  impactDatabaseNotCheckedLabel,
+  impactMatchCaveat,
+  impactReachLabel,
+  impactRunHeadline,
   impactRepoCount,
   impactSymbolRole,
   impactSymbolTier,
@@ -229,10 +234,14 @@ function summarySection(input: HandoffInput, t: TextHelpers): string[] {
   lines.push(
     summary ? block(summary, HANDOFF_MAX_TEXT * 2) : "*No summary was written for this run.*",
   );
+  // #2593 — the requirements and files to edit lead, counted as the page and
+  // the markdown export count them; the symbol count is the reach to review.
+  const headline = impactRunHeadline(detail.items);
   const facts = [
-    `${detail.projectIds.length} project(s) checked`,
-    `${detail.items.length} requirement change(s) with code impact`,
-    `${detail.totalImpactedSymbols} impacted symbol(s)`,
+    `${impactCountLabel(detail.projectIds.length, "project")} checked`,
+    `${impactCountLabel(headline.requirementCount, "requirement")} with code impact`,
+    `${impactCountLabel(headline.editFileCount, "file")} to edit`,
+    impactReachLabel(detail.totalImpactedSymbols),
   ];
   if (changeRequest) {
     const approved = changeRequest.requirements.filter((r) => r.approved).length;
@@ -299,6 +308,12 @@ function affectedCodeSection(input: HandoffInput, t: TextHelpers): string[] {
     return lines;
   }
   const multiProject = detail.projectIds.length > 1;
+  // #2593 — the projects whose database the run did not read, and why.
+  const notChecked = new Map(
+    (detail.projectOutcomes ?? [])
+      .filter((o) => o.databaseConnected === false)
+      .map((o) => [o.projectId, o.databaseNotCheckedReason] as const),
+  );
   detail.items.forEach((item, i) => {
     const project = multiProject
       ? ` (${inline(projectNames[item.projectId] ?? item.projectId, 120)})`
@@ -308,6 +323,9 @@ function affectedCodeSection(input: HandoffInput, t: TextHelpers): string[] {
       `*${inline(item.changeType, 40)} · severity ${inline(item.severity, 20)} · ` +
         `${item.affectedFileCount} file(s), ${item.affectedSymbolCount} symbol(s)*`,
     );
+    // #2593 — the low-confidence caveat in the page's and the export's words.
+    const caveat = impactMatchCaveat(item);
+    if (caveat) lines.push(`> **${caveat}**`);
     if (item.summary?.trim()) lines.push(block(item.summary));
 
     const edits = item.affectedSymbols.filter((s) => impactSymbolRole(s) === "edit-candidate");
@@ -341,6 +359,9 @@ function affectedCodeSection(input: HandoffInput, t: TextHelpers): string[] {
       const more =
         tables.length > HANDOFF_MAX_TABLES ? ` and ${tables.length - HANDOFF_MAX_TABLES} more` : "";
       lines.push(`**Tables:** ${shown}${more}`);
+    } else if (notChecked.has(item.projectId) && item.affectedTablesSecondary.length === 0) {
+      // #2593 — "no tables" is not "no database change" when the database was never read.
+      lines.push(`*${impactDatabaseNotCheckedLabel(notChecked.get(item.projectId))}.*`);
     }
 
     const radius = item.affectedSymbols.length - edits.length;

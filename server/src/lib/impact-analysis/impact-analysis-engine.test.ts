@@ -1698,9 +1698,22 @@ describe("executeImpactAnalysis — #1609 records an outcome for every project",
     const final = calls.filter(([a]) => a.data.status !== "running").at(-1);
     return final?.[0].data.projects;
   };
-  const write = (projectId: string, outcome: string, outcomeReason: string | null = null) => ({
+  // #2593 — a searched project also records whether its database was read.
+  const write = (
+    projectId: string,
+    outcome: string,
+    outcomeReason: string | null = null,
+    databaseConnected?: boolean,
+    // Why not, when it was not read: no connection unless a test says otherwise.
+    databaseNotCheckedReason: string = "no-connection",
+  ) => ({
     where: { projectId },
-    data: { outcome, outcomeReason },
+    data: {
+      outcome,
+      outcomeReason,
+      ...(databaseConnected === undefined ? {} : { databaseConnected }),
+      ...(databaseConnected === false ? { databaseNotCheckedReason } : {}),
+    },
   });
 
   it("writes affected, checked-none-affected and restricted on the completed run, and never searches a restricted project", async () => {
@@ -1720,8 +1733,8 @@ describe("executeImpactAnalysis — #1609 records an outcome for every project",
     expect(analyses.get("ia-o")?.status).toBe("completed");
     expect(finalProjectsWrite(prisma)).toEqual({
       updateMany: [
-        write("proj-1", "affected"),
-        write("proj-2", "checked-none-affected"),
+        write("proj-1", "affected", null, false),
+        write("proj-2", "checked-none-affected", null, false),
         write("proj-3", "not-checked", "restricted"),
       ],
     });
@@ -1746,7 +1759,10 @@ describe("executeImpactAnalysis — #1609 records an outcome for every project",
 
     expect(analyses.get("ia-d")?.status).toBe("completed");
     expect(finalProjectsWrite(prisma)).toEqual({
-      updateMany: [write("proj-1", "affected"), write("proj-2", "not-checked", "deleted")],
+      updateMany: [
+        write("proj-1", "affected", null, false),
+        write("proj-2", "not-checked", "deleted"),
+      ],
     });
     expect(mapRequirement.mock.calls.map((c) => c[1])).toEqual(["proj-1"]);
   });
@@ -1766,7 +1782,7 @@ describe("executeImpactAnalysis — #1609 records an outcome for every project",
 
     expect(analyses.get("ia-f")?.status).toBe("failed");
     expect(finalProjectsWrite(prisma)).toEqual({
-      updateMany: [write("proj-1", "affected"), write("proj-2", "error")],
+      updateMany: [write("proj-1", "affected", null, false), write("proj-2", "error")],
     });
   });
 
@@ -1787,6 +1803,160 @@ describe("executeImpactAnalysis — #1609 records an outcome for every project",
     expect(analyses.get("ia-x")?.status).toBe("failed");
     expect(mapRequirement).not.toHaveBeenCalled();
     expect(finalProjectsWrite(prisma)).toEqual({ updateMany: [write("proj-1", "error")] });
+  });
+
+  // #2593 — a project whose database schema the run read records true; one
+  // with no database connection false, and the summarizer is told which.
+  it("#2593 records whether each searched project's database was read, and tells the summarizer", async () => {
+    const { prisma, analyses } = serviceePrismaMock();
+    analyses.set("ia-db", { id: "ia-db", sourceText: "text", documentId: null });
+    const introspector = vi.fn(async (projectId: string) =>
+      projectId === "proj-1" ? new LiveSchemaIndex([]) : null,
+    );
+    const summarizeItem = vi.fn(async () => ({ summary: null, applied: true, grounded: true }));
+    const summarizeRun = vi.fn(async () => ({ summary: null, applied: true, grounded: true }));
+    await executeImpactAnalysis("ia-db", ["proj-1", "proj-2"], {
+      prisma: prisma as never,
+      extractor: ONE_CHANGE,
+      mapRequirement: async () => [HIT],
+      dataSourceFor: () => mockDataSource(GRAPH),
+      liveIndexIntrospectorFor: introspector,
+      impactSummarizer: { summarizeItem, summarizeRun },
+    });
+
+    expect(finalProjectsWrite(prisma)).toEqual({
+      updateMany: [
+        write("proj-1", "affected", null, true),
+        write("proj-2", "affected", null, false),
+      ],
+    });
+    const itemFacts = summarizeItem.mock.calls.map((c) => {
+      const f = (
+        c as unknown as [{ databaseConnected?: boolean; databaseNotCheckedReason?: string }]
+      )[0];
+      return [f.databaseConnected, f.databaseNotCheckedReason];
+    });
+    expect(itemFacts).toEqual([
+      [true, undefined],
+      [false, "no-connection"],
+    ]);
+    const runFacts = (
+      summarizeRun.mock.calls[0] as unknown as [{ items: Array<{ databaseConnected?: boolean }> }]
+    )[0];
+    expect(runFacts.items.map((i) => i.databaseConnected)).toEqual([true, false]);
+  });
+
+  it("#2593 records false for every project when the schema dimension is off, with that as the reason", async () => {
+    const { prisma, analyses } = serviceePrismaMock();
+    analyses.set("ia-off", { id: "ia-off", sourceText: "text", documentId: null });
+    const introspector = vi.fn(async () => new LiveSchemaIndex([]));
+    const summarizeItem = vi.fn(async () => ({ summary: null, applied: true, grounded: true }));
+    const summarizeRun = vi.fn(async () => ({ summary: null, applied: true, grounded: true }));
+    await executeImpactAnalysis("ia-off", ["proj-1"], {
+      prisma: prisma as never,
+      extractor: ONE_CHANGE,
+      mapRequirement: async () => [HIT],
+      dataSourceFor: () => mockDataSource(GRAPH),
+      includeSchemaImpact: false,
+      liveIndexIntrospectorFor: introspector,
+      impactSummarizer: { summarizeItem, summarizeRun },
+    });
+    expect(introspector).not.toHaveBeenCalled();
+    // Not "no database connection": the project has one; the run did not look.
+    expect(finalProjectsWrite(prisma)).toEqual({
+      updateMany: [write("proj-1", "affected", null, false, "schema-off")],
+    });
+    expect(summarizeItem.mock.calls[0]).toMatchObject([
+      { databaseConnected: false, databaseNotCheckedReason: "schema-off" },
+    ]);
+    expect(summarizeRun.mock.calls[0]).toMatchObject([
+      { items: [{ databaseConnected: false, databaseNotCheckedReason: "schema-off" }] },
+    ]);
+  });
+
+  it("#2593 flushes the run's usage writes before it writes the completed status", async () => {
+    const { prisma, analyses } = serviceePrismaMock();
+    analyses.set("ia-flush", { id: "ia-flush", sourceText: "text", documentId: null });
+    const order: string[] = [];
+    let release!: () => void;
+    const pendingMeter = new Promise<void>((r) => (release = r));
+    const update = prisma.impactAnalysis.update as ReturnType<typeof vi.fn>;
+    const inner = update.getMockImplementation() as (args: unknown) => Promise<unknown>;
+    update.mockImplementation(async (args: { data: { status?: string } }) => {
+      if (args.data.status) order.push(`status:${args.data.status}`);
+      return inner(args);
+    });
+    const summarizeRun = vi.fn(async () => {
+      // The run-summary call's ledger write is still in flight when it returns.
+      setTimeout(() => {
+        order.push("metered");
+        release();
+      }, 5);
+      return { summary: null, applied: true, grounded: true };
+    });
+    await executeImpactAnalysis("ia-flush", ["proj-1"], {
+      prisma: prisma as never,
+      extractor: ONE_CHANGE,
+      mapRequirement: async () => [HIT],
+      dataSourceFor: () => mockDataSource(GRAPH),
+      impactSummarizer: {
+        summarizeItem: async () => ({ summary: null, applied: true, grounded: true }),
+        summarizeRun,
+      },
+      flushLlmUsage: () => pendingMeter,
+    });
+    expect(order.indexOf("metered")).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf("metered")).toBeLessThan(order.indexOf("status:completed"));
+  });
+
+  it("#2593 flushes before the failed status too, and a flush error never fails the run", async () => {
+    const { prisma, analyses } = serviceePrismaMock();
+    analyses.set("ia-flush-f", { id: "ia-flush-f", sourceText: "text", documentId: null });
+    const flushLlmUsage = vi.fn(async () => {
+      throw new Error("ledger down");
+    });
+    await executeImpactAnalysis("ia-flush-f", ["proj-1"], {
+      prisma: prisma as never,
+      extractor: ONE_CHANGE,
+      mapRequirement: async () => [HIT],
+      dataSourceFor: () => mockDataSource(GRAPH),
+      flushLlmUsage,
+    });
+    expect(analyses.get("ia-flush-f")?.status).toBe("completed");
+    expect(flushLlmUsage).toHaveBeenCalledTimes(1);
+
+    const failing = serviceePrismaMock();
+    failing.analyses.set("ia-flush-x", { id: "ia-flush-x", sourceText: "text", documentId: null });
+    const flushOnFail = vi.fn(async () => {});
+    await executeImpactAnalysis("ia-flush-x", ["proj-1"], {
+      prisma: failing.prisma as never,
+      extractor: ONE_CHANGE,
+      mapRequirement: async () => {
+        throw new Error("seed failed");
+      },
+      dataSourceFor: () => mockDataSource(GRAPH),
+      flushLlmUsage: flushOnFail,
+    });
+    expect(failing.analyses.get("ia-flush-x")?.status).toBe("failed");
+    expect(flushOnFail).toHaveBeenCalledTimes(1);
+  });
+
+  it("#2593 binds the run's model usage to the run before anything else", async () => {
+    const { prisma, analyses } = serviceePrismaMock();
+    analyses.set("ia-bind", { id: "ia-bind", sourceText: "text", documentId: null });
+    const order: string[] = [];
+    await executeImpactAnalysis("ia-bind", ["proj-1"], {
+      prisma: prisma as never,
+      extractor: ONE_CHANGE,
+      mapRequirement: async () => {
+        order.push("seed");
+        return [HIT];
+      },
+      dataSourceFor: () => mockDataSource(GRAPH),
+      bindLlmUsageToRun: (runId) => order.push(`bind:${runId}`),
+    });
+    expect(order[0]).toBe("bind:ia-bind");
+    expect(order).toContain("seed");
   });
 });
 

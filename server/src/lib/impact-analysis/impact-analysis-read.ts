@@ -20,8 +20,10 @@ import type {
   ImpactNotCheckedReason,
   ImpactProjectOutcome,
   ImpactProjectOutcomeKind,
+  ImpactRunCost,
   ImpactSeedEvidence,
   ImpactSymbolRepoRef,
+  ImpactDatabaseNotCheckedReason,
   ImpactTableConsumerView,
   ImpactTableFeedbackVerdict,
   ImpactTableFeedbackView,
@@ -33,10 +35,12 @@ import {
   CHANGE_TYPES,
   DDL_CHANGE_KINDS,
   DDL_RISK_CLASSES,
-  deriveMatchQualityDetailed,
+  deriveImpactItemMatchQuality,
   impactFileLists,
+  impactRequirementKey,
   IMPACT_CONSUMER_RESOLUTIONS,
   IMPACT_CONSUMER_USAGES,
+  IMPACT_DATABASE_NOT_CHECKED_REASONS,
   IMPACT_NOT_CHECKED_REASONS,
   IMPACT_PROJECT_OUTCOMES,
   IMPACT_TABLE_FEEDBACK_VERDICTS,
@@ -46,6 +50,7 @@ import {
   USAGE_OBJECT_KINDS,
 } from "@metis/shared";
 import { isTestFilePath } from "../analysis/traceability-matrix.js";
+import { sumLedgerUsage, type LedgerTotals } from "../finops/ledger-totals.js";
 import { prisma as defaultPrisma } from "../prisma.js";
 
 /**
@@ -112,7 +117,16 @@ const ITEM_INCLUDE = {
 const DETAIL_INCLUDE = {
   ...ITEM_INCLUDE,
   // #1609 — with each project's recorded outcome.
-  projects: { select: { projectId: true, outcome: true, outcomeReason: true } },
+  // #2593 — and whether the run read its database.
+  projects: {
+    select: {
+      projectId: true,
+      outcome: true,
+      outcomeReason: true,
+      databaseConnected: true,
+      databaseNotCheckedReason: true,
+    },
+  },
 } satisfies Prisma.ImpactAnalysisInclude;
 
 /**
@@ -123,7 +137,13 @@ const DETAIL_INCLUDE = {
  */
 export function toProjectOutcomes(
   projectIds: readonly string[],
-  rows: readonly { projectId: string; outcome?: string | null; outcomeReason?: string | null }[],
+  rows: readonly {
+    projectId: string;
+    outcome?: string | null;
+    outcomeReason?: string | null;
+    databaseConnected?: boolean | null;
+    databaseNotCheckedReason?: string | null;
+  }[],
 ): ImpactProjectOutcome[] {
   const byProject = new Map(rows.map((r) => [r.projectId, r]));
   const out: ImpactProjectOutcome[] = [];
@@ -137,7 +157,26 @@ export function toProjectOutcomes(
       (IMPACT_NOT_CHECKED_REASONS as readonly string[]).includes(row.outcomeReason)
         ? (row.outcomeReason as ImpactNotCheckedReason)
         : null;
-    out.push({ projectId, outcome: outcome as ImpactProjectOutcomeKind, reason });
+    out.push({
+      projectId,
+      outcome: outcome as ImpactProjectOutcomeKind,
+      reason,
+      // #2593 — only for a project the run searched; absent (unknown) before #2593.
+      ...(outcome !== "not-checked" && typeof row.databaseConnected === "boolean"
+        ? { databaseConnected: row.databaseConnected }
+        : {}),
+      // And why not, from the shared vocabulary only.
+      ...(outcome !== "not-checked" &&
+      row.databaseConnected === false &&
+      (IMPACT_DATABASE_NOT_CHECKED_REASONS as readonly (string | null | undefined)[]).includes(
+        row.databaseNotCheckedReason,
+      )
+        ? {
+            databaseNotCheckedReason:
+              row.databaseNotCheckedReason as ImpactDatabaseNotCheckedReason,
+          }
+        : {}),
+    });
   }
   return out;
 }
@@ -467,10 +506,13 @@ function toItemView(item: RawItem): ImpactItemView {
   // from the persisted DIRECT (seed) confidences+paths. The direct affected
   // symbols ARE the seed matches, so this reproduces the engine-time
   // computation byte-for-byte with no migration.
-  const { quality: matchQuality, reason: matchQualityReason } = deriveMatchQualityDetailed(
+  // #2593 — through the same seed evidence the engine graded with.
+  const evidence = seedEvidenceOf(item.seedEvidence);
+  const { quality: matchQuality, reason: matchQualityReason } = deriveImpactItemMatchQuality(
     item.affectedSymbols
       .filter((s) => s.relation === "direct")
       .map((s) => ({ confidence: s.confidence, filePath: s.filePath })),
+    evidence.seedEvidence,
   );
 
   return {
@@ -495,7 +537,7 @@ function toItemView(item: RawItem): ImpactItemView {
     affectedFileCount: item.affectedFileCount,
     affectedSymbolCount: item.affectedSymbolCount,
     summary: item.summary ?? null,
-    ...seedEvidenceOf(item.seedEvidence),
+    ...evidence,
     // #962 — split the blast radius into PRODUCTION code vs the project's own
     // TEST files (per the shared `isTestFilePath` heuristic). Test files appear
     // in the radius as callers/importers of the changed code; grouping them out
@@ -1052,7 +1094,9 @@ export async function listImpactAnalyses(
     orderBy: { startedAt: "desc" },
     take: opts.limit ?? 100,
     include: {
-      items: { select: { projectId: true } },
+      // #2593 — and the requirement, so a list row can say how many were affected.
+      // The title too: an untracked change in two projects is one requirement.
+      items: { select: { id: true, projectId: true, requirementId: true, requirementTitle: true } },
       projects: { select: { projectId: true } },
     },
   });
@@ -1095,12 +1139,56 @@ export async function listImpactAnalyses(
       projectCount: projectIds.length,
       projectIds: accessible ? projectIds.filter((id) => accessible.has(id)) : projectIds,
       totalImpactedSymbols: row.totalImpactedSymbols,
+      // #2593 — counted over the projects this reader can see, as `projectIds` is.
+      requirementCount: affectedRequirementCount(
+        accessible ? row.items.filter((i) => accessible.has(i.projectId)) : row.items,
+      ),
       startedAt: row.startedAt.toISOString(),
       completedAt: row.completedAt ? row.completedAt.toISOString() : null,
       // #965 — drift lineage: null for originals, the parent run id for re-runs.
       rerunOfId: row.rerunOfId ?? null,
       sourceAnalysisId: (row as { sourceAnalysisId?: string | null }).sourceAnalysisId ?? null,
     }));
+}
+
+/**
+ * #2593 — the distinct requirements among a run's items, by
+ * `impactRequirementKey`: a requirement once however many projects it reached.
+ * `impactRunHeadline` counts the detail page's figure the same way.
+ */
+function affectedRequirementCount(
+  items: ReadonlyArray<{
+    id: string;
+    requirementId?: string | null;
+    requirementTitle?: string | null;
+  }>,
+): number {
+  return new Set(items.map(impactRequirementKey)).size;
+}
+
+/**
+ * #2593 — what a run's model calls cost, from the usage ledger: the calls billed
+ * to the run's session (its id, `ImpactLlmRuntime.bindRun`) in the given
+ * projects — the run's, every one of which the detail reader can read. Read
+ * from the same rows, by the same sum, as Usage & cost. `null` when the ledger
+ * could not be read: accounting never fails the detail.
+ */
+export async function readImpactRunCost(
+  runId: string,
+  projectIds: readonly string[],
+  sum: (where: Prisma.TokenUsageWhereInput) => Promise<LedgerTotals> = sumLedgerUsage,
+): Promise<ImpactRunCost | null> {
+  if (projectIds.length === 0) return { calls: 0, costUsd: null, unpricedTokens: 0 };
+  try {
+    const t = await sum({ sessionId: runId, projectId: { in: [...projectIds] } });
+    return {
+      calls: t.calls,
+      costUsd: t.calls === 0 ? null : t.costUsd,
+      unpricedTokens: t.unpricedTokens,
+    };
+  } catch {
+    return null;
+  }
 }
 
 /** Fetch the full per-project breakdown for one analysis, or null if missing. */

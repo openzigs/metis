@@ -239,7 +239,7 @@ describe("impact analysis on a document (#2231)", () => {
         "> The portal shall lock an account after five failed attempts.",
     );
     const summary = String(analyses.get("ia")?.summary);
-    expect(summary).toContain("from 2 change(s).");
+    expect(summary).toMatch(/^2 change\(s\) across 1 project\(s\)\. /);
     expect(summary).toContain(
       "\n\nThe model read the document (4 sections) and found 1 requirement, 1 business rule; each is analysed as one change.",
     );

@@ -118,7 +118,10 @@ import { isDocumentReaderEnabled } from "../lib/document-reader/flag.js";
 import { readDocumentOnce, type ReadingCacheDeps } from "../lib/document-reader/reading-cache.js";
 import type { AIProvider } from "../lib/ai/types.js";
 import { createChildLogger } from "../lib/logger.js";
-import { listImpactAnalyses } from "../lib/impact-analysis/impact-analysis-read.js";
+import {
+  listImpactAnalyses,
+  readImpactRunCost,
+} from "../lib/impact-analysis/impact-analysis-read.js";
 import {
   assertHasRequirements,
   changeRequestRef,
@@ -599,6 +602,8 @@ export function impactRunDeps(
     ...(tableRecoveryJudge ? { tableRecoveryJudge } : {}),
     ...(impactSummarizer ? { impactSummarizer } : {}),
     llmDegradationNotice: () => runtime.degradationNotice(),
+    bindLlmUsageToRun: (runId) => runtime.bindRun(runId),
+    flushLlmUsage: () => runtime.flush(),
     liveIndexIntrospectorFor,
   };
 }
@@ -1373,7 +1378,15 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
         detail.projectIds,
         userSourceReader(actor.id),
       );
-      res.json(ok({ ...detail, changeRequest }));
+      // #2593 — what the run cost, over its projects (every one readable here).
+      // Read once the run has settled: the page polls a running run every 2 s,
+      // and the ledger has no index on the session, so each read scans the
+      // projects' usage. The engine flushes the run's ledger writes first.
+      const cost =
+        detail.status === "completed" || detail.status === "failed"
+          ? await readImpactRunCost(detail.id, detail.projectIds)
+          : null;
+      res.json(ok({ ...detail, changeRequest, cost }));
     } catch (err) {
       next(asAppError(err));
     }

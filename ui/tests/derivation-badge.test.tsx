@@ -4,7 +4,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { DerivationBadge } from "@/components/findings/derivation-badge";
+import {
+  DerivationBadge,
+  UNBACKED_VERIFICATION_STATUSES,
+} from "@/components/findings/derivation-badge";
 import { expectAccessibleModal } from "./a11y/modal-dialog";
 
 describe("<DerivationBadge />", () => {
@@ -159,5 +162,37 @@ describe("<DerivationBadge />", () => {
     expect(extractedHtml).not.toBe(inferredHtml);
     expect(extractedHtml).not.toBe(ambiguousHtml);
     expect(inferredHtml).not.toBe(ambiguousHtml);
+  });
+});
+
+// #2593 — "INFERRED 90%" beside "Could not verify" read as two verdicts at odds.
+describe("<DerivationBadge /> withholdConfidence (#2593)", () => {
+  it("drops the percentage, and the tooltip says why", () => {
+    render(
+      <DerivationBadge
+        derivation="inferred"
+        confidence={0.9}
+        agentResultId="ar_9"
+        withholdConfidence
+      />,
+    );
+    const badge = screen.getByTestId("derivation-badge-inferred");
+    expect(badge).toHaveTextContent(/^INFERRED$/);
+    expect(badge.textContent).not.toMatch(/%/);
+    expect(badge.getAttribute("title")).toMatch(/rated it 0\.90/);
+    expect(badge.getAttribute("title")).toMatch(/code check did not back it/);
+  });
+
+  it("keeps the percentage when the check backed the finding", () => {
+    render(<DerivationBadge derivation="inferred" confidence={0.9} agentResultId="ar_9" />);
+    expect(screen.getByTestId("derivation-badge-inferred")).toHaveTextContent("INFERRED 90%");
+  });
+
+  it("names the statuses under which the check did not back a finding", () => {
+    for (const s of ["could-not-verify", "unverified", "ungrounded"]) {
+      expect(UNBACKED_VERIFICATION_STATUSES.has(s)).toBe(true);
+    }
+    expect(UNBACKED_VERIFICATION_STATUSES.has("confirmed")).toBe(false);
+    expect(UNBACKED_VERIFICATION_STATUSES.has("")).toBe(false);
   });
 });

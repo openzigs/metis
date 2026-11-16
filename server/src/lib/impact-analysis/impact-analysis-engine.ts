@@ -16,10 +16,11 @@
  */
 import type { PrismaClient } from "@prisma/client";
 import {
-  deriveMatchQualityDetailed,
+  deriveImpactItemMatchQuality,
   impactFileKey,
   impactSeedEvidenceSchema,
   type ImpactAffectedRelation,
+  type ImpactDatabaseNotCheckedReason,
   type ImpactNotCheckedReason,
   type ImpactProjectOutcomeKind,
   type ImpactSeedEvidence,
@@ -895,10 +896,13 @@ export async function computeProjectImpact(
       return impactFileKey({ filePath: s.filePath, repo: repoId ? { id: repoId } : null });
     }),
   );
-  const { quality: matchQuality, reason: matchQualityReason } = deriveMatchQualityDetailed(
+  // #2593 — through the seed evidence, as the read path does: cited files that
+  // led the files to edit are not a scattered word match.
+  const { quality: matchQuality, reason: matchQualityReason } = deriveImpactItemMatchQuality(
     affectedSymbols
       .filter((s) => s.relation === "direct")
       .map((s) => ({ confidence: s.confidence, filePath: s.filePath })),
+    seedEvidence,
   );
 
   // #1005 — CLAUSE-vs-IMPACT reconciliation. Runs LAST, over the FINAL surfaced
@@ -1417,6 +1421,19 @@ export interface ImpactServiceDeps {
    */
   llmDegradationNotice?: () => string | null;
   /**
+   * #2593 — told the run's id before any model call, so the calls are billed
+   * to it and the detail can show what the run cost (`ImpactLlmRuntime.bindRun`).
+   * Absent ⇒ the calls are billed as before, and the run shows no cost.
+   */
+  bindLlmUsageToRun?: (runId: string) => void;
+  /**
+   * #2593 — awaited before the run is marked completed or failed, so every
+   * model call's usage row is written by then: the page stops polling at a
+   * terminal status and reads the run's cost once (`ImpactLlmRuntime.flush`).
+   * Absent ⇒ nothing is awaited.
+   */
+  flushLlmUsage?: () => Promise<void>;
+  /**
    * #1609 — whether the run's starter may still open `projectId` once the run
    * is executing. The run executes after the route answered, so access can
    * change in between. Anything but `accessible` is recorded `not-checked` with
@@ -1439,6 +1456,26 @@ export type ProjectExecutionAccess = "accessible" | "restricted" | "deleted";
 interface ProjectOutcomeRecord {
   outcome: ImpactProjectOutcomeKind;
   reason: ImpactNotCheckedReason | null;
+  /** #2593 — the run read the project's database schema; unset when it never searched it. */
+  databaseConnected?: boolean;
+  /** #2593 — why not, when {@link databaseConnected} is `false`. */
+  databaseNotCheckedReason?: ImpactDatabaseNotCheckedReason;
+}
+
+/**
+ * #2593 — await the run's in-flight usage writes before its terminal status is
+ * written. Accounting never fails the run: a flush error is logged and dropped.
+ */
+async function flushLlmUsage(deps: ImpactServiceDeps, id: string): Promise<void> {
+  if (!deps.flushLlmUsage) return;
+  try {
+    await deps.flushLlmUsage();
+  } catch (err) {
+    log.warn("impact LLM usage flush failed; the run's cost may be short", {
+      id,
+      error: String(err),
+    });
+  }
 }
 
 /**
@@ -1451,7 +1488,14 @@ function projectOutcomeWrites(outcomes: ReadonlyMap<string, ProjectOutcomeRecord
   return {
     updateMany: [...outcomes].map(([projectId, o]) => ({
       where: { projectId },
-      data: { outcome: o.outcome, outcomeReason: o.reason },
+      data: {
+        outcome: o.outcome,
+        outcomeReason: o.reason,
+        ...(o.databaseConnected === undefined ? {} : { databaseConnected: o.databaseConnected }),
+        ...(o.databaseNotCheckedReason === undefined
+          ? {}
+          : { databaseNotCheckedReason: o.databaseNotCheckedReason }),
+      },
     })),
   };
 }
@@ -1931,6 +1975,8 @@ async function runImpactAnalysis(
   deps: ImpactServiceDeps = {},
 ): Promise<void> {
   const prisma = resolvePrisma(deps);
+  // #2593 — before the document is read: that is a model call too.
+  deps.bindLlmUsageToRun?.(id);
   // #1036 — an issue is read as ONE change with sub-aspects; anything else keeps
   // the heuristic splitter (the shape-aware extractor falls back to it).
   const extractor = deps.extractor ?? shapeAwareChangeExtractor;
@@ -2133,6 +2179,17 @@ async function runImpactAnalysis(
         }
       }
       const liveIndexForProject = deps.liveIndexFor ?? (() => liveIndex);
+      // #2593 — whether this project's database schema was read at all. Without
+      // it, "no affected tables" says nothing about the database, and the page
+      // and the summaries must not read it as "no database change".
+      const databaseConnected = schemaImpactOn && liveIndexForProject(projectId) !== null;
+      // And why not: a run started with schema analysis off never looks, which
+      // is not the same as a project with no database connection.
+      const databaseNotCheckedReason: ImpactDatabaseNotCheckedReason | undefined = databaseConnected
+        ? undefined
+        : schemaImpactOn
+          ? "no-connection"
+          : "schema-off";
 
       for (const change of changes) {
         const result = await computeProjectImpact(change, projectId, {
@@ -2253,6 +2310,8 @@ async function runImpactAnalysis(
               confidence: result.confidence,
               matchQuality: result.matchQuality,
               matchQualityReason: result.matchQualityReason,
+              databaseConnected,
+              ...(databaseNotCheckedReason ? { databaseNotCheckedReason } : {}),
               affectedFileCount: result.affectedFileCount,
               affectedSymbolCount: result.affectedSymbolCount,
               affectedSymbols: result.affectedSymbols.map((s) => ({
@@ -2286,6 +2345,8 @@ async function runImpactAnalysis(
           severity: result.severity,
           changeType: result.changeType,
           affectedSymbolCount: result.affectedSymbolCount,
+          databaseConnected,
+          ...(databaseNotCheckedReason ? { databaseNotCheckedReason } : {}),
           // #984 — hand the run-level summarizer TABLE-granular facts ranked by
           // #936 relevance tier, not the raw per-column rows: a tangential table
           // with many referenced columns must not lead the executive overview
@@ -2474,6 +2535,8 @@ async function runImpactAnalysis(
       outcomes.set(projectId, {
         outcome: projectAffected ? "affected" : "checked-none-affected",
         reason: null,
+        databaseConnected,
+        ...(databaseNotCheckedReason ? { databaseNotCheckedReason } : {}),
       });
     }
     currentProjectId = null;
@@ -2481,7 +2544,11 @@ async function runImpactAnalysis(
     // Deterministic run-level overview (always available). #932 — when the LLM
     // summarizer is wired and produces a GROUNDED overview, prefer it; otherwise
     // fall back to this deterministic sentence (non-blocking, never throws).
-    const deterministicSummary = `Impacted ${totalImpactedSymbols} symbol(s) across ${projectIds.length} project(s) from ${changes.length} change(s).`;
+    // #2593 — it leads with the changes, as the page header does; the symbol
+    // count is the reach to review, not the size of the change.
+    const deterministicSummary =
+      `${changes.length} change(s) across ${projectIds.length} project(s). ` +
+      `Reach: ${totalImpactedSymbols} code symbol(s) to review; not each one changes.`;
     let summary = deterministicSummary;
     // #1021 — the run overview spans every project, so it belongs to a single
     // project only when the run has exactly one. Otherwise its tokens are billed
@@ -2541,6 +2608,7 @@ async function runImpactAnalysis(
         log.warn("impact LLM degradation notice failed; omitting", { id, error: String(err) });
       }
     }
+    await flushLlmUsage(deps, id);
     await prisma.impactAnalysis.update({
       where: { id },
       data: {
@@ -2566,6 +2634,7 @@ async function runImpactAnalysis(
     if (currentProjectId !== null && !outcomes.has(currentProjectId)) {
       outcomes.set(currentProjectId, { outcome: "error", reason: null });
     }
+    await flushLlmUsage(deps, id);
     await prisma.impactAnalysis.update({
       where: { id },
       data: {

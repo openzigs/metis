@@ -342,6 +342,53 @@ export function deriveMatchQualityDetailed(seeds: readonly MatchQualitySeed[]): 
 }
 
 /**
+ * #2593 — an impact item's match quality: {@link deriveMatchQualityDetailed}
+ * over its direct seeds, except that a `scattered` grade does not stand when
+ * the code agent's citations led the files to edit: more than half of the
+ * direct seeds' distinct files (`agentCitations.led`).
+ *
+ * `scattered` says the requirement's WORDS matched near-tied code across
+ * unrelated areas, so the files to edit may be off-target. Cited files are not
+ * a word match: the code agent read the code and named them for this
+ * requirement. Yet they enter the seed set at the citation's own confidence,
+ * five or more of them near-tied across the files a feature really spans — the
+ * exact shape the word-match rule reads as scattered. The banner then said
+ * "results may be incomplete" over a short, correct list (2026-11-16 walkthrough).
+ * Such an item reads `moderate`: no banner, and no claim of a standout match.
+ *
+ * The engine and the read path both call this, over the same direct seeds and
+ * the same seed evidence, so the summarizer's caveat and the page's banner
+ * cannot disagree.
+ */
+export function deriveImpactItemMatchQuality(
+  seeds: readonly MatchQualitySeed[],
+  evidence: { agentCitations?: { led: number } } | null | undefined,
+): MatchQualityResult {
+  const result = deriveMatchQualityDetailed(seeds);
+  if (result.reason !== "scattered") return result;
+  // A majority, not any: one cited file leading five scattered word matches
+  // leaves the list mostly word matches, and the caveat stands.
+  const led = evidence?.agentCitations?.led ?? 0;
+  const seedFiles = new Set(seeds.map((s) => s.filePath)).size;
+  return led * 2 > seedFiles ? { quality: "moderate", reason: null } : result;
+}
+
+/**
+ * #2593 — the low-confidence caveat an impact item carries, or `null` when its
+ * match is not weak. The page's banner and the markdown export both print this,
+ * so the two say the same thing, from the same grade.
+ */
+export function impactMatchCaveat(item: {
+  matchQuality: MatchQuality;
+  matchQualityReason: MatchQualityReason;
+}): string | null {
+  if (item.matchQuality !== "weak") return null;
+  return item.matchQualityReason === "scattered"
+    ? "Low-confidence match — the requirement matched code across several unrelated areas; results may be incomplete."
+    : "Low-confidence match — the requirement didn't clearly name an entity/screen; results may be incomplete. Consider naming the feature, table, or module.";
+}
+
+/**
  * #961/#994 — thin back-compat wrapper over {@link deriveMatchQualityDetailed}
  * for callers that only need the bare {@link MatchQuality} (e.g. the impact-recall
  * eval harness's reported-not-scored metric).
@@ -919,6 +966,12 @@ export interface ImpactAnalysisSummary {
    */
   projectIds: string[];
   totalImpactedSymbols: number;
+  /**
+   * #2593 — the requirements the run found code impact for, among the projects
+   * the reader can see: what a list row leads with instead of the symbol reach.
+   * Absent on a summary built without it.
+   */
+  requirementCount?: number;
   startedAt: string;
   completedAt: string | null;
   /**
@@ -1000,7 +1053,25 @@ export interface ImpactProjectOutcome {
   outcome: ImpactProjectOutcomeKind;
   /** Set only when `outcome === "not-checked"`; null otherwise. */
   reason: ImpactNotCheckedReason | null;
+  /**
+   * #2593 — whether the run read this project's database schema through a
+   * database connector. `false`: it did not (no connector, or it could not be
+   * read), so "no affected tables" is not a finding that the change needs no
+   * database work. Absent (unknown) for a run recorded before #2593 and for a
+   * project the run did not search.
+   */
+  databaseConnected?: boolean;
+  /** #2593 — why, when {@link databaseConnected} is `false`; absent otherwise. */
+  databaseNotCheckedReason?: ImpactDatabaseNotCheckedReason;
 }
+
+/**
+ * #2593 — why a run did not read a project's database: it had no database
+ * connection (no connector, or it could not be read), or the run was started
+ * with schema analysis turned off.
+ */
+export const IMPACT_DATABASE_NOT_CHECKED_REASONS = ["no-connection", "schema-off"] as const;
+export type ImpactDatabaseNotCheckedReason = (typeof IMPACT_DATABASE_NOT_CHECKED_REASONS)[number];
 
 /** Full per-project breakdown for `GET /api/impact-analyses/:id`. */
 export interface ImpactAnalysisDetail {
@@ -1055,6 +1126,23 @@ export interface ImpactAnalysisDetail {
    * none, or it was deleted since. Set by the detail route only.
    */
   changeRequest?: ChangeRequestRef | null;
+  /**
+   * #2593 — what the run's model calls cost, from the usage ledger the Usage &
+   * cost page reads (`token_usages`, the calls billed to this run's session).
+   * `costUsd` is unrounded; `null` when none of the calls was priced. Absent or
+   * `null` when the ledger could not be read, and while the run is pending or
+   * running (it is read once the run settles). Set by the detail route only.
+   */
+  cost?: ImpactRunCost | null;
+}
+
+/** #2593 — an impact run's model spend; see {@link ImpactAnalysisDetail.cost}. */
+export interface ImpactRunCost {
+  /** Model calls billed to the run. 0 for a run that made none, or one recorded before #2593. */
+  calls: number;
+  costUsd: number | null;
+  /** Tokens the ledger holds unpriced — unknown spend, never $0. */
+  unpricedTokens: number;
 }
 
 // ---- Re-run + drift (#965) -------------------------------------------------

@@ -1464,6 +1464,15 @@ jobs:
           scripts/ci/postgres-rollback-2566-seed.sql
           "SELECT id || ':' || name FROM projects WHERE id LIKE 'p-2566-%' ORDER BY id"
 
+      # #2593 — the impact run's databaseConnected rollback: the seeded run's
+      # per-project outcomes survive both directions.
+      - name: Postgres rollback round trip (impact_analysis_projects.databaseConnected, #2593)
+        run: >-
+          bash scripts/ci/postgres-rollback-roundtrip.sh
+          20261203002593_issue2593_impact_database_connected impact_analysis_projects databaseConnected
+          scripts/ci/postgres-rollback-2593-seed.sql
+          "SELECT \"projectId\" || ':' || outcome FROM impact_analysis_projects WHERE \"analysisId\" = 'ia-2593' ORDER BY \"projectId\""
+
       - name: Remove the Postgres container
         if: always()
         run: docker rm -f "metis-ci-postgres-${GITHUB_JOB}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null 2>&1 || true

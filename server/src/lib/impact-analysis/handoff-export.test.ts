@@ -223,8 +223,44 @@ describe("serializeHandoffMarkdown — #2595", () => {
     );
     expect(md).toContain("One project, one requirement change.");
     expect(md).toContain("- 2 requirement(s) in the change request, 1 approved");
-    expect(md).toContain("- 1 requirement change(s) with code impact");
-    expect(md).toContain("- 4 impacted symbol(s)");
+    // #2593 — requirements and files to edit lead; the symbols are the reach.
+    expect(md).toContain("- 1 requirement with code impact");
+    expect(md).toMatch(/- \d+ files? to edit/);
+    expect(md).toContain(
+      "- Reach: 4 code symbols — the callers and related code to review; not each one changes.",
+    );
+    expect(md).not.toContain("impacted symbol(s)");
+  });
+
+  it("#2593 carries the low-confidence caveat and the database-not-checked note", () => {
+    const md = section(
+      render({
+        detail: detail({
+          items: [
+            item({
+              matchQuality: "weak",
+              matchQualityReason: "scattered",
+              affectedTables: [],
+              affectedTablesSecondary: [],
+            }),
+          ],
+          projectOutcomes: [
+            {
+              projectId: "project-001",
+              outcome: "affected",
+              reason: null,
+              databaseConnected: false,
+              databaseNotCheckedReason: "schema-off",
+            },
+          ],
+        }),
+      }),
+      "Affected files and code citations",
+    );
+    expect(md).toContain(
+      "> **Low-confidence match — the requirement matched code across several unrelated areas; results may be incomplete.**",
+    );
+    expect(md).toContain("*Database impact not checked (schema analysis was off for this run).*");
   });
 
   it("says so when the run wrote no summary, and when it failed", () => {
