@@ -934,6 +934,72 @@ items and second run, then apply this rule unchanged.
     figure: 53 `token_usages` rows, none of them unpriced.
   - No call was lost to a timeout, and no 429, 402, quota or billing error occurred.
 
+### Production explore (A21) on the fixture portfolio, 2026-11-16 (#2587)
+
+#2568 left condition 3 unmeasured, for lack of budget. This run measures it as #2568
+pre-registered it: arms `A0,A3A,A21`, `--reference A3A`, one run of
+`localization-02-fixture-portfolio` (15 items), `claude-sonnet-5-5`. The owner capped it at
+**$4.00**. The estimate before the run was about $3.5, from #2560's fixture rates ($0.132 per
+item on A3A, $0.139 on A20), with A21 costing about what A20 did.
+
+```bash
+pnpm eval:localization --corpus localization-02-fixture-portfolio --arms A0,A3A,A21 \
+  --reference A3A --runs 1 --budget 4.0 --embed --items 0:3      # then 3:6 … 12:15 with --resume <dir>
+pnpm eval:localization --merge <dir> --arms A0,A3A,A21 --reference A3A --md
+```
+
+The last slice stopped at the cap. The runner's look-ahead refused A21's pass on FX-15
+(`$3.9235 spent + up to $0.1795 next > $4`). That leaves 15 A3A items and 14 A21 items,
+paired on 14.
+
+| Fixture, `claude-sonnet-5-5`, 14 paired items × 1 run | A3A | A21 | Δ A21 − A3A (95% CI) |
+|---|---:|---:|---:|
+| Recall@5 (mean over each arm's items) | 0.87 (15) | 0.90 (14) | **+0.000 [0.00, 0.00]**, p = 1.000 |
+| Recall@10 | 1.00 | 1.00 | +0.000 (no signal: the graph holds 10 files) |
+| Edit precision | 0.23 | 0.24 | +0.005 [−0.00, 0.01], p = 0.16 |
+| MRR | 0.73 | 0.71 | +0.000 [0.00, 0.00] |
+| Turns / tool calls per pass | 2.5 / 5.2 | 4.0 / 11.4 | |
+| Cost per item | $0.117 | $0.155 | +33% |
+| Wall time per item | 50 s | 65 s | |
+| Passes degraded | 0 of 45 | 0 of 42 | |
+| Tokens per pass / effective budget | 2,240 / 98,902 (2%, max 3%) | 3,015 / 98,902 (3%, max 5%) | |
+| Cache reads, share of prompt tokens | 75% | 82% | |
+| Repeated identical tool calls | 0 | 13 (0.3 per pass) | |
+
+The unpaired means differ (0.87 against 0.90) only because A3A's include FX-15 (0.50). On the
+14 paired items, A21 and A3A score the same Recall@5 and MRR on every item. Against A0, A21
+reads Recall@5 +0.357 [0.18, 0.54] and A3A +0.333 [0.17, 0.50]. FX-13, the item A20 lost to a
+`refusal` in #2560, scored 1.00 on both arms. As with A20, A21 cited more files that are not in
+the graph (119 of 182 resolved, against 132 of 154), and the resolve step drops those.
+
+**The missing item cannot change condition 3.** If A21 had scored 0 on FX-15, where A3A scored
+0.50, the 15-item Δ would be −0.033, which still meets the −0.07 bar.
+
+**The pre-registered rule over all five conditions** (#2568, unchanged):
+
+| # | Condition | Result | Held? |
+|---|---|---|---|
+| 1 | Miniflux Recall@5 Δ ≥ +0.10, CI excluding 0 | +0.180 [0.04, 0.34] (#2568; 19 items × 1 run) | yes |
+| 2 | Miniflux edit precision Δ ≥ −0.05 | +0.068 (#2568) | yes |
+| 3 | Fixture portfolio Recall@5 Δ ≥ −0.07 | +0.000 [0.00, 0.00] (14 paired items; at worst −0.033 over 15) | **yes** |
+| 4 | Mean cost per item ≤ $0.20; live code pass ≤ 2× fast | Miniflux $0.128, fixture $0.155; live 1.55× (#2568) | yes |
+| 5 | Degraded share of A21 passes ≤ A3A's + 5 points | Miniflux 0% / 0%, fixture 0% / 0% | yes |
+
+**Result: the rule holds, so the platform default of `ANALYSIS_CODE_EXPLORATION` is now
+`explore` (#2587).** Exploring first finds about a fifth more of the files a change edits on a
+real repository, and on the 10-file fixture portfolio it neither helps nor hurts. It costs about
+1.55× fast for a live five-requirement analysis ($0.57 against $0.37) and takes about 1.35× as
+long (216 s against 160 s). Two caveats stay open. Condition 1 rests on #2568's partial
+Miniflux run (19 items × 1 run, not 24 × 2). And with more requirements in one pass the turn cap
+may bind first, so watch the `turn-limit` count on the `loops:` line. The kill switch is
+unchanged. Set `ANALYSIS_CODE_EXPLORATION=fast` for the platform, or set a project to **Fast**
+(#2566 / #2567).
+
+- **Spend: $3.9235 recorded**, under the $4.00 cap: A3A $1.7505 and A21 $2.1731, from the run
+  meter, which prices every call at the usage-ledger rates. The agent passes write no
+  `token_usages` (as in #2560 and #2568). The eval database's ledger has no row from this run.
+  No call was lost to a timeout, and no 429, 402, quota or billing error occurred.
+
 ### Rebuilding a corpus
 
 ```bash

@@ -386,6 +386,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
 
       it("a project's explore setting wins over a fast platform", async () => {
+        // #2587 — the platform default is explore now, so a fast platform is set.
+        process.env.ANALYSIS_CODE_EXPLORATION = "fast";
+        __resetConfigSingleton();
         await (state.db as PrismaClient).project.update({
           where: { id: B },
           data: { codeExploration: "explore" },
@@ -401,6 +404,28 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
             data: { codeExploration: "auto" },
           });
         }
+      });
+
+      it("#2587 — no key and no project setting: the GET and a code pass both read explore", async () => {
+        delete process.env.ANALYSIS_CODE_EXPLORATION;
+        __resetConfigSingleton();
+        await (state.db as PrismaClient).project.update({
+          where: { id: B },
+          data: { codeExploration: "auto" },
+        });
+        await freshClient();
+        const read = await request(app())
+          .get(`/api/projects/${B}`)
+          .set("Authorization", token(BEN, "coordinator", ["ws-b"]));
+        expect(read.body.data).toMatchObject({
+          codeExploration: "auto",
+          codeExplorationResolved: { mode: "explore", reason: "platform-default" },
+        });
+        expect(await codePassSnapshot(B)).toMatchObject({
+          codePassMode: "explore",
+          codePassModeReason: "platform-default",
+          codePassOutcomes: [expect.objectContaining({ mode: "explore" })],
+        });
       });
 
       it("a failed project read degrades to the platform default, not fast, and the pass still runs", async () => {

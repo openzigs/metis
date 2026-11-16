@@ -986,7 +986,8 @@ When a project has a **code graph** (from deep-ingest) and the document agent ex
 
 **Explore-first mode (#2565, epic #2564).** The agentic code pass runs in one of two
 modes, picked by the tunable platform key `ANALYSIS_CODE_EXPLORATION` (`explore | fast`,
-default `fast` until #2568 re-measures; `fast` is the kill switch) and built in one place,
+default `explore` since #2587, after #2568's pre-registered rule held on all five conditions;
+`fast` is the kill switch, per platform or per project) and built in one place,
 `server/src/lib/analysis/code-pass-variant.ts`, which the localization eval's A20 arm
 (`server/src/lib/eval/localization/agent-pass.ts`) imports, so the eval measures this pass.
 
@@ -999,6 +1000,7 @@ default `fast` until #2568 re-measures; `fast` is the kill switch) and built in 
 | Continuation | #1388's (≤ 2 nudges) | `EXPLORER_NUDGE` once if the model answers before any tool call, then #1388's (≤ 3 nudges in all) |
 | Turns, token budget, signal, caching, final-answer retry | production's | production's, unchanged (`resolveAgenticMaxTurns`, `ANALYSIS_AGENT_TOKEN_BUDGET` via `agenticPassEffectiveBudget`) |
 | Measured cost (A20 vs A3A, Miniflux, 24 items, `claude-sonnet-5-5`) | $0.082 / item, 28 s | $0.120 / item (+46%), 35 s; Recall@5 0.66 → 0.85, edit precision unchanged |
+| Measured through production's pass (A21 vs A3A, #2568 / #2587, `claude-sonnet-5-5`) | Miniflux $0.066 / item; fixture $0.117 | Miniflux $0.128 / item, Recall@5 0.66 → 0.84; fixture $0.155, Recall@5 Δ 0.00; live five-requirement analysis 1.55× fast's cost, 1.35× its time |
 
 `explore` needs a working tree, so a pass with no clone runs `fast`
 (`resolveCodePassMode` → reason `no-working-tree`). An escalated run's deep and standard

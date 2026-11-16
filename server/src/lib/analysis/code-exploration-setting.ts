@@ -8,8 +8,12 @@ import { getConfigService } from "../config/config-service.js";
 
 /** The platform key that picks the mode (`explore | fast`). */
 export const CODE_EXPLORATION_KEY = "ANALYSIS_CODE_EXPLORATION";
-/** The platform default until #2568 re-measures and flips it. */
-export const DEFAULT_CODE_PASS_MODE: CodePassMode = "fast";
+/**
+ * The platform default: `explore` since #2587, once #2568's pre-registered rule
+ * held on all five conditions (eval-data/README.md, "Production explore (A21)").
+ * `fast` stays the kill switch: set the key, or a project's own setting (#2566).
+ */
+export const DEFAULT_CODE_PASS_MODE: CodePassMode = "explore";
 
 /** The platform key's mode; an unset or unknown value is the default. */
 export function readCodeExplorationSetting(): CodePassMode {

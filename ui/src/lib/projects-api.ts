@@ -59,7 +59,7 @@ export interface Project {
  * #2567 — a project's analysis depth setting and what it resolves to, read off
  * `GET /projects/:id` (#2566's `ProjectCodeExplorationState`). `resolved` is
  * absent when the server sent none (an older server): the client does not
- * guess the platform default, which #2568 may change.
+ * guess the platform default, which an administrator may change (#2587 made it explore).
  */
 export type CodeExplorationState = Omit<ProjectCodeExplorationState, "resolved"> & {
   resolved?: ProjectCodeExplorationState["resolved"];
