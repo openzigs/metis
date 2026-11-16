@@ -233,7 +233,9 @@ function ImpactAnalysisDetailView({
             data-testid="impact-publish-jira"
             disabled={!canExport || publishMutation.isPending}
             onClick={() => {
-              publishMutation.reset();
+              // Clear only a failed attempt: a success keeps its "Published
+              // KEY" link until the next publish starts (onConfirm resets).
+              if (publishMutation.isError) publishMutation.reset();
               setPublishOpen(true);
             }}
           >
@@ -319,8 +321,10 @@ function ImpactAnalysisDetailView({
         pending={publishMutation.isPending}
         publishError={publishMutation.error}
         onConfirm={() => {
-          if (publishPreview.data && !publishPreview.isFetching) {
-            publishMutation.mutate(publishPreview.data.project.id);
+          const p = publishPreview.data;
+          if (p && !publishPreview.isFetching && !p.blockedReason) {
+            publishMutation.reset();
+            publishMutation.mutate(p.project.id);
           }
         }}
       />

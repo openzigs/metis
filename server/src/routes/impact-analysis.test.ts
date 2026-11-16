@@ -88,7 +88,11 @@ const projectFindMany = vi.fn(
         id,
         name: projectNameRows.find((p) => p.id === id)?.name ?? id,
         jiraProjectKey: "IMP",
-        jiraPublishConnection: { baseUrl: "https://jira.example.com", deletedAt: null },
+        jiraPublishConnection: {
+          baseUrl: "https://jira.example.com",
+          deletedAt: null,
+          status: "ok",
+        },
       }));
     }
     if (args?.select?.name) return projectNameRows;
@@ -637,6 +641,7 @@ describe("impact-analyses router", () => {
         jiraSite: "https://jira.example.com",
         title: "Impact analysis: Summary text",
         issuesToCreate: 1,
+        blockedReason: null,
         alreadyPublished: null,
       });
       expect(findImpactAnalysisJiraLink).toHaveBeenCalledWith("ia-1");
@@ -660,8 +665,10 @@ describe("impact-analyses router", () => {
       const res = await request(app).get(url);
       expect(res.status).toBe(200);
       expect(res.body.data.issuesToCreate).toBe(0);
+      expect(res.body.data.blockedReason).toBeNull();
       expect(res.body.data.alreadyPublished).toEqual({
         issueKey: "IMP-1",
+        jiraProjectKey: "IMP",
         url: "https://jira.example.com/browse/IMP-1",
         publishedAt: "2026-11-16T10:00:00.000Z",
       });
@@ -680,6 +687,27 @@ describe("impact-analyses router", () => {
       const res = await request(app).get(url);
       expect(res.status).toBe(200);
       expect(res.body.data.jiraSite).toBeNull();
+      expect(res.body.data.blockedReason).toMatch(/Alpha was removed/);
+    });
+
+    it("blocks a first publish through a connection in an error state", async () => {
+      getImpactAnalysisDetail.mockResolvedValue(detail);
+      projectFindMany.mockImplementationOnce(async () => [
+        {
+          id: "project-001",
+          name: "Alpha",
+          jiraProjectKey: "IMP",
+          jiraPublishConnection: {
+            baseUrl: "https://jira.example.com",
+            deletedAt: null,
+            status: "error",
+          },
+        },
+      ]);
+      const res = await request(app).get(url);
+      expect(res.status).toBe(200);
+      expect(res.body.data.jiraSite).toBe("https://jira.example.com");
+      expect(res.body.data.blockedReason).toMatch(/Alpha is in an error state/);
     });
 
     it("rejects a projectId that is not part of the run with 400", async () => {

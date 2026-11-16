@@ -63,6 +63,9 @@ const PA = "proj-a-2594";
 const PB = "proj-b-2594";
 const RUN = "ia-run-2594";
 const RUN_UNCONFIGURED = "ia-unconf-2594";
+/** C publishes to Jira key `ERR` through a connection whose status is `error`. */
+const PC = "proj-c-2594";
+const RUN_BROKEN = "ia-broken-2594";
 const JIRA_SITE = "https://jira.example.test";
 
 describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
@@ -113,6 +116,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       for (const [id, name] of [
         [PA, "Miniflux Docs"],
         [PB, "Miniflux Server"],
+        [PC, "Miniflux Worker"],
       ] as const) {
         await db.project.create({
           data: { id, name, slug: id, createdById: "alice", workspaceId: WS, status: "active" },
@@ -138,9 +142,27 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         where: { id: PB },
         data: { jiraConnectionId: "jc-2594", jiraProjectKey: "MFX" },
       });
+      await db.jiraConnection.create({
+        data: {
+          id: "jc-2594-err",
+          projectId: PC,
+          label: "Jira (broken)",
+          edition: "cloud",
+          baseUrl: JIRA_SITE,
+          username: "svc",
+          secretId: "sec-2594",
+          status: "error",
+          createdById: "alice",
+        },
+      });
+      await db.project.update({
+        where: { id: PC },
+        data: { jiraConnectionId: "jc-2594-err", jiraProjectKey: "ERR" },
+      });
       for (const [id, projectIds] of [
         [RUN, [PA, PB]],
         [RUN_UNCONFIGURED, [PA]],
+        [RUN_BROKEN, [PC]],
       ] as const) {
         await db.impactAnalysis.create({
           data: {
@@ -175,6 +197,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         jiraSite: JIRA_SITE,
         title: "Impact analysis: Add a reading-time estimate to each entry",
         issuesToCreate: 1,
+        blockedReason: null,
         alreadyPublished: null,
       });
       expect(jiraCreateIssue).not.toHaveBeenCalled();
@@ -202,6 +225,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(again.body.data.issuesToCreate).toBe(0);
       expect(again.body.data.alreadyPublished).toEqual({
         issueKey: "MFX-12",
+        jiraProjectKey: "MFX",
         url: `${JIRA_SITE}/browse/MFX-12`,
         publishedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
       });
@@ -211,6 +235,60 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(second.status).toBe(200);
       expect(second.body.data.issueKey).toBe("MFX-12");
       expect(jiraCreateIssue).toHaveBeenCalledTimes(1);
+    });
+
+    // #2594 review — the preview knows a create would fail on a connection
+    // createJiraIssue refuses, so it says why instead of offering a confirm.
+    it("blocks a first publish through a connection in an error state, and says why", async () => {
+      const res = await preview(RUN_BROKEN);
+      expect(res.status).toBe(200);
+      expect(res.body.data.issuesToCreate).toBe(1);
+      expect(res.body.data.blockedReason).toMatch(/Miniflux Worker.*error state/);
+
+      // What the preview said: the publish itself fails without calling Jira.
+      const post = await publish(RUN_BROKEN, { projectId: PC });
+      expect(post.status).toBeGreaterThanOrEqual(400);
+      expect(jiraCreateIssue).not.toHaveBeenCalled();
+    });
+
+    it("blocks a first publish through a removed connection, and says why", async () => {
+      await db.jiraConnection.update({
+        where: { id: "jc-2594-err" },
+        data: { status: "ok", deletedAt: new Date() },
+      });
+      try {
+        const res = await preview(RUN_BROKEN);
+        expect(res.status).toBe(200);
+        expect(res.body.data.jiraSite).toBeNull();
+        expect(res.body.data.blockedReason).toMatch(/Miniflux Worker.*removed/);
+      } finally {
+        await db.jiraConnection.update({
+          where: { id: "jc-2594-err" },
+          data: { status: "error", deletedAt: null },
+        });
+      }
+    });
+
+    it("names the project a run was published to when today's target differs", async () => {
+      // The run went to OLD before its Jira config changed to ERR.
+      await db.issueLink.create({
+        data: {
+          impactAnalysisId: RUN_BROKEN,
+          provider: "jira",
+          externalId: "OLD-7",
+          externalUrl: `${JIRA_SITE}/browse/OLD-7`,
+          fingerprint: "fp-2594-old",
+        },
+      });
+      const res = await preview(RUN_BROKEN);
+      expect(res.status).toBe(200);
+      expect(res.body.data.jiraProjectKey).toBe("ERR");
+      expect(res.body.data.alreadyPublished).toMatchObject({
+        issueKey: "OLD-7",
+        jiraProjectKey: "OLD",
+      });
+      // A re-publish returns OLD-7 without calling Jira, so nothing blocks it.
+      expect(res.body.data.blockedReason).toBeNull();
     });
   },
 );

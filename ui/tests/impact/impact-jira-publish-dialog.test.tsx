@@ -15,6 +15,7 @@ const preview: ImpactJiraPublishPreview = {
   jiraSite: "https://jira.example.com",
   title: "Impact analysis: Add a reading-time estimate",
   issuesToCreate: 1,
+  blockedReason: null,
   alreadyPublished: null,
 };
 
@@ -63,6 +64,7 @@ describe("ImpactJiraPublishDialog (#2594)", () => {
           issuesToCreate: 0,
           alreadyPublished: {
             issueKey: "MFX-12",
+            jiraProjectKey: "MFX",
             url: "https://jira.example.com/browse/MFX-12",
             publishedAt: "2026-11-16T10:00:00.000Z",
           },
@@ -77,6 +79,62 @@ describe("ImpactJiraPublishDialog (#2594)", () => {
       "https://jira.example.com/browse/MFX-12",
     );
     expect(screen.getByTestId("impact-publish-confirm-count")).toHaveTextContent("0");
+    // The title and button name the issue it has, not a new publish.
+    expect(screen.getByText("Already in Jira as MFX-12")).toBeInTheDocument();
+    expect(screen.queryByText("Publish to Jira project MFX?")).not.toBeInTheDocument();
+    expect(screen.getByTestId("impact-publish-confirm-submit")).toHaveTextContent(
+      "Return existing issue MFX-12",
+    );
+    expect(already).not.toHaveTextContent("which this run would publish to now");
+  });
+
+  it("names the project a run was published to when today's target differs", () => {
+    render(
+      <ImpactJiraPublishDialog
+        {...base}
+        preview={{
+          ...preview,
+          jiraProjectKey: "BBB",
+          issuesToCreate: 0,
+          alreadyPublished: {
+            issueKey: "AAA-12",
+            jiraProjectKey: "AAA",
+            url: "https://jira.example.com/browse/AAA-12",
+            publishedAt: "2026-11-16T10:00:00.000Z",
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText("Already in Jira as AAA-12")).toBeInTheDocument();
+    expect(screen.getByTestId("impact-publish-confirm-already")).toHaveTextContent(
+      "It is in Jira project AAA, not BBB, which this run would publish to now.",
+    );
+    expect(screen.getByTestId("impact-publish-confirm-submit")).toHaveTextContent(
+      "Return existing issue AAA-12",
+    );
+    expect(screen.queryByText(/Publish to BBB/)).not.toBeInTheDocument();
+  });
+
+  it("says why, and offers no confirm, when the connection would refuse the publish", () => {
+    const onConfirm = vi.fn();
+    render(
+      <ImpactJiraPublishDialog
+        {...base}
+        onConfirm={onConfirm}
+        preview={{
+          ...preview,
+          jiraSite: null,
+          blockedReason: "The Jira connection for project Miniflux Server was removed.",
+        }}
+      />,
+    );
+    expect(screen.getByTestId("impact-publish-confirm-blocked")).toHaveTextContent(
+      "The Jira connection for project Miniflux Server was removed.",
+    );
+    const submit = screen.getByTestId("impact-publish-confirm-submit");
+    expect(submit).toBeDisabled();
+    fireEvent.click(submit);
+    expect(onConfirm).not.toHaveBeenCalled();
   });
 
   it("calls onConfirm only when the confirm button is clicked", () => {

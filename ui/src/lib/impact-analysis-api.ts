@@ -47,7 +47,21 @@ export interface ImpactJiraPublishPreview {
   title: string;
   /** 1, or 0 when the run was published before (a re-publish creates nothing). */
   issuesToCreate: number;
-  alreadyPublished: { issueKey: string; url: string; publishedAt: string } | null;
+  /**
+   * Why the publish would fail before it reaches Jira (the connection was
+   * removed or is in an error state), else null. The dialog offers no confirm.
+   */
+  blockedReason: string | null;
+  /**
+   * The issue an earlier publish created. `jiraProjectKey` is the project it is
+   * in, which differs from the top-level key when the run's Jira config changed.
+   */
+  alreadyPublished: {
+    issueKey: string;
+    jiraProjectKey: string;
+    url: string;
+    publishedAt: string;
+  } | null;
 }
 
 export const impactAnalysisApi = {

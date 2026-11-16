@@ -859,7 +859,14 @@ const publishImpactToJiraSchema = z.object({
 async function resolveImpactJiraTarget(
   runProjectIds: readonly string[],
   requestedProjectId: string | undefined,
-): Promise<{ id: string; name: string; jiraProjectKey: string; jiraSite: string | null }> {
+): Promise<{
+  id: string;
+  name: string;
+  jiraProjectKey: string;
+  jiraSite: string | null;
+  /** Why a new issue cannot be created through this connection, else null. */
+  connectionProblem: string | null;
+}> {
   let candidateIds = [...runProjectIds].sort((a, b) => a.localeCompare(b));
   if (requestedProjectId) {
     if (!candidateIds.includes(requestedProjectId)) {
@@ -881,7 +888,7 @@ async function resolveImpactJiraTarget(
       id: true,
       name: true,
       jiraProjectKey: true,
-      jiraPublishConnection: { select: { baseUrl: true, deletedAt: true } },
+      jiraPublishConnection: { select: { baseUrl: true, deletedAt: true, status: true } },
     },
   });
   const byId = new Map(configured.map((p) => [p.id, p]));
@@ -894,12 +901,27 @@ async function resolveImpactJiraTarget(
     );
   }
   const conn = target.jiraPublishConnection;
+  const live = conn && !conn.deletedAt ? conn : null;
+  // Mirrors the checks createJiraIssue (finding-publish-ports.ts) makes before
+  // it calls Jira, so the preview can say up front that a create would fail.
+  const connectionProblem = !live
+    ? `The Jira connection for project ${target.name} was removed. Set one in project settings before publishing to Jira.`
+    : live.status === "error"
+      ? `The Jira connection for project ${target.name} is in an error state. Re-test it in project settings before publishing to Jira.`
+      : null;
   return {
     id: target.id,
     name: target.name,
     jiraProjectKey: target.jiraProjectKey,
-    jiraSite: conn && !conn.deletedAt ? conn.baseUrl : null,
+    jiraSite: live ? live.baseUrl : null,
+    connectionProblem,
   };
+}
+
+/** #2594 — the project key of a Jira issue key (`AAA-12` → `AAA`). */
+function jiraProjectKeyOf(issueKey: string): string {
+  const dash = issueKey.lastIndexOf("-");
+  return dash > 0 ? issueKey.slice(0, dash) : issueKey;
 }
 
 /** #963 — the Jira issue title for a run (plain text). */
@@ -1662,9 +1684,16 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
           jiraSite: target.jiraSite,
           title: impactJiraTitle(detail.summary, id),
           issuesToCreate: existing ? 0 : 1,
+          // A re-publish returns the existing issue without calling Jira, so
+          // a broken connection only blocks the first publish.
+          blockedReason: existing ? null : target.connectionProblem,
           alreadyPublished: existing
             ? {
                 issueKey: existing.issueKey,
+                // The project it went to, read from the key: the run's Jira
+                // config may have changed since, so it can differ from
+                // `jiraProjectKey` (today's target).
+                jiraProjectKey: jiraProjectKeyOf(existing.issueKey),
                 url: existing.url,
                 publishedAt: existing.publishedAt.toISOString(),
               }

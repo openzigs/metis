@@ -13,6 +13,9 @@
  * preview arrives. The confirm button therefore waits for the preview: without
  * it there is nothing to confirm.
  *
+ * A connection the publish would refuse (removed, or in an error state) is
+ * said so up front, with no confirm offered.
+ *
  * A run published before is said so. Publishing it again creates no second
  * issue (the server returns the one it created), and the dialog says that
  * rather than promising a new one.
@@ -55,13 +58,24 @@ export function ImpactJiraPublishDialog({
   onConfirm,
 }: ImpactJiraPublishDialogProps) {
   const published = preview?.alreadyPublished ?? null;
+  const blocked = preview?.blockedReason ?? null;
+  // A published run confirms into the issue it already has, so the title and
+  // button name that issue rather than today's target (#2594 review).
+  const movedFrom =
+    published && preview && published.jiraProjectKey !== preview.jiraProjectKey
+      ? published.jiraProjectKey
+      : null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent data-testid="impact-publish-confirm">
         <DialogHeader>
           <DialogTitle>
-            {preview ? `Publish to Jira project ${preview.jiraProjectKey}?` : "Publish to Jira?"}
+            {published
+              ? `Already in Jira as ${published.issueKey}`
+              : preview
+                ? `Publish to Jira project ${preview.jiraProjectKey}?`
+                : "Publish to Jira?"}
           </DialogTitle>
           <DialogDescription>Nothing is sent to Jira until you confirm.</DialogDescription>
         </DialogHeader>
@@ -110,13 +124,20 @@ export function ImpactJiraPublishDialog({
                 <a
                   href={published.url}
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                   className="font-medium underline"
                 >
                   {published.issueKey}
                 </a>{" "}
-                on {new Date(published.publishedAt).toLocaleDateString()}. Publishing again creates
-                no new issue: it returns {published.issueKey}.
+                on {new Date(published.publishedAt).toLocaleDateString()}.
+                {movedFrom ? (
+                  <>
+                    {" "}
+                    It is in Jira project {movedFrom}, not {preview.jiraProjectKey}, which this run
+                    would publish to now.
+                  </>
+                ) : null}{" "}
+                Publishing again creates no new issue: it returns {published.issueKey}.
               </p>
             ) : (
               <p className="mt-3 text-sm text-muted-foreground">
@@ -124,6 +145,15 @@ export function ImpactJiraPublishDialog({
                 from METIS.
               </p>
             )}
+
+            {blocked ? (
+              <p
+                className="mt-2 text-sm text-destructive"
+                data-testid="impact-publish-confirm-blocked"
+              >
+                {blocked}
+              </p>
+            ) : null}
           </>
         ) : previewLoading ? (
           <p className="mt-2 text-sm text-muted-foreground">Working out what will be published…</p>
@@ -149,13 +179,15 @@ export function ImpactJiraPublishDialog({
           <Button
             data-testid="impact-publish-confirm-submit"
             onClick={onConfirm}
-            disabled={!preview || pending}
+            disabled={!preview || blocked !== null || pending}
           >
             {pending
               ? "Publishing…"
-              : preview
-                ? `Publish to ${preview.jiraProjectKey}`
-                : "Publish to Jira"}
+              : published
+                ? `Return existing issue ${published.issueKey}`
+                : preview
+                  ? `Publish to ${preview.jiraProjectKey}`
+                  : "Publish to Jira"}
           </Button>
         </div>
       </DialogContent>
