@@ -198,10 +198,22 @@ vi.mock("../lib/analysis/index.js", () => ({
 
 // #2554 — which checkpoints the caller may decide is pinned over a real
 // database in tests/restricted-checkpoints-2554.sqlite.test.ts; here every one.
+// #2596 — a test can hide some, as from a caller who is not an admin.
+const hiddenCheckpoints = vi.hoisted(() => ({ ids: [] as string[] }));
 vi.mock("../lib/analysis/checkpoint-access.js", () => ({
   checkpointRows: async () => [],
-  hiddenCheckpointIds: async () => new Set<string>(),
+  hiddenCheckpointIds: async () => new Set<string>(hiddenCheckpoints.ids),
 }));
+vi.mock("../lib/rag/acl.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/rag/acl.js")>();
+  return {
+    ...actual,
+    resolveAclActor: (async (...args: Parameters<typeof actual.resolveAclActor>) =>
+      hiddenCheckpoints.ids.length > 0
+        ? { role: "member" }
+        : actual.resolveAclActor(...args)) as typeof actual.resolveAclActor,
+  };
+});
 vi.mock("../lib/audit/audit-service.js", () => ({ audit: vi.fn() }));
 // The route reads the stored dialog to tell a start that reused answers from a view of a settled one.
 vi.mock("../lib/analysis/clarification-dialog-store.js", () => ({
@@ -766,6 +778,55 @@ describe("#1568 — requirement approvals that would be promoted with no code li
     ]);
     // The NFR's own finding cites code, so it is not marked "No code link".
     expect(res.body.data.items[1].noCodeEvidence).toBeUndefined();
+  });
+
+  it("#2596 — marks no resemblance to or from an entry the caller cannot see", async () => {
+    reviewedRun();
+    getStructuredRequirements.mockResolvedValue({
+      requirements: [
+        { id: "REQ-1", title: "Expired keys are refused like unknown keys", description: "" },
+        {
+          id: "NFR-1",
+          title: "Expired API keys refused identically to unknown keys",
+          description: "",
+          elicitedNfr: { nfrCategory: "security", evidenceFindingIds: [] },
+        },
+        { id: "REQ-2", title: "API key list shows expiry", description: "" },
+        {
+          id: "NFR-2",
+          title: "Expiry visible in the API keys list",
+          description: "",
+          elicitedNfr: { nfrCategory: "usability", evidenceFindingIds: [] },
+        },
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+    listApprovalRequests.mockResolvedValue([
+      { ...rows[0], id: "ap_r1", itemId: "REQ-1" },
+      { ...rows[0], id: "ap_n1", itemId: "NFR-1" },
+      { ...rows[0], id: "ap_r2", itemId: "REQ-2" },
+      { ...rows[0], id: "ap_n2", itemId: "NFR-2" },
+    ]);
+    // REQ-1 rests on a document the caller cannot read, and so does NFR-2.
+    hiddenCheckpoints.ids = ["ap_r1", "ap_n2"];
+    try {
+      const res = await request(createApp()).get(
+        "/api/projects/proj-1/analyses/analysis-1/approvals",
+      );
+      expect(res.status).toBe(200);
+      type Item = { itemId: string; resembles?: string; restricted?: true };
+      expect(
+        res.body.data.items.map((i: Item) => [i.itemId, i.restricted ?? false, i.resembles]),
+      ).toEqual([
+        ["REQ-1", true, undefined],
+        ["NFR-1", false, undefined],
+        ["REQ-2", false, undefined],
+        ["NFR-2", true, undefined],
+      ]);
+    } finally {
+      hiddenCheckpoints.ids = [];
+    }
   });
 
   it("#2596 — still answers, unmarked, when the reviewed list cannot be read", async () => {

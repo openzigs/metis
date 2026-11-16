@@ -2191,6 +2191,9 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       // admin, whom they never refuse, is shown none marked).
       const seen = await hiddenCheckpointIds(readerOf(req), analysisId, rows);
       const hidden = seen.size > 0 && (await isDurableAdmin(req)) ? new Set<string>() : seen;
+      // #2596 — a resemblance is read off both titles, so neither end may be
+      // an entry the caller cannot see.
+      const hiddenItems = new Set(rows.filter((r) => hidden.has(r.id)).map((r) => r.itemId));
       // Its reviewer's note goes too: a reader's note can quote the entry.
       const items = rows.map((row) => {
         const marked = hidden.has(row.id)
@@ -2198,7 +2201,11 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           : row;
         if (row.type !== "requirement") return marked;
         const origin = origins.get(row.itemId);
-        const resembled = resembles.get(row.itemId);
+        const candidate = resembles.get(row.itemId);
+        const resembled =
+          candidate && !hiddenItems.has(row.itemId) && !hiddenItems.has(candidate)
+            ? candidate
+            : undefined;
         return {
           ...marked,
           ...(origin ? { origin } : {}),
