@@ -20,7 +20,7 @@ names. The settings themselves are explained in [Operations §6.10](OPERATIONS.m
 > **Measured on a different path.** Every measurement cited here ran on `claude-sonnet-5-5`
 > through the direct `anthropic` provider. The Bedrock proxy path (`AI_PROVIDER=bedrock-gateway`)
 > uses the same model through a different client, and it has not yet been run live with these
-> settings (#2589, #376). Run the checklist in [Verify your setup](#5-verify-your-setup) before
+> settings (#2589, #376). Run the checklist in [Verify your setup](#6-verify-your-setup) before
 > analysts start.
 
 ## 1. Before you start
@@ -34,7 +34,7 @@ The infrastructure is covered elsewhere; this page does not repeat it.
 
 ## 2. Required settings
 
-These are read from the server's environment at start-up. Section 6 has them as one block.
+These are read from the server's environment at start-up. Section 7 has them as one block.
 
 ### AI provider and the proxy
 
@@ -124,7 +124,7 @@ allows any host.
 ## 3. Analysis settings, sorted
 
 All of these are **tunables**: they can be changed on **Settings → Configuration → Runtime
-tunables** and apply to the next analysis, with no restart. Section 6 sets the recommended ones
+tunables** and apply to the next analysis, with no restart. Section 7 sets the recommended ones
 from the environment.
 
 How the work flows matters for what each setting touches. **Requirements Analysis** reads the
@@ -151,7 +151,7 @@ the analysis run before it.
 The token budget (`ANALYSIS_AGENT_TOKEN_BUDGET`, 100,000) may bind on a 40-requirement pass. This
 is a projection, not a measurement: the live five-requirement Thorough pass used 22,452 tokens
 (A21), and the same rate for 40 requirements would be about 180,000. Leave it at the default,
-and check the first large analysis (section 5). If its code pass stopped on the token budget,
+and check the first large analysis (section 6). If its code pass stopped on the token budget,
 the analyst can click **Continue with a larger budget**, which doubles it; if that is routine,
 raise the budget.
 
@@ -211,15 +211,67 @@ read from the environment) are not covered here; leave them unset.
 A requirement marked **could not verify** is not a gap: METIS did not get far enough to say.
 Use **Continue** on the run, or raise the limit that stopped it.
 
-## 5. Verify your setup
+## 5. Before analysts start: lessons from a trial run
+
+These come from a business-analyst walkthrough on 2026-11-16 (#2594), checked against the code.
+
+- **Run the production build of the UI.** Deploy the `Dockerfile.ui` image, which runs
+  `next build` and starts the standalone server with `NODE_ENV=production`. Never put
+  analysts on `pnpm dev` (`next dev`). It shows Next.js's red issues badge, and the first visit to each page shows a
+  blank "Loading..." screen while that page compiles.
+- **Decide how uploads are approved.** Every uploaded document waits in the project's
+  quarantine until someone approves it, an admin included (`server/src/lib/rag/quarantine.ts`).
+  Until then it is not in the project's search index. An analysis that finds no approved
+  document falls back to the raw text and says so on its results page ("Some content was
+  analyzed from unapproved (quarantined) documents"). The setting is per project, not
+  platform-wide: **⚙ Project settings → Quarantine → Auto-approve trusted sources**
+  (`Project.autoApproveTrustedSources`, off by default). When it is on, every new document in
+  that project is indexed at once (`shouldAutoApprove`); a single document can also be
+  marked trusted on its own row. Changing it needs the project's update permission. For a
+  client: turn it on in projects where only the client's own analysts upload their own FRDs
+  and BRDs, so nobody waits on a review step that protects nothing. Leave it off in a project
+  that takes documents from outside, so a person reads each one before the model does. It
+  applies to new uploads only: a document already waiting still needs **Approve**.
+- **Treat "Publish to Jira" as live.** With a Jira connection set up, **Publish to Jira** on
+  the impact page creates the issues the moment it is clicked. There is no preview or
+  confirmation yet (#2594), and publishing again creates duplicates (#1523). Configure Jira
+  only if the client wants impact results in Jira. Tell analysts that the button posts
+  straight away.
+- **Add a database connection if changes touch the schema.** Without one, impact analysis
+  can still infer tables from the code (MyBatis, JPA/Hibernate, Prisma, jOOQ and `.sql` files),
+  but it has no live schema to check them against. The database agent's schema context is
+  also skipped. Add one on the project's **Connections** tab with **Add database connector**.
+  PostgreSQL, MySQL, Oracle and SQL Server are supported (`server/src/lib/connectors/db/drivers/`).
+  Use a read-only database user. METIS also blocks every write statement itself. Add the
+  database's host to `DB_ALLOWED_HOSTS`. See the [User guide §16](USER_GUIDE.md#16-database-connections).
+- **Start from a clean instance or workspace.** Projects created while testing stay in every
+  analyst's project switcher. Set up the client's projects on a fresh instance or in their own
+  workspace, or archive the test projects (**⚙ Project settings → Archive**) before handing
+  over.
+- **What to expect, in time and cost.** These were observed on that walkthrough with Sonnet, a
+  small FRD (two features) and a short BRD, Thorough mode and the document reader on. They are
+  one run each, not a measurement:
+
+  | Step | Time | Cost |
+  |---|---|---|
+  | Upload and indexing | about 10 s | none |
+  | Requirements Analysis, Thorough code reading | about 5 minutes | about $0.72 to $0.91 a run |
+  | Impact Analysis | about 3 minutes | about $0.47 |
+  | Each round of clarifying questions | about 45 to 60 s | not recorded |
+
+  A 40-requirement FRD takes longer and costs more. Section 6 step 5 records the client's own
+  figures.
+
+## 6. Verify your setup
 
 Do this once, on a real FRD, before analysts start. These are the checks of #2589.
 
 1. **Settings → Configuration → Runtime tunables** shows `ANALYSIS_DOCUMENT_READER` = true,
    `ANALYSIS_CODE_EXPLORATION` = explore, `ANALYSIS_AGENTIC_MAX_TURNS_CAP` = 100 and
    `IMPACT_LLM_EDIT_RERANK` = true.
-2. Run **Requirements Analysis** on one FRD of about 40 requirements, against a project whose
-   repository has been ingested. Then check:
+2. Upload one FRD of about 40 requirements to a project whose repository has been ingested,
+   and approve it in **Quarantine** unless the project auto-approves. Run **Requirements
+   Analysis** on it. Then check:
    - the results page shows the document reader's coverage: what was read from every section;
    - the run's capability record reads `codePassMode: explore`; `fast` with reason
      `no-working-tree` means the repository's copy is missing on the server;
@@ -232,7 +284,7 @@ Do this once, on a real FRD, before analysts start. These are the checks of #258
    Unpriced, add the model id to `MODEL_PRICES`.
 5. Note the cost and time of the FRD run, to compare with the figures above.
 
-## 6. Copy-paste environment block
+## 7. Copy-paste environment block
 
 Replace every `<…>`. The first part is required; the second sets the recommendations, which you
 can also set on the Runtime tunables page instead.
