@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "key": "101e6dca4dcd906c401114040fc16ceffd24e5db52ee7bc18c29b9b9bcac7bf0",
+  "key": "d34296928af3b0efb4b7139e145cda3946f1dc63617df301d4697dea063a1ab6",
   "request": {
     "promptPreview": "<<<REQUIREMENT>>>\nCustomers can split one invoice across several payment cards.\n<<<END REQUIREMENT>>>\n\n<<<CRITERIA>>>\n[1] Split one invoice across several payment cards\n<<<END CRITERIA>>>\n\n<<<REPOSITO",
     "messageCount": 2,
@@ -11,9 +11,9 @@
   "response": {
     "content": "{\"criteria\": [{\"index\": 1, \"verdict\": \"gap-confirmed\", \"excerpts\": [1], \"reason\": \"Excerpt 1 is where it would live, and it is not there.\"}]}",
     "usage": {
-      "promptTokens": 245,
+      "promptTokens": 351,
       "completionTokens": 20,
-      "totalTokens": 265,
+      "totalTokens": 371,
       "cacheReadTokens": 0,
       "cacheWriteTokens": 0
     },
@@ -22,5 +22,5 @@
     "offline": true,
     "finishReason": "stop"
   },
-  "recordedAt": "2026-11-03T21:03:48.940Z"
+  "recordedAt": "2026-11-16T12:35:44.282Z"
 }

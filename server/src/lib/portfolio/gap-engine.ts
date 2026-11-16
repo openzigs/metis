@@ -106,6 +106,7 @@ import {
   REPO_VERDICT_SYSTEM_PROMPT,
   buildDecomposePrompt,
   buildRepoVerdictPrompt,
+  claimedFindingVerdict,
   parseDecomposition,
   parseRepoVerdict,
 } from "./gap-prompts.js";
@@ -649,16 +650,28 @@ async function evaluateRepo(
   }
   if (!claims) return notVerified(productId, repo, group.criteria.length, "model-error", cost);
 
+  // The gate folds `unrelated` into `gap-confirmed`, so the result cannot tell it from a
+  // real absence: log how often the model said it, to measure the next prompt change.
+  const unrelated = claims.filter((c) => c?.verdict === "unrelated").length;
+  if (unrelated > 0) {
+    log.debug("Repo verdict claims unrelated", {
+      productId,
+      repoConnectionId: repo.repoConnectionId,
+      unrelated,
+      criteria: claims.length,
+    });
+  }
   const citations = new Map<string, CodeCitation>();
   const criteria = claims.map((claim, i): FindingVerdict => {
     if (!claim) return "could-not-verify";
     const cited = claim.hitIndexes.map((n) => citationFromHit(hits[n], repo.repoConnectionId));
     // Retrieval for this repo worked (it returned this repo's excerpts), so a
     // gap may be confirmed when the query searched for this criterion (#1657);
-    // `implemented` still needs a grounded citation.
+    // `implemented` still needs a grounded citation. #2562 — `unrelated` (this
+    // repo does something else) is a gap in this repo, gated like one.
     const gated =
       gateFindingVerdict({
-        modelVerdict: claim.verdict,
+        modelVerdict: claimedFindingVerdict(claim.verdict),
         groundedCitations: cited,
         finding: { title: group.criteria[i], body: claim.reason },
         absenceConfirmable: group.searched[i] === true,

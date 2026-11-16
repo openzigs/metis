@@ -40,6 +40,19 @@ const defaults = vi.hoisted(() => ({
   searchAcrossProjects: vi.fn(),
 }));
 vi.mock("../ai/providers/factory.js", () => ({ buildProvider: defaults.buildProvider }));
+// The engine's own logger, its `debug` observed (#2562: how often the model said `unrelated`).
+const debugLog = vi.hoisted(() => vi.fn());
+vi.mock("../logger.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../logger.js")>();
+  return {
+    ...real,
+    createChildLogger: (module: string) => {
+      const child = real.createChildLogger(module);
+      if (module !== "portfolio-gap") return child;
+      return Object.assign(Object.create(child), { debug: debugLog });
+    },
+  };
+});
 vi.mock("../rag/federated-search-service.js", () => ({
   getFederatedSearchService: () => ({ searchAcrossProjects: defaults.searchAcrossProjects }),
 }));
@@ -1556,5 +1569,160 @@ describe("#1726 — a reasoning model, a cut-off reply, a failed repo, a shared 
     expect(result.summary).toContain(
       "The check failed (model error) on acme/billing, so this answer leaves it out; re-run to retry.",
     );
+  });
+});
+
+describe("#2562 — a sibling repo the requirement does not belong to", () => {
+  // One product, three services, each repo in its own project (the eval's shape).
+  const REPOS = ["notify", "billing", "orders"];
+  const projectOf = (name: string) => `proj-${name}`;
+  const repoHit = (name: string) => ({
+    ...hit(`rc-${name}`, `${name}.ts`, `${name} code`),
+    projectId: projectOf(name),
+  });
+  const searchFinding =
+    (names: readonly string[], searched: readonly string[] = REPOS) =>
+    async (): Promise<FederatedSearchResult> => ({
+      ...found(names.map(repoHit)),
+      projectsSearched: searched.map(projectOf),
+    });
+  /** What each repo's verdict call answers: one verdict for every criterion, or one each. */
+  const answering =
+    (verdicts: Record<string, string | readonly string[]>, throwFor?: string) =>
+    (prompt: string): string => {
+      const repo = REPOS.find((r) => prompt.includes(`acme/${r}`))!;
+      if (repo === throwFor) throw new Error("provider 500");
+      const v = verdicts[repo];
+      return JSON.stringify({
+        criteria: promptCriteria(prompt).map((_, i) => ({
+          index: i + 1,
+          verdict: typeof v === "string" ? v : v[i],
+        })),
+      });
+    };
+  const run = (
+    answer: (prompt: string) => string,
+    search: () => Promise<FederatedSearchResult>,
+    maxModelCalls?: number,
+  ) =>
+    evaluatePortfolioGap(
+      USER,
+      {
+        statement: "Put the invoice number in the receipt subject",
+        criteria: ["c1", "c2"],
+        ...ALL,
+      },
+      {
+        provider: provider(answer),
+        search,
+        limits: { ...limits, ...(maxModelCalls === undefined ? {} : { maxModelCalls }) },
+        costOf: () => 0,
+      },
+    );
+
+  beforeEach(() => {
+    db.product.findMany.mockResolvedValue([{ id: "p1", name: "Commerce" }]);
+    db.productRepo.findMany.mockImplementation(async () =>
+      REPOS.map((name) => ({
+        productId: "p1",
+        repoConnectionId: `rc-${name}`,
+        repoConnection: {
+          projectId: projectOf(name),
+          label: `acme/${name}`,
+          ownerOrOrg: null,
+          repoName: null,
+        },
+      })),
+    );
+  });
+
+  const SIBLINGS_UNRELATED = {
+    notify: "gap-confirmed",
+    billing: "unrelated",
+    orders: "unrelated",
+  };
+
+  it("siblings that say `unrelated` let the repo it belongs to confirm the gap", async () => {
+    const result = await run(answering(SIBLINGS_UNRELATED), searchFinding(REPOS));
+    const [commerce] = result.products;
+    expect([commerce.coverage, commerce.reason]).toEqual(["not-covered", null]);
+    expect(result.verdict).toBe("gap-confirmed");
+    // An unrelated repo does not implement it: it reads as a gap, never as a cover.
+    for (const r of commerce.repos) {
+      expect([r.verdict, r.criteria, r.citations, r.reason]).toEqual([
+        "gap-confirmed",
+        ["gap-confirmed", "gap-confirmed"],
+        [],
+        null,
+      ]);
+    }
+  });
+
+  it("a sibling that could not verify still stops the gap", async () => {
+    const result = await run(
+      answering({ ...SIBLINGS_UNRELATED, billing: "could-not-verify" }),
+      searchFinding(REPOS),
+    );
+    expect(result.products[0].coverage).toBe("not-checked");
+    expect(result.verdict).toBe("could-not-verify");
+  });
+
+  // Review of #2575: the sibling settles c1 and not c2, so #1610 rule 3 reads the repo
+  // itself `gap-confirmed`, and with every repo `gap-confirmed` the product is not covered.
+  // Pinned as shipped: requiring every criterion settled was measured on the eval and
+  // turned 3 correct gaps per arm into could-not-verify while removing no wrong verdict.
+  it("a sibling unrelated on one criterion and unsure of another reads as a gap (#1610 rule 3)", async () => {
+    const result = await run(
+      answering({ ...SIBLINGS_UNRELATED, billing: ["unrelated", "could-not-verify"] }),
+      searchFinding(REPOS),
+    );
+    const billing = result.products[0].repos.find((r) => r.label === "acme/billing")!;
+    expect([billing.verdict, billing.criteria]).toEqual([
+      "gap-confirmed",
+      ["gap-confirmed", "could-not-verify"],
+    ]);
+    expect(result.products[0].coverage).toBe("not-covered");
+    expect(result.verdict).toBe("gap-confirmed");
+  });
+
+  it("logs how many criteria each repo called `unrelated`, which the result folds into a gap", async () => {
+    debugLog.mockClear();
+    await run(
+      answering({ ...SIBLINGS_UNRELATED, billing: ["unrelated", "could-not-verify"] }),
+      searchFinding(REPOS),
+    );
+    const logged = debugLog.mock.calls
+      .filter(([msg]) => msg === "Repo verdict claims unrelated")
+      .map(([, meta]) => [meta.repoConnectionId, meta.unrelated, meta.criteria])
+      .sort();
+    expect(logged).toEqual([
+      ["rc-billing", 1, 2],
+      ["rc-orders", 2, 2],
+    ]);
+  });
+
+  it("the repo it belongs to could not verify: unrelated siblings confirm nothing", async () => {
+    const result = await run(
+      answering({ ...SIBLINGS_UNRELATED, notify: "could-not-verify" }),
+      searchFinding(REPOS),
+    );
+    expect(result.products[0].coverage).toBe("not-checked");
+    expect(result.verdict).toBe("could-not-verify");
+  });
+
+  // The model would answer `unrelated` for the starved repo too, if it were asked: what stops
+  // the gap is that it never was.
+  it.each([
+    { reason: "no-evidence-retrieved", search: searchFinding(["notify", "orders"]) },
+    { reason: "retrieval-failed", search: searchFinding(REPOS, ["notify", "orders"]) },
+    { reason: "budget", search: searchFinding(REPOS), maxModelCalls: 2 },
+    { reason: "model-error", search: searchFinding(REPOS), throwFor: "billing" },
+  ])("a repo starved by $reason still keeps the product from not-covered", async (c) => {
+    const result = await run(answering(SIBLINGS_UNRELATED, c.throwFor), c.search, c.maxModelCalls);
+    const [commerce] = result.products;
+    const starved = commerce.repos.filter((r) => r.reason !== null);
+    expect(starved.map((r) => [r.reason, r.verdict])).toEqual([[c.reason, "could-not-verify"]]);
+    expect([commerce.coverage, commerce.reason]).toEqual(["not-checked", "could-not-verify"]);
+    expect(result.verdict).toBe("could-not-verify");
   });
 });

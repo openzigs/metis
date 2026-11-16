@@ -1831,28 +1831,70 @@ the real engine on the 15 fixture-repo requirements of #1753
 repositories sit in one product, and each requirement is checked as the app checks one
 (title and text, criteria decomposed). Baseline
 (`eval-data/corpus/localization-02-fixture-portfolio/gap-baseline.md`, `claude-sonnet-5-5`,
-3 runs, 2026-11-15, $2.64):
+3 runs, 2026-11-16, $2.67), with the two earlier measurements for comparison:
 
-| Arm | Verdict accuracy [95% CI] | expected `implemented` | expected `partial` | expected `gap` | Uncited `implemented` | $ / req | s / req |
-|---|---|---|---|---|---|---|---|
-| P0 (shipped) | 0.49 [0.27, 0.71] | 0.83 | 0.60 | 0.17 | 0 | $0.029 | 13 |
-| P0′ (`PORTFOLIO_GAP_PER_REPO_SEARCH`, #1763) | 0.40 [0.22, 0.58] | 0.67 | 0.53 | 0.11 | 0 | $0.029 | 13 |
+| Arm | Verdict accuracy [95% CI] | expected `implemented` | expected `partial` | expected `gap` | Confident and wrong (of 45) | `could-not-verify` (of 45) | Uncited `implemented` | $ / req |
+|---|---|---|---|---|---|---|---|---|
+| P0 (shipped) | 0.60 [0.40, 0.80] | 0.67 | 0.60 | 0.56 | 16 | 2 | 0 | $0.030 |
+| P0′ (`PORTFOLIO_GAP_PER_REPO_SEARCH`, #1763) | 0.60 [0.40, 0.80] | 0.67 | 0.67 | 0.50 | 16 | 2 | 0 | $0.029 |
+| P0, #2562 first prompt (no catch-all) | 0.51 [0.27, 0.76] | 0.58 | 0.40 | 0.56 | 21 | 1 | 0 | $0.028 |
+| P0′, #2562 first prompt | 0.47 [0.24, 0.69] | 0.42 | 0.47 | 0.50 | 23 | 1 | 0 | $0.028 |
+| P0, before #2562 (#1766, 2026-11-15) | 0.49 [0.27, 0.71] | 0.83 | 0.60 | 0.17 | 12 | 11 | 0 | $0.029 |
+| P0′, before #2562 | 0.40 [0.22, 0.58] | 0.67 | 0.53 | 0.11 | 16 | 11 | 0 | $0.029 |
 
-- **P0′ shows no measurable difference** (Δ −0.09 [−0.22, 0.04], McNemar 2/2, p = 1.0). At
-  15 items only a gap of roughly 26 to 36 points would be significant. Here each repository
-  is in its own project, so the per-repo search changes only how `k` is split. The flag
-  stays off.
-- **The engine rarely confirms a gap.** Of P0's 18 outcomes expected to be `gap`, 8 read
-  `could-not-verify`, 6 `partial` and 1 `implemented`. In every one of the 22
-  `could-not-verify` outcomes of both arms, the answer repository reached a verdict, but a sibling repository with nothing
-  to do with the requirement answered `could-not-verify` for a criterion. A product is
-  `not-covered` only when every repository confirms the gap, so the sibling's answer made
-  the product `not-checked`. These verdicts came from the model, not from retrieval
-  (`reason` is null).
+"Confident and wrong" counts outcomes that read `implemented`, `partial` or `gap` and are
+not the expected verdict; it is the error that costs an analyst most.
+
+- **#2562 — a sibling repository no longer blocks a gap.** Before, of P0's 18 outcomes
+  expected to be `gap`, 8 read `could-not-verify`. In every one of the 22
+  `could-not-verify` outcomes of both arms, the answer repository reached a verdict, but a
+  sibling repository with nothing to do with the requirement answered `could-not-verify`
+  for a criterion, because the repo prompt said to when "the excerpts do not bear on" it.
+  A product is `not-covered` only when every repository confirms the gap, so the sibling
+  made the product `not-checked`. These verdicts came from the model, not from retrieval
+  (`reason` was null), and the gate passed them through as given. The prompt now offers
+  `unrelated` (`REPO_CLAIM_VERDICTS`, `server/src/lib/portfolio/gap-prompts.ts`): the
+  excerpts show the repository does something else, so the criterion would not live there.
+  The engine gates it as a `gap-confirmed` claim (`claimedFindingVerdict`), so it still
+  needs a search that carried the criterion. A repository that was never judged
+  (`no-evidence-retrieved`, `retrieval-failed`, `budget`, `model-error`) stays
+  `could-not-verify` and keeps the product from `not-covered`. So does a judged repository
+  that settled **none** of the criteria. One that settled some (`unrelated` or
+  `gap-confirmed`) and left the rest `could-not-verify` reads `gap-confirmed` itself
+  (`rollUpCriterionVerdicts` rule 3, #1610), so it does not stop the gap.
+- **The catch-all is kept.** The first #2562 prompt narrowed "the excerpts do not bear on a
+  criterion → `could-not-verify`" to excerpts that *touch* it, which left excerpts that do
+  neither (generic utilities, configuration) with no safe answer. Confident-wrong outcomes
+  rose 12 → 21 on P0. The prompt now ends its verdict rules with "Otherwise, if the
+  excerpts do not bear on a criterion and do not make the repository's purpose plain,
+  answer `could-not-verify`". Against the first prompt, P0 overall rose 0.51 → 0.60,
+  expected `partial` 0.40 → 0.60 and expected `implemented` 0.58 → 0.67, and
+  confident-wrong fell 21 → 16. Gap accuracy held at 0.56. Against #1766, gap accuracy is
+  0.17 → 0.56 and confident-wrong is 12 → 16: four `could-not-verify` answers became
+  wrong ones (expected `partial` read as `gap` rose 3 → 5).
+- **Expected `implemented` is still below #1766 (0.83 → 0.67).** FX-15 ("Record each
+  order … and confirm the order back") read `implemented` before only because `notify`
+  cited its invoice receipt email for "confirm the order back to the customer". `orders`,
+  the answer repository, leaves that criterion `could-not-verify`, so FX-15 reads `partial`
+  on every run with either #2562 prompt. That is the answer repository's own retrieval and
+  judgement, which #1764's agentic pass is aimed at.
+- **Requiring every criterion settled was measured and rejected.** A product roll-up that
+  reads `not-covered` only when every repository confirms a gap on *every* criterion
+  (so rule 3 above would not apply) changed 3 P0 and 3 P0′ outcomes on the same records,
+  all of them correct gaps, to `could-not-verify` (gap accuracy 0.56 → 0.39), and removed no
+  wrong verdict. The roll-up is unchanged.
+- **How often the model says `unrelated`** is logged at debug level ("Repo verdict claims
+  unrelated", per repository call), because the gate folds it into `gap-confirmed`. In the
+  calls that used it at least once, it was the answer for 312 of 341 criteria in `notify`,
+  212 of 245 in `billing` and 195 of 224 in `orders`.
+- **P0′ shows no measurable difference** (Δ +0.00 [−0.09, 0.09], McNemar 2/1, p = 1.0).
+  At 15 items only a gap of roughly 26 to 36 points would be significant. Here each
+  repository is in its own project, so the per-repo search changes only how `k` is split.
+  The flag stays off.
 - Every arm reported zero uncited `implemented` verdicts. The check is repository-level:
   the engine's result has one deduplicated citation list per repository and no citation per
   criterion, so a repository with one cited and one uncited `implemented` criterion passes it;
-  the engine's own gate (`gateFindingVerdict`) holds each criterion to its evidence. All 171
+  the engine's own gate (`gateFindingVerdict`) holds each criterion to its evidence. All 149
   citations name a file of their repository at the pinned commit. Every citation is file-level (line 1) until
   #1765.
 - #1764's agentic pass (P1) is scored by the same runner when it lands. No `deepseek-flash`

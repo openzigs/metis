@@ -1,8 +1,8 @@
 {
   "corpus": "localization-02-fixture-portfolio",
-  "generatedAt": "2026-11-15T20:24:50.274Z",
+  "generatedAt": "2026-11-16T12:33:06.807Z",
   "model": "anthropic/claude-sonnet-5-5",
-  "budgetUsd": 10,
+  "budgetUsd": 5,
   "runsRequested": 3,
   "summaries": [
     {
@@ -11,24 +11,24 @@
       "outcomes": 45,
       "completeRuns": 3,
       "accuracy": {
-        "value": 0.4888888888888889,
-        "ci": [0.26666666666666666, 0.7111111111111111],
+        "value": 0.5999999999999999,
+        "ci": [0.4, 0.7999999999999999],
         "n": 15
       },
       "productAccuracy": {
-        "value": 0.4888888888888889,
-        "ci": [0.26666666666666666, 0.7111111111111111],
+        "value": 0.5999999999999999,
+        "ci": [0.4, 0.7999999999999999],
         "n": 15
       },
       "answerRepoAccuracy": {
-        "value": 0.5476190476190476,
-        "ci": [0.3095238095238096, 0.761904761904762],
+        "value": 0.5952380952380951,
+        "ci": [0.38095238095238093, 0.8095238095238093],
         "n": 14
       },
       "accuracyByStratum": {
         "billing": {
-          "value": 0.5,
-          "ci": [0, 1],
+          "value": 0.5833333333333333,
+          "ci": [0.16666666666666666, 1],
           "n": 4
         },
         "multi-repo": {
@@ -37,64 +37,64 @@
           "n": 1
         },
         "notify": {
-          "value": 0.3333333333333333,
+          "value": 0.5555555555555555,
           "ci": [0, 1],
           "n": 3
         },
         "orders": {
-          "value": 0.47619047619047616,
-          "ci": [0.19047619047619047, 0.7619047619047619],
+          "value": 0.5714285714285714,
+          "ci": [0.3333333333333333, 0.8095238095238095],
           "n": 7
         }
       },
       "accuracyByExpected": {
         "implemented": {
-          "value": 0.8333333333333333,
-          "ci": [0.49999999999999994, 1],
+          "value": 0.6666666666666666,
+          "ci": [0.25, 1],
           "n": 4
         },
         "partial": {
-          "value": 0.6,
+          "value": 0.5999999999999999,
           "ci": [0.26666666666666666, 0.9333333333333332],
           "n": 5
         },
         "gap": {
-          "value": 0.16666666666666666,
-          "ci": [0, 0.5],
+          "value": 0.5555555555555555,
+          "ci": [0.27777777777777773, 0.8333333333333334],
           "n": 6
         }
       },
       "confusion": {
         "implemented": {
-          "implemented": 10,
-          "partial": 2,
+          "implemented": 8,
+          "partial": 4,
           "gap": 0,
           "could-not-verify": 0
         },
         "partial": {
           "implemented": 0,
           "partial": 9,
-          "gap": 3,
-          "could-not-verify": 3
+          "gap": 5,
+          "could-not-verify": 1
         },
         "gap": {
-          "implemented": 1,
-          "partial": 6,
-          "gap": 3,
-          "could-not-verify": 8
+          "implemented": 0,
+          "partial": 7,
+          "gap": 10,
+          "could-not-verify": 1
         }
       },
       "uncitedImplemented": 0,
-      "citations": 85,
-      "validCitations": 85,
+      "citations": 69,
+      "validCitations": 69,
       "expectedRepoRecall": {
-        "value": 0.7037037037037037,
-        "ci": [0.4074074074074074, 1],
+        "value": 0.7777777777777778,
+        "ci": [0.5185185185185185, 1],
         "n": 9
       },
-      "usdPerRequirement": 0.029277466666666672,
-      "secondsPerRequirement": 13.057895200066664,
-      "spentUsd": 1.3174860000000002,
+      "usdPerRequirement": 0.03013075555555556,
+      "secondsPerRequirement": 11.838895571288885,
+      "spentUsd": 1.355884,
       "configuration": {
         "runCostCapUsd": 2,
         "productCostCapUsd": 0.5,
@@ -113,56 +113,56 @@
       "outcomes": 45,
       "completeRuns": 3,
       "accuracy": {
-        "value": 0.4,
-        "ci": [0.2222222222222222, 0.5777777777777778],
+        "value": 0.6,
+        "ci": [0.39999999999999997, 0.8],
         "n": 15
       },
       "productAccuracy": {
-        "value": 0.4,
-        "ci": [0.2222222222222222, 0.5777777777777778],
+        "value": 0.6,
+        "ci": [0.39999999999999997, 0.8],
         "n": 15
       },
       "answerRepoAccuracy": {
-        "value": 0.5,
-        "ci": [0.2857142857142857, 0.7142857142857143],
+        "value": 0.6190476190476192,
+        "ci": [0.4047619047619047, 0.8333333333333331],
         "n": 14
       },
       "accuracyByStratum": {
         "billing": {
-          "value": 0.41666666666666663,
-          "ci": [0, 0.8333333333333333],
+          "value": 0.5,
+          "ci": [0, 1],
           "n": 4
         },
         "multi-repo": {
-          "value": 0.6666666666666666,
-          "ci": [0.6666666666666666, 0.6666666666666666],
+          "value": 1,
+          "ci": [1, 1],
           "n": 1
         },
         "notify": {
-          "value": 0.2222222222222222,
-          "ci": [0, 0.6666666666666666],
+          "value": 0.4444444444444444,
+          "ci": [0, 1],
           "n": 3
         },
         "orders": {
-          "value": 0.42857142857142855,
-          "ci": [0.19047619047619047, 0.6666666666666667],
+          "value": 0.6666666666666666,
+          "ci": [0.4285714285714285, 0.8571428571428571],
           "n": 7
         }
       },
       "accuracyByExpected": {
         "implemented": {
           "value": 0.6666666666666666,
-          "ci": [0.41666666666666663, 0.9166666666666666],
+          "ci": [0.25, 1],
           "n": 4
         },
         "partial": {
-          "value": 0.5333333333333333,
-          "ci": [0.2, 0.8],
+          "value": 0.6666666666666666,
+          "ci": [0.3333333333333333, 0.9333333333333332],
           "n": 5
         },
         "gap": {
-          "value": 0.1111111111111111,
-          "ci": [0, 0.3333333333333333],
+          "value": 0.5,
+          "ci": [0.16666666666666666, 0.8333333333333334],
           "n": 6
         }
       },
@@ -175,28 +175,28 @@
         },
         "partial": {
           "implemented": 0,
-          "partial": 8,
-          "gap": 3,
-          "could-not-verify": 4
+          "partial": 10,
+          "gap": 5,
+          "could-not-verify": 0
         },
         "gap": {
-          "implemented": 1,
-          "partial": 8,
-          "gap": 2,
-          "could-not-verify": 7
+          "implemented": 0,
+          "partial": 7,
+          "gap": 9,
+          "could-not-verify": 2
         }
       },
       "uncitedImplemented": 0,
-      "citations": 86,
-      "validCitations": 86,
+      "citations": 80,
+      "validCitations": 80,
       "expectedRepoRecall": {
-        "value": 0.7037037037037037,
-        "ci": [0.4074074074074074, 0.9629629629629629],
+        "value": 0.8148148148148148,
+        "ci": [0.5925925925925926, 1],
         "n": 9
       },
-      "usdPerRequirement": 0.029341200000000005,
-      "secondsPerRequirement": 13.008826317577778,
-      "spentUsd": 1.3203540000000002,
+      "usdPerRequirement": 0.029189911111111123,
+      "secondsPerRequirement": 11.300842851844449,
+      "spentUsd": 1.3135460000000005,
       "configuration": {
         "runCostCapUsd": 2,
         "productCostCapUsd": 0.5,
@@ -215,14 +215,14 @@
       "arm": "P0′",
       "baseline": "P0",
       "accuracy": {
-        "meanDifference": -0.08888888888888889,
-        "ci": [-0.22222222222222227, 0.04444444444444443],
-        "p": 0.129,
+        "meanDifference": 0,
+        "ci": [-0.08888888888888888, 0.08888888888888888],
+        "p": 1,
         "n": 15
       },
       "mcnemar": {
         "armOnly": 2,
-        "baselineOnly": 2,
+        "baselineOnly": 1,
         "p": 1
       },
       "reading": "no measurable difference"
@@ -235,45 +235,34 @@
       "arm": "P0",
       "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.037779999999999994,
-      "seconds": 19.158219167,
+      "costUsd": 0.04035999999999999,
+      "seconds": 18.996104333999998,
       "verdict": "partial",
       "productCoverage": "partial",
       "criteriaCount": 5,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
             "could-not-verify",
             "could-not-verify",
-            "implemented",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed"
           ],
-          "citations": [
-            {
-              "filePath": "src/db/billing-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/consumers/order-created.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
+          "citations": [],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
             "could-not-verify",
             "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
@@ -283,9 +272,9 @@
           "verdict": "partial",
           "criteria": [
             "gap-confirmed",
-            "implemented",
             "could-not-verify",
-            "could-not-verify",
+            "gap-confirmed",
+            "gap-confirmed",
             "implemented"
           ],
           "citations": [
@@ -295,7 +284,7 @@
               "endLine": 1
             },
             {
-              "filePath": "src/types/order.ts",
+              "filePath": "src/db/schema.sql",
               "startLine": 1,
               "endLine": 1
             }
@@ -309,1665 +298,8 @@
       "arm": "P0",
       "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.030355999999999994,
-      "seconds": 12.595555499999998,
-      "verdict": "partial",
-      "productCoverage": "partial",
-      "criteriaCount": 6,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "partial",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "implemented",
-            "implemented"
-          ],
-          "citations": [
-            {
-              "filePath": "src/db/billing-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "gap-confirmed",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "gap-confirmed",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed"
-          ],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-03",
-      "arm": "P0",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.03434000000000001,
-      "seconds": 14.551687166000004,
-      "verdict": "partial",
-      "productCoverage": "partial",
-      "criteriaCount": 6,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "implemented",
-            "implemented",
-            "implemented",
-            "implemented",
-            "implemented",
-            "could-not-verify"
-          ],
-          "citations": [
-            {
-              "filePath": "src/events/publisher.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/routes/orders.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/types/order.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-04",
-      "arm": "P0",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.03332599999999998,
-      "seconds": 17.978451459000002,
-      "verdict": "implemented",
-      "productCoverage": "covers",
-      "criteriaCount": 5,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "implemented",
-          "criteria": ["implemented", "implemented", "implemented", "implemented", "implemented"],
-          "citations": [
-            {
-              "filePath": "src/consumers/order-created.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/billing-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/schema.sql",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-05",
-      "arm": "P0",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.029008000000000006,
-      "seconds": 12.282002542000003,
-      "verdict": "implemented",
-      "productCoverage": "covers",
-      "criteriaCount": 5,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "gap-confirmed",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "implemented",
-          "criteria": ["implemented", "implemented", "implemented", "implemented", "implemented"],
-          "citations": [
-            {
-              "filePath": "src/db/notify-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/consumers/invoice-issued.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-06",
-      "arm": "P0",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.027836,
-      "seconds": 12.513960334000004,
-      "verdict": "could-not-verify",
-      "productCoverage": "not-checked",
-      "criteriaCount": 3,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-07",
-      "arm": "P0",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.02509,
-      "seconds": 9.555385791000008,
-      "verdict": "could-not-verify",
-      "productCoverage": "not-checked",
-      "criteriaCount": 3,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "could-not-verify", "gap-confirmed"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-08",
-      "arm": "P0",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.029913999999999996,
-      "seconds": 12.054470457999996,
-      "verdict": "partial",
-      "productCoverage": "partial",
-      "criteriaCount": 6,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "partial",
-          "criteria": [
-            "implemented",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed"
-          ],
-          "citations": [
-            {
-              "filePath": "src/routes/invoices.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "openapi.yaml",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "gap-confirmed",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "could-not-verify",
-            "could-not-verify",
-            "gap-confirmed"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "gap-confirmed",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed"
-          ],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-09",
-      "arm": "P0",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.025596000000000008,
-      "seconds": 10.742637584000011,
-      "verdict": "gap-confirmed",
-      "productCoverage": "not-covered",
-      "criteriaCount": 4,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "gap-confirmed",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify", "gap-confirmed"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-10",
-      "arm": "P0",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.023797999999999986,
-      "seconds": 9.850780290999989,
-      "verdict": "could-not-verify",
-      "productCoverage": "not-checked",
-      "criteriaCount": 3,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-11",
-      "arm": "P0",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.036418000000000006,
-      "seconds": 17.09477883299999,
-      "verdict": "partial",
-      "productCoverage": "partial",
-      "criteriaCount": 7,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "gap-confirmed",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "gap-confirmed",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "partial",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "implemented"
-          ],
-          "citations": [
-            {
-              "filePath": "src/routes/orders.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/orders-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/events/publisher.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-12",
-      "arm": "P0",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.027407999999999988,
-      "seconds": 11.207972167,
-      "verdict": "gap-confirmed",
-      "productCoverage": "not-covered",
-      "criteriaCount": 3,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "could-not-verify"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "could-not-verify"],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-13",
-      "arm": "P0",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.029214000000000073,
-      "seconds": 13.547461874999978,
-      "verdict": "partial",
-      "productCoverage": "partial",
-      "criteriaCount": 4,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "partial",
-          "criteria": ["gap-confirmed", "gap-confirmed", "implemented", "gap-confirmed"],
-          "citations": [
-            {
-              "filePath": "src/consumers/order-created.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/billing-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-14",
-      "arm": "P0",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.023451999999999973,
-      "seconds": 10.17163949999999,
-      "verdict": "could-not-verify",
-      "productCoverage": "not-checked",
-      "criteriaCount": 3,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-15",
-      "arm": "P0",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.030981999999999954,
-      "seconds": 13.542754000000015,
-      "verdict": "implemented",
-      "productCoverage": "covers",
-      "criteriaCount": 5,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "implemented"
-          ],
-          "citations": [
-            {
-              "filePath": "src/consumers/invoice-issued.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "implemented",
-            "implemented",
-            "implemented",
-            "implemented",
-            "could-not-verify"
-          ],
-          "citations": [
-            {
-              "filePath": "src/routes/orders.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/orders-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/schema.sql",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-01",
-      "arm": "P0R",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.03837200000000007,
-      "seconds": 18.579749916,
-      "verdict": "partial",
-      "productCoverage": "partial",
-      "criteriaCount": 5,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "implemented",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [
-            {
-              "filePath": "src/db/billing-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/consumers/order-created.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "gap-confirmed",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "gap-confirmed",
-            "gap-confirmed",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "partial",
-          "criteria": [
-            "gap-confirmed",
-            "implemented",
-            "could-not-verify",
-            "could-not-verify",
-            "implemented"
-          ],
-          "citations": [
-            {
-              "filePath": "src/db/orders-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/schema.sql",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/types/order.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-02",
-      "arm": "P0R",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.03246199999999999,
-      "seconds": 13.996406790999986,
-      "verdict": "partial",
-      "productCoverage": "partial",
-      "criteriaCount": 7,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "partial",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "implemented"
-          ],
-          "citations": [
-            {
-              "filePath": "src/db/billing-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "gap-confirmed",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "gap-confirmed",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed"
-          ],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-03",
-      "arm": "P0R",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.03683599999999998,
-      "seconds": 17.074573875000002,
-      "verdict": "partial",
-      "productCoverage": "partial",
-      "criteriaCount": 6,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "implemented",
-            "implemented",
-            "implemented",
-            "implemented",
-            "implemented",
-            "could-not-verify"
-          ],
-          "citations": [
-            {
-              "filePath": "src/routes/orders.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/events/publisher.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/types/order.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-04",
-      "arm": "P0R",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.027224000000000026,
-      "seconds": 13.05157029199999,
-      "verdict": "implemented",
-      "productCoverage": "covers",
-      "criteriaCount": 4,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "implemented",
-          "criteria": ["implemented", "implemented", "implemented", "implemented"],
-          "citations": [
-            {
-              "filePath": "src/consumers/order-created.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/billing-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-05",
-      "arm": "P0R",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.02908199999999994,
-      "seconds": 13.12459150000001,
-      "verdict": "partial",
-      "productCoverage": "partial",
-      "criteriaCount": 5,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "gap-confirmed",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "implemented",
-            "implemented",
-            "implemented",
-            "implemented",
-            "could-not-verify"
-          ],
-          "citations": [
-            {
-              "filePath": "src/consumers/invoice-issued.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/notify-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-06",
-      "arm": "P0R",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.02549200000000007,
-      "seconds": 10.946280499999993,
-      "verdict": "could-not-verify",
-      "productCoverage": "not-checked",
-      "criteriaCount": 4,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "could-not-verify", "could-not-verify", "gap-confirmed"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-07",
-      "arm": "P0R",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.026785999999999976,
-      "seconds": 11.900034792000021,
-      "verdict": "partial",
-      "productCoverage": "partial",
-      "criteriaCount": 3,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "partial",
-          "criteria": ["gap-confirmed", "gap-confirmed", "implemented"],
-          "citations": [
-            {
-              "filePath": "openapi.yaml",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/billing-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/schema.sql",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/consumers/order-created.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "implemented"],
-          "citations": [
-            {
-              "filePath": "src/db/notify-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/consumers/invoice-issued.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-08",
-      "arm": "P0R",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.026839999999999975,
-      "seconds": 11.25422054099996,
-      "verdict": "gap-confirmed",
-      "productCoverage": "not-covered",
-      "criteriaCount": 5,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "gap-confirmed",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "gap-confirmed",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "gap-confirmed",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed"
-          ],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-09",
-      "arm": "P0R",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.025714000000000015,
-      "seconds": 10.04993754199997,
-      "verdict": "gap-confirmed",
-      "productCoverage": "not-covered",
-      "criteriaCount": 4,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "gap-confirmed",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify", "gap-confirmed"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-10",
-      "arm": "P0R",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.025893999999999973,
-      "seconds": 10.43929341600003,
-      "verdict": "could-not-verify",
-      "productCoverage": "not-checked",
-      "criteriaCount": 4,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-11",
-      "arm": "P0R",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.033199999999999896,
-      "seconds": 14.291249834000016,
-      "verdict": "partial",
-      "productCoverage": "partial",
-      "criteriaCount": 7,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "partial",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "gap-confirmed",
-            "implemented"
-          ],
-          "citations": [
-            {
-              "filePath": "src/consumers/order-created.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/billing-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "partial",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "implemented"
-          ],
-          "citations": [
-            {
-              "filePath": "src/routes/orders.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/orders-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/events/publisher.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-12",
-      "arm": "P0R",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.023262000000000005,
-      "seconds": 9.726708207999996,
-      "verdict": "partial",
-      "productCoverage": "partial",
-      "criteriaCount": 3,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "could-not-verify"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "partial",
-          "criteria": ["gap-confirmed", "implemented", "implemented"],
-          "citations": [
-            {
-              "filePath": "src/db/orders-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/schema.sql",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-13",
-      "arm": "P0R",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.02709000000000006,
-      "seconds": 10.925537957999971,
-      "verdict": "partial",
-      "productCoverage": "partial",
-      "criteriaCount": 4,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "partial",
-          "criteria": ["implemented", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
-          "citations": [
-            {
-              "filePath": "src/consumers/order-created.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/billing-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-14",
-      "arm": "P0R",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.023310000000000164,
-      "seconds": 10.257826416999976,
-      "verdict": "could-not-verify",
-      "productCoverage": "not-checked",
-      "criteriaCount": 3,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-15",
-      "arm": "P0R",
-      "run": 1,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.03129799999999994,
-      "seconds": 14.13288274999999,
-      "verdict": "implemented",
-      "productCoverage": "covers",
-      "criteriaCount": 5,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "implemented"
-          ],
-          "citations": [
-            {
-              "filePath": "src/consumers/invoice-issued.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "implemented",
-          "criteria": ["implemented", "implemented", "implemented", "implemented", "implemented"],
-          "citations": [
-            {
-              "filePath": "src/routes/orders.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/orders-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/schema.sql",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-01",
-      "arm": "P0",
-      "run": 2,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.036634,
-      "seconds": 19.008889542000002,
-      "verdict": "partial",
-      "productCoverage": "partial",
-      "criteriaCount": 5,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "implemented",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [
-            {
-              "filePath": "src/db/billing-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/consumers/order-created.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "partial",
-          "criteria": [
-            "gap-confirmed",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "implemented"
-          ],
-          "citations": [
-            {
-              "filePath": "src/db/orders-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/schema.sql",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/types/order.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-02",
-      "arm": "P0",
-      "run": 2,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.030300000000000007,
-      "seconds": 12.569176334,
+      "costUsd": 0.032161999999999996,
+      "seconds": 12.616512917000003,
       "verdict": "gap-confirmed",
       "productCoverage": "not-covered",
       "criteriaCount": 6,
@@ -2019,61 +351,61 @@
     {
       "itemId": "FX-03",
       "arm": "P0",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.037652000000000005,
-      "seconds": 18.103035457999997,
-      "verdict": "implemented",
-      "productCoverage": "covers",
+      "costUsd": 0.031344000000000025,
+      "seconds": 12.474859458,
+      "verdict": "partial",
+      "productCoverage": "partial",
       "criteriaCount": 6,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
         },
         {
           "repo": "orders",
-          "verdict": "implemented",
+          "verdict": "could-not-verify",
           "criteria": [
             "implemented",
             "implemented",
             "implemented",
             "implemented",
             "implemented",
-            "implemented"
+            "could-not-verify"
           ],
           "citations": [
             {
-              "filePath": "src/routes/orders.ts",
+              "filePath": "src/events/publisher.ts",
               "startLine": 1,
               "endLine": 1
             },
             {
-              "filePath": "src/events/publisher.ts",
+              "filePath": "src/routes/orders.ts",
               "startLine": 1,
               "endLine": 1
             },
@@ -2090,18 +422,18 @@
     {
       "itemId": "FX-04",
       "arm": "P0",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.02663399999999999,
-      "seconds": 12.793880209000003,
+      "costUsd": 0.032024,
+      "seconds": 13.788934291999999,
       "verdict": "implemented",
       "productCoverage": "covers",
-      "criteriaCount": 4,
+      "criteriaCount": 5,
       "repos": [
         {
           "repo": "billing",
           "verdict": "implemented",
-          "criteria": ["implemented", "implemented", "implemented", "implemented"],
+          "criteria": ["implemented", "implemented", "implemented", "implemented", "implemented"],
           "citations": [
             {
               "filePath": "src/consumers/order-created.ts",
@@ -2118,24 +450,26 @@
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
@@ -2145,23 +479,23 @@
     {
       "itemId": "FX-05",
       "arm": "P0",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.029322000000000015,
-      "seconds": 13.374838333,
+      "costUsd": 0.03378800000000004,
+      "seconds": 15.004818957999996,
       "verdict": "implemented",
       "productCoverage": "covers",
       "criteriaCount": 5,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "gap-confirmed",
+          "verdict": "could-not-verify",
           "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
             "could-not-verify",
             "could-not-verify",
-            "gap-confirmed"
+            "could-not-verify",
+            "could-not-verify",
+            "could-not-verify"
           ],
           "citations": [],
           "reason": null
@@ -2186,13 +520,13 @@
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
@@ -2202,25 +536,25 @@
     {
       "itemId": "FX-06",
       "arm": "P0",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.022784,
-      "seconds": 8.784950334000008,
-      "verdict": "could-not-verify",
-      "productCoverage": "not-checked",
+      "costUsd": 0.024048000000000014,
+      "seconds": 7.963064207999996,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
       "criteriaCount": 3,
       "repos": [
         {
           "repo": "billing",
           "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "could-not-verify", "gap-confirmed"],
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
@@ -2236,10 +570,10 @@
     {
       "itemId": "FX-07",
       "arm": "P0",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.028002000000000027,
-      "seconds": 11.767995624999996,
+      "costUsd": 0.031059999999999977,
+      "seconds": 12.044495665999987,
       "verdict": "partial",
       "productCoverage": "partial",
       "criteriaCount": 4,
@@ -2274,31 +608,15 @@
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify", "implemented"],
-          "citations": [
-            {
-              "filePath": "src/db/notify-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/consumers/invoice-issued.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
           "reason": null
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         }
@@ -2307,10 +625,10 @@
     {
       "itemId": "FX-08",
       "arm": "P0",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.030861999999999973,
-      "seconds": 13.729085292000004,
+      "costUsd": 0.03325,
+      "seconds": 13.02425445800001,
       "verdict": "partial",
       "productCoverage": "partial",
       "criteriaCount": 6,
@@ -2373,10 +691,10 @@
     {
       "itemId": "FX-09",
       "arm": "P0",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.029467999999999994,
-      "seconds": 12.143554166000001,
+      "costUsd": 0.030986000000000014,
+      "seconds": 13.069380374999993,
       "verdict": "gap-confirmed",
       "productCoverage": "not-covered",
       "criteriaCount": 6,
@@ -2400,9 +718,9 @@
           "verdict": "gap-confirmed",
           "criteria": [
             "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
             "gap-confirmed",
             "gap-confirmed"
           ],
@@ -2417,8 +735,8 @@
             "gap-confirmed",
             "gap-confirmed",
             "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed"
+            "could-not-verify",
+            "could-not-verify"
           ],
           "citations": [],
           "reason": null
@@ -2428,32 +746,37 @@
     {
       "itemId": "FX-10",
       "arm": "P0",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.02437199999999995,
-      "seconds": 10.332431999999987,
+      "costUsd": 0.027583999999999942,
+      "seconds": 9.61257983300001,
       "verdict": "could-not-verify",
       "productCoverage": "not-checked",
-      "criteriaCount": 3,
+      "criteriaCount": 4,
       "repos": [
         {
           "repo": "billing",
           "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "criteria": [
+            "could-not-verify",
+            "could-not-verify",
+            "could-not-verify",
+            "could-not-verify"
+          ],
           "citations": [],
           "reason": null
         },
         {
           "repo": "notify",
           "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         }
@@ -2462,51 +785,40 @@
     {
       "itemId": "FX-11",
       "arm": "P0",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.03266000000000002,
-      "seconds": 14.259339083999977,
+      "costUsd": 0.03921200000000008,
+      "seconds": 17.315897417,
       "verdict": "partial",
       "productCoverage": "partial",
       "criteriaCount": 7,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "partial",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
             "gap-confirmed",
-            "implemented"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "could-not-verify",
+            "could-not-verify"
           ],
-          "citations": [
-            {
-              "filePath": "src/consumers/order-created.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/billing-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
+          "citations": [],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
@@ -2547,10 +859,10 @@
     {
       "itemId": "FX-12",
       "arm": "P0",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.02384599999999998,
-      "seconds": 10.454944416000012,
+      "costUsd": 0.024104000000000014,
+      "seconds": 7.955993875000015,
       "verdict": "partial",
       "productCoverage": "partial",
       "criteriaCount": 3,
@@ -2558,34 +870,29 @@
         {
           "repo": "billing",
           "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "could-not-verify"],
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
         {
           "repo": "orders",
           "verdict": "partial",
-          "criteria": ["gap-confirmed", "gap-confirmed", "implemented"],
+          "criteria": ["gap-confirmed", "could-not-verify", "implemented"],
           "citations": [
-            {
-              "filePath": "src/db/schema.sql",
-              "startLine": 1,
-              "endLine": 1
-            },
             {
               "filePath": "src/db/orders-repo.ts",
               "startLine": 1,
               "endLine": 1
             },
             {
-              "filePath": "openapi.yaml",
+              "filePath": "src/db/schema.sql",
               "startLine": 1,
               "endLine": 1
             }
@@ -2597,10 +904,10 @@
     {
       "itemId": "FX-13",
       "arm": "P0",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.027530000000000054,
-      "seconds": 11.698749417000014,
+      "costUsd": 0.028997999999999913,
+      "seconds": 12.127878915999988,
       "verdict": "partial",
       "productCoverage": "partial",
       "criteriaCount": 4,
@@ -2625,25 +932,15 @@
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         }
@@ -2652,10 +949,10 @@
     {
       "itemId": "FX-14",
       "arm": "P0",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.020847999999999978,
-      "seconds": 8.671837457999995,
+      "costUsd": 0.022840000000000027,
+      "seconds": 7.259445957999997,
       "verdict": "could-not-verify",
       "productCoverage": "not-checked",
       "criteriaCount": 2,
@@ -2676,8 +973,8 @@
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         }
@@ -2686,48 +983,50 @@
     {
       "itemId": "FX-15",
       "arm": "P0",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.02590799999999993,
-      "seconds": 10.921068291000003,
-      "verdict": "implemented",
-      "productCoverage": "covers",
-      "criteriaCount": 4,
+      "costUsd": 0.02812999999999999,
+      "seconds": 10.314996042000013,
+      "verdict": "partial",
+      "productCoverage": "partial",
+      "criteriaCount": 5,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify", "implemented"],
-          "citations": [
-            {
-              "filePath": "src/db/notify-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/consumers/invoice-issued.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "could-not-verify"
           ],
+          "citations": [],
           "reason": null
         },
         {
           "repo": "orders",
           "verdict": "could-not-verify",
-          "criteria": ["implemented", "implemented", "implemented", "could-not-verify"],
+          "criteria": [
+            "implemented",
+            "implemented",
+            "implemented",
+            "implemented",
+            "could-not-verify"
+          ],
           "citations": [
             {
               "filePath": "src/routes/orders.ts",
@@ -2752,18 +1051,18 @@
     {
       "itemId": "FX-01",
       "arm": "P0R",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.03985,
-      "seconds": 20.035580208,
+      "costUsd": 0.033368,
+      "seconds": 16.170573292,
       "verdict": "partial",
       "productCoverage": "partial",
       "criteriaCount": 4,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "implemented", "could-not-verify"],
+          "verdict": "partial",
+          "criteria": ["gap-confirmed", "gap-confirmed", "implemented", "could-not-verify"],
           "citations": [
             {
               "filePath": "src/db/billing-repo.ts",
@@ -2780,20 +1079,15 @@
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "could-not-verify", "could-not-verify"],
           "citations": [],
           "reason": null
         },
         {
           "repo": "orders",
           "verdict": "partial",
-          "criteria": ["gap-confirmed", "implemented", "could-not-verify", "could-not-verify"],
+          "criteria": ["gap-confirmed", "implemented", "gap-confirmed", "gap-confirmed"],
           "citations": [
             {
               "filePath": "src/db/orders-repo.ts",
@@ -2808,10 +1102,10 @@
     {
       "itemId": "FX-02",
       "arm": "P0R",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.030061999999999922,
-      "seconds": 12.554412041000003,
+      "costUsd": 0.03157200000000001,
+      "seconds": 12.47254175,
       "verdict": "gap-confirmed",
       "productCoverage": "not-covered",
       "criteriaCount": 6,
@@ -2863,38 +1157,38 @@
     {
       "itemId": "FX-03",
       "arm": "P0R",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.03551600000000005,
-      "seconds": 16.037507332999986,
+      "costUsd": 0.031263999999999986,
+      "seconds": 11.699636624999998,
       "verdict": "implemented",
       "productCoverage": "covers",
       "criteriaCount": 6,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
@@ -2934,10 +1228,10 @@
     {
       "itemId": "FX-04",
       "arm": "P0R",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.02733399999999997,
-      "seconds": 12.66914412500002,
+      "costUsd": 0.025978,
+      "seconds": 9.337254457999995,
       "verdict": "implemented",
       "productCoverage": "covers",
       "criteriaCount": 4,
@@ -2962,25 +1256,15 @@
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         }
@@ -2989,23 +1273,22 @@
     {
       "itemId": "FX-05",
       "arm": "P0R",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.029885999999999968,
-      "seconds": 13.02550354200002,
+      "costUsd": 0.025561999999999988,
+      "seconds": 9.069533000000003,
       "verdict": "implemented",
       "productCoverage": "covers",
-      "criteriaCount": 5,
+      "criteriaCount": 4,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "gap-confirmed",
+          "verdict": "could-not-verify",
           "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed"
+            "could-not-verify",
+            "could-not-verify",
+            "could-not-verify",
+            "could-not-verify"
           ],
           "citations": [],
           "reason": null
@@ -3013,7 +1296,7 @@
         {
           "repo": "notify",
           "verdict": "implemented",
-          "criteria": ["implemented", "implemented", "implemented", "implemented", "implemented"],
+          "criteria": ["implemented", "implemented", "implemented", "implemented"],
           "citations": [
             {
               "filePath": "src/db/notify-repo.ts",
@@ -3030,14 +1313,8 @@
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         }
@@ -3046,25 +1323,25 @@
     {
       "itemId": "FX-06",
       "arm": "P0R",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.023587999999999942,
-      "seconds": 10.219794166000035,
-      "verdict": "could-not-verify",
-      "productCoverage": "not-checked",
+      "costUsd": 0.024278000000000022,
+      "seconds": 8.033243875,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
       "criteriaCount": 3,
       "repos": [
         {
           "repo": "billing",
           "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "could-not-verify", "gap-confirmed"],
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
@@ -3080,10 +1357,10 @@
     {
       "itemId": "FX-07",
       "arm": "P0R",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.02721400000000007,
-      "seconds": 11.161459250000014,
+      "costUsd": 0.024604000000000015,
+      "seconds": 8.007474665999995,
       "verdict": "partial",
       "productCoverage": "partial",
       "criteriaCount": 3,
@@ -3099,12 +1376,12 @@
               "endLine": 1
             },
             {
-              "filePath": "src/db/schema.sql",
+              "filePath": "src/db/billing-repo.ts",
               "startLine": 1,
               "endLine": 1
             },
             {
-              "filePath": "src/db/billing-repo.ts",
+              "filePath": "src/db/schema.sql",
               "startLine": 1,
               "endLine": 1
             },
@@ -3118,15 +1395,15 @@
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         }
@@ -3135,13 +1412,13 @@
     {
       "itemId": "FX-08",
       "arm": "P0R",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.031776000000000026,
-      "seconds": 13.995999832999951,
+      "costUsd": 0.03378800000000001,
+      "seconds": 14.150674833000012,
       "verdict": "partial",
       "productCoverage": "partial",
-      "criteriaCount": 5,
+      "criteriaCount": 6,
       "repos": [
         {
           "repo": "billing",
@@ -3151,11 +1428,17 @@
             "gap-confirmed",
             "gap-confirmed",
             "gap-confirmed",
+            "gap-confirmed",
             "gap-confirmed"
           ],
           "citations": [
             {
               "filePath": "src/routes/invoices.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "openapi.yaml",
               "startLine": 1,
               "endLine": 1
             }
@@ -3168,8 +1451,9 @@
           "criteria": [
             "gap-confirmed",
             "gap-confirmed",
-            "could-not-verify",
-            "could-not-verify",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
             "gap-confirmed"
           ],
           "citations": [],
@@ -3179,6 +1463,7 @@
           "repo": "orders",
           "verdict": "gap-confirmed",
           "criteria": [
+            "gap-confirmed",
             "gap-confirmed",
             "gap-confirmed",
             "gap-confirmed",
@@ -3193,10 +1478,10 @@
     {
       "itemId": "FX-09",
       "arm": "P0R",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.027876000000000012,
-      "seconds": 11.152243416000042,
+      "costUsd": 0.032749999999999974,
+      "seconds": 14.053631750000001,
       "verdict": "gap-confirmed",
       "productCoverage": "not-covered",
       "criteriaCount": 5,
@@ -3218,10 +1503,10 @@
           "repo": "notify",
           "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
             "gap-confirmed"
           ],
           "citations": [],
@@ -3235,7 +1520,7 @@
             "gap-confirmed",
             "gap-confirmed",
             "gap-confirmed",
-            "gap-confirmed"
+            "could-not-verify"
           ],
           "citations": [],
           "reason": null
@@ -3245,18 +1530,18 @@
     {
       "itemId": "FX-10",
       "arm": "P0R",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.024270000000000125,
-      "seconds": 11.10724341699999,
-      "verdict": "could-not-verify",
-      "productCoverage": "not-checked",
+      "costUsd": 0.025660000000000016,
+      "seconds": 9.483721375000009,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
       "criteriaCount": 3,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
@@ -3269,8 +1554,8 @@
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         }
@@ -3279,40 +1564,51 @@
     {
       "itemId": "FX-11",
       "arm": "P0R",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.03629400000000005,
-      "seconds": 16.919761624999985,
+      "costUsd": 0.033953999999999984,
+      "seconds": 13.279617750000005,
       "verdict": "partial",
       "productCoverage": "partial",
       "criteriaCount": 7,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "gap-confirmed",
+          "verdict": "partial",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
             "gap-confirmed",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "implemented"
           ],
-          "citations": [],
+          "citations": [
+            {
+              "filePath": "src/consumers/order-created.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/billing-repo.ts",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
@@ -3336,12 +1632,12 @@
               "endLine": 1
             },
             {
-              "filePath": "src/events/publisher.ts",
+              "filePath": "src/db/orders-repo.ts",
               "startLine": 1,
               "endLine": 1
             },
             {
-              "filePath": "src/db/orders-repo.ts",
+              "filePath": "src/events/publisher.ts",
               "startLine": 1,
               "endLine": 1
             }
@@ -3353,10 +1649,10 @@
     {
       "itemId": "FX-12",
       "arm": "P0R",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.023327999999999904,
-      "seconds": 8.842106832999969,
+      "costUsd": 0.02354000000000006,
+      "seconds": 7.412941458000016,
       "verdict": "partial",
       "productCoverage": "partial",
       "criteriaCount": 3,
@@ -3364,14 +1660,14 @@
         {
           "repo": "billing",
           "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "could-not-verify"],
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
@@ -3389,16 +1685,6 @@
               "filePath": "src/db/schema.sql",
               "startLine": 1,
               "endLine": 1
-            },
-            {
-              "filePath": "src/types/order.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "openapi.yaml",
-              "startLine": 1,
-              "endLine": 1
             }
           ],
           "reason": null
@@ -3408,10 +1694,10 @@
     {
       "itemId": "FX-13",
       "arm": "P0R",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.027139999999999942,
-      "seconds": 12.277788165999985,
+      "costUsd": 0.028456000000000037,
+      "seconds": 10.354379875000014,
       "verdict": "partial",
       "productCoverage": "partial",
       "criteriaCount": 4,
@@ -3436,25 +1722,15 @@
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         }
@@ -3463,10 +1739,10 @@
     {
       "itemId": "FX-14",
       "arm": "P0R",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.023610000000000242,
-      "seconds": 9.614172167000012,
+      "costUsd": 0.025225999999999915,
+      "seconds": 8.462284167000005,
       "verdict": "could-not-verify",
       "productCoverage": "not-checked",
       "criteriaCount": 3,
@@ -3487,8 +1763,8 @@
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         }
@@ -3497,35 +1773,35 @@
     {
       "itemId": "FX-15",
       "arm": "P0R",
-      "run": 2,
+      "run": 1,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.026887999999999912,
-      "seconds": 11.708503084000025,
+      "costUsd": 0.02832200000000007,
+      "seconds": 9.373976749999972,
       "verdict": "partial",
       "productCoverage": "partial",
       "criteriaCount": 5,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
             "could-not-verify"
           ],
           "citations": [],
@@ -3565,24 +1841,18 @@
     {
       "itemId": "FX-01",
       "arm": "P0",
-      "run": 3,
+      "run": 2,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.037366,
-      "seconds": 19.232395291999996,
+      "costUsd": 0.031507999999999925,
+      "seconds": 12.777044958999992,
       "verdict": "partial",
       "productCoverage": "partial",
-      "criteriaCount": 5,
+      "criteriaCount": 4,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "implemented",
-            "could-not-verify",
-            "could-not-verify"
-          ],
+          "verdict": "partial",
+          "criteria": ["gap-confirmed", "gap-confirmed", "implemented", "could-not-verify"],
           "citations": [
             {
               "filePath": "src/db/billing-repo.ts",
@@ -3600,26 +1870,14 @@
         {
           "repo": "notify",
           "verdict": "gap-confirmed",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "gap-confirmed",
-            "gap-confirmed",
-            "could-not-verify"
-          ],
+          "criteria": ["gap-confirmed", "gap-confirmed", "could-not-verify", "could-not-verify"],
           "citations": [],
           "reason": null
         },
         {
           "repo": "orders",
           "verdict": "partial",
-          "criteria": [
-            "gap-confirmed",
-            "implemented",
-            "could-not-verify",
-            "could-not-verify",
-            "implemented"
-          ],
+          "criteria": ["gap-confirmed", "implemented", "gap-confirmed", "gap-confirmed"],
           "citations": [
             {
               "filePath": "src/db/orders-repo.ts",
@@ -3639,116 +1897,52 @@
     {
       "itemId": "FX-02",
       "arm": "P0",
-      "run": 3,
+      "run": 2,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.032392,
-      "seconds": 13.939799624999996,
-      "verdict": "partial",
-      "productCoverage": "partial",
-      "criteriaCount": 7,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "partial",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "implemented",
-            "gap-confirmed"
-          ],
-          "citations": [
-            {
-              "filePath": "src/db/billing-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "gap-confirmed",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "gap-confirmed",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed"
-          ],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-03",
-      "arm": "P0",
-      "run": 3,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.033384,
-      "seconds": 14.904307542000002,
+      "costUsd": 0.03199400000000002,
+      "seconds": 13.018499666999997,
       "verdict": "partial",
       "productCoverage": "partial",
       "criteriaCount": 6,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
+          "verdict": "partial",
           "criteria": [
             "implemented",
-            "implemented",
-            "implemented",
-            "implemented",
-            "implemented",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [
             {
@@ -3757,7 +1951,73 @@
               "endLine": 1
             },
             {
+              "filePath": "openapi.yaml",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-03",
+      "arm": "P0",
+      "run": 2,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.03349599999999997,
+      "seconds": 13.630409041999984,
+      "verdict": "implemented",
+      "productCoverage": "covers",
+      "criteriaCount": 6,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "implemented",
+          "criteria": [
+            "implemented",
+            "implemented",
+            "implemented",
+            "implemented",
+            "implemented",
+            "implemented"
+          ],
+          "citations": [
+            {
               "filePath": "src/events/publisher.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/routes/orders.ts",
               "startLine": 1,
               "endLine": 1
             },
@@ -3774,10 +2034,10 @@
     {
       "itemId": "FX-04",
       "arm": "P0",
-      "run": 3,
+      "run": 2,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.026674000000000017,
-      "seconds": 12.916045750000006,
+      "costUsd": 0.02562999999999993,
+      "seconds": 9.751249624999996,
       "verdict": "implemented",
       "productCoverage": "covers",
       "criteriaCount": 4,
@@ -3796,36 +2056,21 @@
               "filePath": "src/db/billing-repo.ts",
               "startLine": 1,
               "endLine": 1
-            },
-            {
-              "filePath": "src/db/schema.sql",
-              "startLine": 1,
-              "endLine": 1
             }
           ],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         }
@@ -3834,10 +2079,10 @@
     {
       "itemId": "FX-05",
       "arm": "P0",
-      "run": 3,
+      "run": 2,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.029202000000000006,
-      "seconds": 12.824752791999993,
+      "costUsd": 0.03279600000000005,
+      "seconds": 14.211442625000025,
       "verdict": "implemented",
       "productCoverage": "covers",
       "criteriaCount": 5,
@@ -3875,13 +2120,13 @@
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
@@ -3891,25 +2136,25 @@
     {
       "itemId": "FX-06",
       "arm": "P0",
-      "run": 3,
+      "run": 2,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.027495999999999965,
-      "seconds": 12.543150167,
-      "verdict": "could-not-verify",
-      "productCoverage": "not-checked",
+      "costUsd": 0.024542000000000064,
+      "seconds": 7.909092000000004,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
       "criteriaCount": 3,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
@@ -3925,12 +2170,12 @@
     {
       "itemId": "FX-07",
       "arm": "P0",
-      "run": 3,
+      "run": 2,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.028569999999999984,
-      "seconds": 13.338916750000005,
-      "verdict": "could-not-verify",
-      "productCoverage": "not-checked",
+      "costUsd": 0.027785999999999977,
+      "seconds": 10.066487208000005,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
       "criteriaCount": 3,
       "repos": [
         {
@@ -3942,15 +2187,15 @@
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         }
@@ -3959,10 +2204,10 @@
     {
       "itemId": "FX-08",
       "arm": "P0",
-      "run": 3,
+      "run": 2,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.03187999999999999,
-      "seconds": 13.995988958999995,
+      "costUsd": 0.03345600000000004,
+      "seconds": 12.998035207999987,
       "verdict": "partial",
       "productCoverage": "partial",
       "criteriaCount": 6,
@@ -4025,75 +2270,18 @@
     {
       "itemId": "FX-09",
       "arm": "P0",
-      "run": 3,
+      "run": 2,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.027956000000000036,
-      "seconds": 11.291826541999995,
+      "costUsd": 0.027143999999999835,
+      "seconds": 10.41484149999998,
       "verdict": "gap-confirmed",
       "productCoverage": "not-covered",
-      "criteriaCount": 5,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "gap-confirmed",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "gap-confirmed",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "gap-confirmed"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "gap-confirmed",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed"
-          ],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-10",
-      "arm": "P0",
-      "run": 3,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.02613799999999994,
-      "seconds": 10.815019916999983,
-      "verdict": "could-not-verify",
-      "productCoverage": "not-checked",
       "criteriaCount": 4,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
@@ -4106,110 +2294,20 @@
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "could-not-verify"],
           "citations": [],
           "reason": null
         }
       ]
     },
     {
-      "itemId": "FX-11",
+      "itemId": "FX-10",
       "arm": "P0",
-      "run": 3,
+      "run": 2,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.03368400000000005,
-      "seconds": 15.118016000000003,
-      "verdict": "partial",
-      "productCoverage": "partial",
-      "criteriaCount": 7,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "partial",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "gap-confirmed",
-            "implemented"
-          ],
-          "citations": [
-            {
-              "filePath": "src/consumers/order-created.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/billing-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "partial",
-          "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "implemented"
-          ],
-          "citations": [
-            {
-              "filePath": "src/routes/orders.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/orders-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/events/publisher.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-12",
-      "arm": "P0",
-      "run": 3,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.023425999999999947,
-      "seconds": 10.242916165999981,
+      "costUsd": 0.02870399999999984,
+      "seconds": 11.316052833999972,
       "verdict": "gap-confirmed",
       "productCoverage": "not-covered",
       "criteriaCount": 3,
@@ -4224,7 +2322,7 @@
         {
           "repo": "notify",
           "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "could-not-verify"],
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
@@ -4238,28 +2336,92 @@
       ]
     },
     {
-      "itemId": "FX-13",
+      "itemId": "FX-11",
       "arm": "P0",
-      "run": 3,
+      "run": 2,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.03663200000000005,
-      "seconds": 18.135150417,
-      "verdict": "implemented",
-      "productCoverage": "covers",
+      "costUsd": 0.030902000000000002,
+      "seconds": 11.896348709,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
+      "criteriaCount": 6,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-12",
+      "arm": "P0",
+      "run": 2,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.026544,
+      "seconds": 8.358443,
+      "verdict": "partial",
+      "productCoverage": "partial",
       "criteriaCount": 4,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "implemented",
-          "criteria": ["implemented", "implemented", "implemented", "implemented"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "partial",
+          "criteria": ["gap-confirmed", "could-not-verify", "could-not-verify", "implemented"],
           "citations": [
             {
-              "filePath": "src/consumers/order-created.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/billing-repo.ts",
+              "filePath": "openapi.yaml",
               "startLine": 1,
               "endLine": 1
             },
@@ -4270,28 +2432,49 @@
             }
           ],
           "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-13",
+      "arm": "P0",
+      "run": 2,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.028178,
+      "seconds": 9.994858790999999,
+      "verdict": "partial",
+      "productCoverage": "partial",
+      "criteriaCount": 4,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "partial",
+          "criteria": ["gap-confirmed", "gap-confirmed", "implemented", "gap-confirmed"],
+          "citations": [
+            {
+              "filePath": "src/consumers/order-created.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/billing-repo.ts",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         }
@@ -4300,18 +2483,18 @@
     {
       "itemId": "FX-14",
       "arm": "P0",
-      "run": 3,
+      "run": 2,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.02086600000000005,
-      "seconds": 8.607752000000009,
-      "verdict": "could-not-verify",
-      "productCoverage": "not-checked",
+      "costUsd": 0.026055999999999982,
+      "seconds": 9.299291708,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
       "criteriaCount": 2,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
@@ -4324,8 +2507,8 @@
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         }
@@ -4334,35 +2517,35 @@
     {
       "itemId": "FX-15",
       "arm": "P0",
-      "run": 3,
+      "run": 2,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.030480000000000063,
-      "seconds": 14.237713458000012,
-      "verdict": "implemented",
-      "productCoverage": "covers",
+      "costUsd": 0.027837999999999988,
+      "seconds": 10.106400583000003,
+      "verdict": "partial",
+      "productCoverage": "partial",
       "criteriaCount": 5,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
             "could-not-verify"
           ],
           "citations": [],
@@ -4370,8 +2553,14 @@
         },
         {
           "repo": "orders",
-          "verdict": "implemented",
-          "criteria": ["implemented", "implemented", "implemented", "implemented", "implemented"],
+          "verdict": "could-not-verify",
+          "criteria": [
+            "implemented",
+            "implemented",
+            "implemented",
+            "implemented",
+            "could-not-verify"
+          ],
           "citations": [
             {
               "filePath": "src/routes/orders.ts",
@@ -4396,18 +2585,24 @@
     {
       "itemId": "FX-01",
       "arm": "P0R",
-      "run": 3,
+      "run": 2,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.04221800000000003,
-      "seconds": 23.097652166999993,
+      "costUsd": 0.037191999999999975,
+      "seconds": 17.111572459,
       "verdict": "partial",
       "productCoverage": "partial",
-      "criteriaCount": 4,
+      "criteriaCount": 5,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "implemented", "could-not-verify"],
+          "verdict": "partial",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "implemented",
+            "could-not-verify",
+            "gap-confirmed"
+          ],
           "citations": [
             {
               "filePath": "src/db/billing-repo.ts",
@@ -4424,12 +2619,13 @@
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
             "could-not-verify",
             "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
@@ -4437,7 +2633,13 @@
         {
           "repo": "orders",
           "verdict": "partial",
-          "criteria": ["gap-confirmed", "implemented", "could-not-verify", "could-not-verify"],
+          "criteria": [
+            "gap-confirmed",
+            "could-not-verify",
+            "gap-confirmed",
+            "gap-confirmed",
+            "implemented"
+          ],
           "citations": [
             {
               "filePath": "src/db/orders-repo.ts",
@@ -4446,6 +2648,11 @@
             },
             {
               "filePath": "src/db/schema.sql",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/types/order.ts",
               "startLine": 1,
               "endLine": 1
             }
@@ -4457,10 +2664,472 @@
     {
       "itemId": "FX-02",
       "arm": "P0R",
-      "run": 3,
+      "run": 2,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.030556000000000028,
-      "seconds": 12.528141042000003,
+      "costUsd": 0.032184000000000046,
+      "seconds": 13.058520583000005,
+      "verdict": "partial",
+      "productCoverage": "partial",
+      "criteriaCount": 6,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "partial",
+          "criteria": [
+            "implemented",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [
+            {
+              "filePath": "src/routes/orders.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "openapi.yaml",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-03",
+      "arm": "P0R",
+      "run": 2,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.03559599999999999,
+      "seconds": 14.35310770800001,
+      "verdict": "implemented",
+      "productCoverage": "covers",
+      "criteriaCount": 6,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "implemented",
+          "criteria": [
+            "implemented",
+            "implemented",
+            "implemented",
+            "implemented",
+            "implemented",
+            "implemented"
+          ],
+          "citations": [
+            {
+              "filePath": "src/events/publisher.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/routes/orders.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/types/order.ts",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-04",
+      "arm": "P0R",
+      "run": 2,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.025592000000000004,
+      "seconds": 9.824342917000001,
+      "verdict": "implemented",
+      "productCoverage": "covers",
+      "criteriaCount": 4,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "implemented",
+          "criteria": ["implemented", "implemented", "implemented", "implemented"],
+          "citations": [
+            {
+              "filePath": "src/consumers/order-created.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/billing-repo.ts",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-05",
+      "arm": "P0R",
+      "run": 2,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.028212000000000015,
+      "seconds": 10.064144666000008,
+      "verdict": "implemented",
+      "productCoverage": "covers",
+      "criteriaCount": 5,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "could-not-verify",
+          "criteria": [
+            "could-not-verify",
+            "could-not-verify",
+            "could-not-verify",
+            "could-not-verify",
+            "could-not-verify"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "implemented",
+          "criteria": ["implemented", "implemented", "implemented", "implemented", "implemented"],
+          "citations": [
+            {
+              "filePath": "src/consumers/invoice-issued.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/notify-repo.ts",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-06",
+      "arm": "P0R",
+      "run": 2,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.02439199999999997,
+      "seconds": 7.47270216700001,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
+      "criteriaCount": 3,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-07",
+      "arm": "P0R",
+      "run": 2,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.028046000000000015,
+      "seconds": 11.081847083000001,
+      "verdict": "partial",
+      "productCoverage": "partial",
+      "criteriaCount": 3,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "partial",
+          "criteria": ["gap-confirmed", "gap-confirmed", "implemented"],
+          "citations": [
+            {
+              "filePath": "openapi.yaml",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/schema.sql",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/billing-repo.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/consumers/order-created.ts",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-08",
+      "arm": "P0R",
+      "run": 2,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.033212000000000075,
+      "seconds": 12.546109499999991,
+      "verdict": "partial",
+      "productCoverage": "partial",
+      "criteriaCount": 6,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "partial",
+          "criteria": [
+            "implemented",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [
+            {
+              "filePath": "src/routes/invoices.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "openapi.yaml",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-09",
+      "arm": "P0R",
+      "run": 2,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.026875999999999955,
+      "seconds": 9.734662750000018,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
+      "criteriaCount": 4,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": ["could-not-verify", "gap-confirmed", "gap-confirmed", "could-not-verify"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": ["could-not-verify", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-10",
+      "arm": "P0R",
+      "run": 2,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.02767800000000009,
+      "seconds": 11.036328708000015,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
+      "criteriaCount": 4,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-11",
+      "arm": "P0R",
+      "run": 2,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.031161999999999968,
+      "seconds": 13.009675583000003,
       "verdict": "gap-confirmed",
       "productCoverage": "not-covered",
       "criteriaCount": 6,
@@ -4483,12 +3152,299 @@
           "repo": "notify",
           "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
             "gap-confirmed",
-            "could-not-verify",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-12",
+      "arm": "P0R",
+      "run": 2,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.026536000000000004,
+      "seconds": 8.545103459000005,
+      "verdict": "partial",
+      "productCoverage": "partial",
+      "criteriaCount": 4,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "partial",
+          "criteria": ["gap-confirmed", "gap-confirmed", "could-not-verify", "implemented"],
+          "citations": [
+            {
+              "filePath": "src/db/orders-repo.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/schema.sql",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-13",
+      "arm": "P0R",
+      "run": 2,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.028495999999999966,
+      "seconds": 11.486029749999988,
+      "verdict": "partial",
+      "productCoverage": "partial",
+      "criteriaCount": 4,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "partial",
+          "criteria": ["gap-confirmed", "implemented", "gap-confirmed", "gap-confirmed"],
+          "citations": [
+            {
+              "filePath": "src/consumers/order-created.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/billing-repo.ts",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-14",
+      "arm": "P0R",
+      "run": 2,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.022220000000000018,
+      "seconds": 7.038378417,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
+      "criteriaCount": 2,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-15",
+      "arm": "P0R",
+      "run": 2,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.02792400000000006,
+      "seconds": 9.588965749999973,
+      "verdict": "partial",
+      "productCoverage": "partial",
+      "criteriaCount": 5,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
             "could-not-verify"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "could-not-verify",
+          "criteria": [
+            "implemented",
+            "implemented",
+            "implemented",
+            "implemented",
+            "could-not-verify"
+          ],
+          "citations": [
+            {
+              "filePath": "src/routes/orders.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/orders-repo.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/schema.sql",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-01",
+      "arm": "P0",
+      "run": 3,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.036798,
+      "seconds": 17.10573766699998,
+      "verdict": "partial",
+      "productCoverage": "partial",
+      "criteriaCount": 4,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "could-not-verify", "could-not-verify"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "could-not-verify", "could-not-verify"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "partial",
+          "criteria": ["gap-confirmed", "implemented", "gap-confirmed", "gap-confirmed"],
+          "citations": [
+            {
+              "filePath": "src/db/orders-repo.ts",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-02",
+      "arm": "P0",
+      "run": 3,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.03141400000000005,
+      "seconds": 12.340913540999987,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
+      "criteriaCount": 6,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
@@ -4511,39 +3467,39 @@
     },
     {
       "itemId": "FX-03",
-      "arm": "P0R",
+      "arm": "P0",
       "run": 3,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.03938800000000009,
-      "seconds": 19.317753041999996,
+      "costUsd": 0.03366400000000014,
+      "seconds": 13.284049958000018,
       "verdict": "implemented",
       "productCoverage": "covers",
       "criteriaCount": 6,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
@@ -4582,11 +3538,11 @@
     },
     {
       "itemId": "FX-04",
-      "arm": "P0R",
+      "arm": "P0",
       "run": 3,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.027183999999999986,
-      "seconds": 12.895621709000029,
+      "costUsd": 0.026336000000000026,
+      "seconds": 10.28909604199999,
       "verdict": "implemented",
       "productCoverage": "covers",
       "criteriaCount": 4,
@@ -4605,36 +3561,21 @@
               "filePath": "src/db/billing-repo.ts",
               "startLine": 1,
               "endLine": 1
-            },
-            {
-              "filePath": "src/db/schema.sql",
-              "startLine": 1,
-              "endLine": 1
             }
           ],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         }
@@ -4642,24 +3583,23 @@
     },
     {
       "itemId": "FX-05",
-      "arm": "P0R",
+      "arm": "P0",
       "run": 3,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.02866000000000013,
-      "seconds": 12.447165083000028,
+      "costUsd": 0.029481999999999897,
+      "seconds": 11.481748250000004,
       "verdict": "implemented",
       "productCoverage": "covers",
-      "criteriaCount": 5,
+      "criteriaCount": 4,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "gap-confirmed",
+          "verdict": "could-not-verify",
           "criteria": [
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed",
-            "gap-confirmed"
+            "could-not-verify",
+            "could-not-verify",
+            "could-not-verify",
+            "could-not-verify"
           ],
           "citations": [],
           "reason": null
@@ -4667,15 +3607,15 @@
         {
           "repo": "notify",
           "verdict": "implemented",
-          "criteria": ["implemented", "implemented", "implemented", "implemented", "implemented"],
+          "criteria": ["implemented", "implemented", "implemented", "implemented"],
           "citations": [
             {
-              "filePath": "src/consumers/invoice-issued.ts",
+              "filePath": "src/db/notify-repo.ts",
               "startLine": 1,
               "endLine": 1
             },
             {
-              "filePath": "src/db/notify-repo.ts",
+              "filePath": "src/consumers/invoice-issued.ts",
               "startLine": 1,
               "endLine": 1
             }
@@ -4684,14 +3624,8 @@
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         }
@@ -4699,26 +3633,26 @@
     },
     {
       "itemId": "FX-06",
-      "arm": "P0R",
+      "arm": "P0",
       "run": 3,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.02331799999999995,
-      "seconds": 8.928844250000024,
-      "verdict": "could-not-verify",
-      "productCoverage": "not-checked",
+      "costUsd": 0.024342000000000003,
+      "seconds": 8.453326834,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
       "criteriaCount": 3,
       "repos": [
         {
           "repo": "billing",
           "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "could-not-verify", "gap-confirmed"],
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
@@ -4733,11 +3667,11 @@
     },
     {
       "itemId": "FX-07",
-      "arm": "P0R",
+      "arm": "P0",
       "run": 3,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.027926000000000006,
-      "seconds": 11.66641745800001,
+      "costUsd": 0.024650000000000005,
+      "seconds": 8.390546958,
       "verdict": "partial",
       "productCoverage": "partial",
       "criteriaCount": 3,
@@ -4772,15 +3706,832 @@
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-08",
+      "arm": "P0",
+      "run": 3,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.03602399999999999,
+      "seconds": 16.517759749999996,
+      "verdict": "partial",
+      "productCoverage": "partial",
+      "criteriaCount": 6,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "partial",
+          "criteria": [
+            "implemented",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [
+            {
+              "filePath": "src/routes/invoices.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "openapi.yaml",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-09",
+      "arm": "P0",
+      "run": 3,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.03608600000000001,
+      "seconds": 16.505217375,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
+      "criteriaCount": 6,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "could-not-verify",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "could-not-verify",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-10",
+      "arm": "P0",
+      "run": 3,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.02996800000000001,
+      "seconds": 12.487052125000002,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
+      "criteriaCount": 4,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-11",
+      "arm": "P0",
+      "run": 3,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.04024200000000003,
+      "seconds": 17.545720208,
+      "verdict": "partial",
+      "productCoverage": "partial",
+      "criteriaCount": 7,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "could-not-verify",
+            "could-not-verify"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "partial",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "implemented"
+          ],
+          "citations": [
+            {
+              "filePath": "src/routes/orders.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/orders-repo.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/events/publisher.ts",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-12",
+      "arm": "P0",
+      "run": 3,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.026804000000000022,
+      "seconds": 9.396198415999999,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
+      "criteriaCount": 4,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-13",
+      "arm": "P0",
+      "run": 3,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.027701999999999977,
+      "seconds": 10.000008209000008,
+      "verdict": "partial",
+      "productCoverage": "partial",
+      "criteriaCount": 4,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "partial",
+          "criteria": ["gap-confirmed", "gap-confirmed", "implemented", "gap-confirmed"],
+          "citations": [
+            {
+              "filePath": "src/consumers/order-created.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/billing-repo.ts",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-14",
+      "arm": "P0",
+      "run": 3,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.027554000000000023,
+      "seconds": 9.818418584,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
+      "criteriaCount": 3,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-15",
+      "arm": "P0",
+      "run": 3,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.02835399999999999,
+      "seconds": 9.816792624999987,
+      "verdict": "partial",
+      "productCoverage": "partial",
+      "criteriaCount": 5,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "could-not-verify"
+          ],
           "citations": [],
           "reason": null
         },
         {
           "repo": "orders",
           "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "criteria": [
+            "implemented",
+            "implemented",
+            "implemented",
+            "implemented",
+            "could-not-verify"
+          ],
+          "citations": [
+            {
+              "filePath": "src/routes/orders.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/orders-repo.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/schema.sql",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-01",
+      "arm": "P0R",
+      "run": 3,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.04766600000000004,
+      "seconds": 24.864715125000004,
+      "verdict": "partial",
+      "productCoverage": "partial",
+      "criteriaCount": 5,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "partial",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "implemented",
+            "could-not-verify",
+            "gap-confirmed"
+          ],
+          "citations": [
+            {
+              "filePath": "src/db/billing-repo.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/consumers/order-created.ts",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "could-not-verify",
+            "could-not-verify",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "partial",
+          "criteria": [
+            "gap-confirmed",
+            "could-not-verify",
+            "gap-confirmed",
+            "gap-confirmed",
+            "implemented"
+          ],
+          "citations": [
+            {
+              "filePath": "src/db/orders-repo.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/schema.sql",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/types/order.ts",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-02",
+      "arm": "P0R",
+      "run": 3,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.03172799999999998,
+      "seconds": 12.54443404199998,
+      "verdict": "partial",
+      "productCoverage": "partial",
+      "criteriaCount": 6,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "partial",
+          "criteria": [
+            "implemented",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [
+            {
+              "filePath": "openapi.yaml",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/routes/orders.ts",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-03",
+      "arm": "P0R",
+      "run": 3,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.03045199999999998,
+      "seconds": 10.95984137499999,
+      "verdict": "partial",
+      "productCoverage": "partial",
+      "criteriaCount": 6,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "could-not-verify",
+          "criteria": [
+            "implemented",
+            "implemented",
+            "implemented",
+            "implemented",
+            "implemented",
+            "could-not-verify"
+          ],
+          "citations": [
+            {
+              "filePath": "src/routes/orders.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/events/publisher.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/types/order.ts",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-04",
+      "arm": "P0R",
+      "run": 3,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.0257,
+      "seconds": 10.289899833999982,
+      "verdict": "implemented",
+      "productCoverage": "covers",
+      "criteriaCount": 4,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "implemented",
+          "criteria": ["implemented", "implemented", "implemented", "implemented"],
+          "citations": [
+            {
+              "filePath": "src/consumers/order-created.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/billing-repo.ts",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-05",
+      "arm": "P0R",
+      "run": 3,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.032264000000000015,
+      "seconds": 12.06907587499998,
+      "verdict": "implemented",
+      "productCoverage": "covers",
+      "criteriaCount": 5,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "implemented",
+          "criteria": ["implemented", "implemented", "implemented", "implemented", "implemented"],
+          "citations": [
+            {
+              "filePath": "src/consumers/invoice-issued.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/notify-repo.ts",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-06",
+      "arm": "P0R",
+      "run": 3,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.024354000000000042,
+      "seconds": 8.963555583999987,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
+      "criteriaCount": 3,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-07",
+      "arm": "P0R",
+      "run": 3,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.028613999999999973,
+      "seconds": 12.487343083000015,
+      "verdict": "partial",
+      "productCoverage": "partial",
+      "criteriaCount": 3,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "partial",
+          "criteria": ["gap-confirmed", "gap-confirmed", "implemented"],
+          "citations": [
+            {
+              "filePath": "openapi.yaml",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/billing-repo.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/consumers/order-created.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/schema.sql",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         }
@@ -4791,8 +4542,8 @@
       "arm": "P0R",
       "run": 3,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.03410800000000003,
-      "seconds": 16.039724334000027,
+      "costUsd": 0.03388799999999992,
+      "seconds": 13.112961791000009,
       "verdict": "partial",
       "productCoverage": "partial",
       "criteriaCount": 6,
@@ -4857,27 +4608,34 @@
       "arm": "P0R",
       "run": 3,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.02563799999999994,
-      "seconds": 10.455465333,
-      "verdict": "could-not-verify",
-      "productCoverage": "not-checked",
-      "criteriaCount": 4,
+      "costUsd": 0.03253000000000006,
+      "seconds": 13.189212666999985,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
+      "criteriaCount": 5,
       "repos": [
         {
           "repo": "billing",
           "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
+          ],
           "citations": [],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
@@ -4885,7 +4643,13 @@
         {
           "repo": "orders",
           "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "criteria": [
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "could-not-verify"
+          ],
           "citations": [],
           "reason": null
         }
@@ -4896,16 +4660,16 @@
       "arm": "P0R",
       "run": 3,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.024003999999999914,
-      "seconds": 9.698501875000016,
-      "verdict": "could-not-verify",
-      "productCoverage": "not-checked",
+      "costUsd": 0.028053999999999912,
+      "seconds": 11.199956292000017,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
       "criteriaCount": 3,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
@@ -4918,8 +4682,8 @@
         },
         {
           "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         }
@@ -4930,71 +4694,52 @@
       "arm": "P0R",
       "run": 3,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.036885999999999974,
-      "seconds": 16.795086666999968,
-      "verdict": "partial",
-      "productCoverage": "partial",
-      "criteriaCount": 7,
+      "costUsd": 0.0320720000000001,
+      "seconds": 13.380090540999984,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
+      "criteriaCount": 6,
       "repos": [
         {
           "repo": "billing",
           "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
             "gap-confirmed",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
         },
         {
           "repo": "orders",
-          "verdict": "partial",
+          "verdict": "gap-confirmed",
           "criteria": [
             "gap-confirmed",
             "gap-confirmed",
             "gap-confirmed",
             "gap-confirmed",
             "gap-confirmed",
-            "gap-confirmed",
-            "implemented"
+            "gap-confirmed"
           ],
-          "citations": [
-            {
-              "filePath": "src/routes/orders.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/orders-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/events/publisher.ts",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
+          "citations": [],
           "reason": null
         }
       ]
@@ -5004,110 +4749,16 @@
       "arm": "P0R",
       "run": 3,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.023553999999999853,
-      "seconds": 10.065968834,
-      "verdict": "could-not-verify",
-      "productCoverage": "not-checked",
+      "costUsd": 0.024092000000000002,
+      "seconds": 8.678252332999953,
+      "verdict": "gap-confirmed",
+      "productCoverage": "not-covered",
       "criteriaCount": 3,
       "repos": [
         {
           "repo": "billing",
           "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "could-not-verify"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "gap-confirmed",
-          "criteria": ["gap-confirmed", "gap-confirmed", "could-not-verify"],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-13",
-      "arm": "P0R",
-      "run": 3,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.03581600000000007,
-      "seconds": 18.655926875000006,
-      "verdict": "implemented",
-      "productCoverage": "covers",
-      "criteriaCount": 4,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "implemented",
-          "criteria": ["implemented", "implemented", "implemented", "implemented"],
-          "citations": [
-            {
-              "filePath": "src/consumers/order-created.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/billing-repo.ts",
-              "startLine": 1,
-              "endLine": 1
-            },
-            {
-              "filePath": "src/db/schema.sql",
-              "startLine": 1,
-              "endLine": 1
-            }
-          ],
-          "reason": null
-        },
-        {
-          "repo": "notify",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        },
-        {
-          "repo": "orders",
-          "verdict": "could-not-verify",
-          "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
-          ],
-          "citations": [],
-          "reason": null
-        }
-      ]
-    },
-    {
-      "itemId": "FX-14",
-      "arm": "P0R",
-      "run": 3,
-      "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.023682000000000092,
-      "seconds": 9.26152029200003,
-      "verdict": "could-not-verify",
-      "productCoverage": "not-checked",
-      "criteriaCount": 3,
-      "repos": [
-        {
-          "repo": "billing",
-          "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         },
@@ -5120,8 +4771,87 @@
         },
         {
           "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-13",
+      "arm": "P0R",
+      "run": 3,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.028046000000000126,
+      "seconds": 11.131753292000038,
+      "verdict": "partial",
+      "productCoverage": "partial",
+      "criteriaCount": 4,
+      "repos": [
+        {
+          "repo": "billing",
+          "verdict": "partial",
+          "criteria": ["gap-confirmed", "gap-confirmed", "implemented", "gap-confirmed"],
+          "citations": [
+            {
+              "filePath": "src/consumers/order-created.ts",
+              "startLine": 1,
+              "endLine": 1
+            },
+            {
+              "filePath": "src/db/billing-repo.ts",
+              "startLine": 1,
+              "endLine": 1
+            }
+          ],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed", "gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        }
+      ]
+    },
+    {
+      "itemId": "FX-14",
+      "arm": "P0R",
+      "run": 3,
+      "model": "anthropic/claude-sonnet-5-5",
+      "costUsd": 0.022259999999999946,
+      "seconds": 7.844512625000032,
+      "verdict": "could-not-verify",
+      "productCoverage": "not-checked",
+      "criteriaCount": 2,
+      "repos": [
+        {
+          "repo": "billing",
           "verdict": "could-not-verify",
-          "criteria": ["could-not-verify", "could-not-verify", "could-not-verify"],
+          "criteria": ["could-not-verify", "could-not-verify"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "notify",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed"],
+          "citations": [],
+          "reason": null
+        },
+        {
+          "repo": "orders",
+          "verdict": "gap-confirmed",
+          "criteria": ["gap-confirmed", "gap-confirmed"],
           "citations": [],
           "reason": null
         }
@@ -5132,33 +4862,33 @@
       "arm": "P0R",
       "run": 3,
       "model": "anthropic/claude-sonnet-5-5",
-      "costUsd": 0.029921999999999782,
-      "seconds": 12.471311792000023,
+      "costUsd": 0.028185999999999933,
+      "seconds": 10.509346750000025,
       "verdict": "partial",
       "productCoverage": "partial",
       "criteriaCount": 5,
       "repos": [
         {
           "repo": "billing",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify"
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed"
           ],
           "citations": [],
           "reason": null
         },
         {
           "repo": "notify",
-          "verdict": "could-not-verify",
+          "verdict": "gap-confirmed",
           "criteria": [
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
-            "could-not-verify",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
+            "gap-confirmed",
             "could-not-verify"
           ],
           "citations": [],

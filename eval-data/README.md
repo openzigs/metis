@@ -892,15 +892,22 @@ cd server && TRANSFORMERS_CACHE=~/.cache/metis-transformers HF_HUB_OFFLINE=1 \
   committed `gap-baseline.{json,md}` beside the corpus. That file holds every scored
   outcome.
 
-**Baseline, 2026-11-15** (`claude-sonnet-5-5`, 3 runs per arm, 90 outcomes, $2.64 metered):
+**Baseline, 2026-11-16** (`claude-sonnet-5-5`, 3 runs per arm, 90 outcomes, $2.67 metered,
+after #2562), with the two earlier runs:
 
-| Arm | Accuracy | Accuracy, expected gap | Uncited `implemented` | Valid citations |
-|---|---|---|---|---|
-| P0 | 0.49 [0.27, 0.71] | 0.17 | 0 | 85/85 |
-| P0′ | 0.40 [0.22, 0.58] | 0.11 | 0 | 86/86 |
+| Arm | Accuracy | expected `implemented` | expected `partial` | expected `gap` | Confident and wrong (of 45) | Uncited `implemented` | Valid citations |
+|---|---|---|---|---|---|---|---|
+| P0 | 0.60 [0.40, 0.80] | 0.67 | 0.60 | 0.56 | 16 | 0 | 69/69 |
+| P0′ | 0.60 [0.40, 0.80] | 0.67 | 0.67 | 0.50 | 16 | 0 | 80/80 |
+| P0, #2562 first prompt (2026-11-16) | 0.51 [0.27, 0.76] | 0.58 | 0.40 | 0.56 | 21 | 0 | 70/70 |
+| P0, before #2562 (2026-11-15) | 0.49 [0.27, 0.71] | 0.83 | 0.60 | 0.17 | 12 | 0 | 85/85 |
 
-P0′ against P0 shows no measurable difference. The main error: a sibling repository's
-`could-not-verify` stops a gap from being confirmed (`docs/ARCHITECTURE.md`, "Measured
+"Confident and wrong" is an `implemented`, `partial` or `gap` answer that is not the expected
+verdict. P0′ against P0 shows no measurable difference. #2562 let a sibling repository
+answer `unrelated`, so it no longer stops a gap. Its first prompt also dropped the
+"excerpts do not bear on it → could-not-verify" catch-all, and confident-wrong answers rose;
+the catch-all is restored. Expected `implemented` is still below the 2026-11-15 run because
+FX-15's answer repository cannot settle one criterion (`docs/ARCHITECTURE.md`, "Measured
 verdict accuracy"). No `deepseek-flash` arm was run, because no DeepSeek key was configured
 on the machine that ran it.
 

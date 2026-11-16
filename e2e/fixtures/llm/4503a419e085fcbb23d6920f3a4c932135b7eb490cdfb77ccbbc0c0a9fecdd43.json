@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "key": "932c9dbd656d7eb3617f8366b0aeb6d14d84e0d1004e5259d87477851e480d26",
+  "key": "4503a419e085fcbb23d6920f3a4c932135b7eb490cdfb77ccbbc0c0a9fecdd43",
   "request": {
-    "promptPreview": "<<<REQUIREMENT>>>\nCustomers can split one invoice across several payment cards.\n<<<END REQUIREMENT>>>\n\n<<<CRITERIA>>>\n[1] Split one invoice across several payment cards\n<<<END CRITERIA>>>\n\n<<<REPOSITO",
+    "promptPreview": "<<<REQUIREMENT>>>\nCustomers can pay an invoice by instant bank transfer.\n<<<END REQUIREMENT>>>\n\n<<<CRITERIA>>>\n[1] Pay an invoice by instant bank transfer\n<<<END CRITERIA>>>\n\n<<<REPOSITORY>>>\nreportin",
     "messageCount": 2,
     "options": {
       "maxTokens": 21000
@@ -11,9 +11,9 @@
   "response": {
     "content": "{\"criteria\": [{\"index\": 1, \"verdict\": \"gap-confirmed\", \"excerpts\": [1], \"reason\": \"Excerpt 1 is where it would live, and it is not there.\"}]}",
     "usage": {
-      "promptTokens": 232,
+      "promptTokens": 348,
       "completionTokens": 20,
-      "totalTokens": 252,
+      "totalTokens": 368,
       "cacheReadTokens": 0,
       "cacheWriteTokens": 0
     },
@@ -22,5 +22,5 @@
     "offline": true,
     "finishReason": "stop"
   },
-  "recordedAt": "2026-11-03T21:03:48.941Z"
+  "recordedAt": "2026-11-16T12:35:43.245Z"
 }

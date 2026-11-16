@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "key": "0f932ea55772b7760166871be35498c63df0f297181011aacb193f55471db7b1",
+  "request": {
+    "promptPreview": "Requirement: Secure user sign-in\nDescription: Users must be able to sign in securely to the portal.\n\nClarifications:\n<<<ANSWERS\nQ: Which authentication method and factors must the secure sign-in use?\n",
+    "messageCount": 2,
+    "options": {
+      "model": "offline-stub",
+      "disableTools": true
+    }
+  },
+  "response": {
+    "content": "{\"resolvedFields\":[\"authentication-method\"],\"updatedDescription\":\"Users must sign in using OAuth2 PKCE with mandatory MFA (clarified-235). All sign-in flows require the MFA challenge before a session is issued.\",\"remainingUncertainty\":0}",
+    "usage": {
+      "promptTokens": 64,
+      "completionTokens": 64,
+      "totalTokens": 128,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0
+    },
+    "model": "e2e-replay-235",
+    "provider": "offline-stub",
+    "offline": false
+  },
+  "recordedAt": "2026-11-16T12:37:07.633Z"
+}

@@ -3,10 +3,13 @@
  * keep only what the model may claim.
  */
 import { describe, expect, it } from "vitest";
-import { DEFAULT_RAG_CHUNK_SIZE } from "@metis/shared";
+import { DEFAULT_RAG_CHUNK_SIZE, FINDING_VERDICTS } from "@metis/shared";
+import { gateFindingVerdict } from "../analysis/requirement-verdict.js";
 import {
   HIT_TEXT_CHARS,
   MAX_HIT_TEXT_CHARS,
+  REPO_VERDICT_SYSTEM_PROMPT,
+  claimedFindingVerdict,
   hitTextChars,
   buildDecomposePrompt,
   buildRepoVerdictPrompt,
@@ -125,6 +128,56 @@ describe("gap prompts fence untrusted text", () => {
   });
 });
 
+describe("#2562 — a repository the requirement does not belong to", () => {
+  it("the repo prompt offers `unrelated`, apart from could-not-verify", () => {
+    const prompt = buildRepoVerdictPrompt({
+      statement: "s",
+      criteria: ["c"],
+      repoLabel: "r",
+      hits: [{ path: "a.ts", text: "x" }],
+    });
+    expect(prompt).toContain('"unrelated"');
+    expect(REPO_VERDICT_SYSTEM_PROMPT).toMatch(/"unrelated" means the excerpts show what this/);
+    // An excerpt set that merely misses the code is still could-not-verify.
+    expect(REPO_VERDICT_SYSTEM_PROMPT).toMatch(/never\s+because the search missed/);
+    expect(REPO_VERDICT_SYSTEM_PROMPT).toContain('"could-not-verify". Absence of evidence');
+  });
+
+  // Review of #2575: `gap-confirmed` needs "where it would live", `unrelated` a plain
+  // purpose and the touch rule an excerpt on the subject. Excerpts that meet none of the
+  // three (generic utils, config) must still land on the safe answer, as before #2562.
+  it("keeps the catch-all: excerpts that do not bear on a criterion are could-not-verify", () => {
+    const rules = REPO_VERDICT_SYSTEM_PROMPT.split("\n- ");
+    const catchAll = rules.find((r) => r.startsWith("Otherwise"));
+    expect(catchAll?.replace(/\s+/g, " ")).toBe(
+      "Otherwise, if the excerpts do not bear on a criterion and do not make the " +
+        'repository\'s purpose plain, answer "could-not-verify".',
+    );
+    // It comes after the rules it is the fallback for, and before the reply format.
+    const at = (s: string) => rules.findIndex((r) => r.startsWith(s));
+    expect(at("Otherwise")).toBe(at('"unrelated"') + 2);
+    expect(at("Otherwise")).toBe(at("Answer with ONE JSON") - 1);
+  });
+
+  it("asks the gate for a gap on `unrelated`, and passes every finding verdict through", () => {
+    expect(claimedFindingVerdict("unrelated")).toBe("gap-confirmed");
+    for (const v of FINDING_VERDICTS) expect(claimedFindingVerdict(v)).toBe(v);
+  });
+
+  it("`unrelated` on a criterion the query did not carry is no gap (#1657)", () => {
+    const gate = (absenceConfirmable: boolean) =>
+      gateFindingVerdict({
+        modelVerdict: claimedFindingVerdict("unrelated"),
+        groundedCitations: [],
+        finding: { title: "c", body: "" },
+        absenceConfirmable,
+        retrievalHealthy: true,
+      });
+    expect(gate(true)).toBe("gap-confirmed");
+    expect(gate(false)).toBe("could-not-verify");
+  });
+});
+
 describe("parseDecomposition", () => {
   it("trims, drops blanks and caps the criteria", () => {
     expect(parseDecomposition({ criteria: [" a ", "", "b", "c"] }, 2)).toEqual(["a", "b"]);
@@ -161,6 +214,12 @@ describe("parseRepoVerdict", () => {
     expect(parseRepoVerdict({ criteria: [{ index: 1, verdict: "gap-confirmed" }] }, 1, 0)).toEqual([
       { verdict: "gap-confirmed", hitIndexes: [], reason: "" },
     ]);
+  });
+
+  it("#2562 — keeps an `unrelated` claim as the model made it", () => {
+    expect(
+      parseRepoVerdict({ criteria: [{ index: 1, verdict: "unrelated", reason: "billing" }] }, 1, 1),
+    ).toEqual([{ verdict: "unrelated", hitIndexes: [], reason: "billing" }]);
   });
 
   it("a reply of the wrong shape is null", () => {
