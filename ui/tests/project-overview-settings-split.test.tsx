@@ -67,6 +67,14 @@ vi.mock("@/components/projects/database-aware-analysis-settings-card", () => ({
 vi.mock("@/components/projects/sql-lineage-settings-card", () => ({
   SqlLineageSettingsCard: card("sql-lineage"),
 }));
+// #2567 — renders the permission the page passes, so the wiring is checked here.
+vi.mock("@/components/projects/code-exploration-settings-card", () => ({
+  CodeExplorationSettingsCard: (p: { projectId: string; canEdit: boolean }) => (
+    <div data-testid="card-code-exploration" data-can-edit={String(p.canEdit)}>
+      {p.projectId}
+    </div>
+  ),
+}));
 vi.mock("@/components/projects/agents-md-card", () => ({ AgentsMdCard: card("agents-md") }));
 vi.mock("@/components/projects/inference-profile-card", () => ({
   InferenceProfileCard: card("inference"),
@@ -110,6 +118,7 @@ const SETTINGS_CARDS = [
   "db-aware",
   "sql-lineage",
   "agents-md",
+  "code-exploration",
 ];
 
 beforeEach(() => {
@@ -182,6 +191,7 @@ describe("project Settings page (⚙)", () => {
         "budget",
         "autopilot",
         "auto-review",
+        "code-exploration",
       ],
       "project-settings-advanced": ["inference", "db-aware", "sql-lineage", "agents-md"],
     };
@@ -255,6 +265,23 @@ describe("project Settings page (⚙)", () => {
       wrapper: makeWrapper({ initialUser: { ...TEST_USER, permissions: ["project.update"] } }),
     });
     expect(await screen.findByTestId("card-auto-review")).toHaveAttribute("data-can-edit", "true");
+  });
+
+  it("#2567 — passes the project and the project.update gate to the analysis depth card", async () => {
+    const { unmount } = render(<ProjectSettingsPage />, {
+      wrapper: makeWrapper({ initialUser: TEST_USER }),
+    });
+    const readOnly = await screen.findByTestId("card-code-exploration");
+    expect(readOnly).toHaveTextContent("p1");
+    expect(readOnly).toHaveAttribute("data-can-edit", "false");
+    unmount();
+    render(<ProjectSettingsPage />, {
+      wrapper: makeWrapper({ initialUser: { ...TEST_USER, permissions: ["project.update"] } }),
+    });
+    expect(await screen.findByTestId("card-code-exploration")).toHaveAttribute(
+      "data-can-edit",
+      "true",
+    );
   });
 
   it("archives an active project and hides Archive once archived", async () => {

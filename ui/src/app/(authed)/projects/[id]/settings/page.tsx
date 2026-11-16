@@ -24,6 +24,7 @@ import { BudgetSettingsCard } from "@/components/projects/budget-settings-card";
 import { AutopilotSettingsCard } from "@/components/projects/autopilot-settings-card";
 import { DatabaseAwareAnalysisSettingsCard } from "@/components/projects/database-aware-analysis-settings-card";
 import { SqlLineageSettingsCard } from "@/components/projects/sql-lineage-settings-card";
+import { CodeExplorationSettingsCard } from "@/components/projects/code-exploration-settings-card";
 import { AgentsMdCard } from "@/components/projects/agents-md-card";
 import { InferenceProfileCard } from "@/components/projects/inference-profile-card";
 import { QuarantinePanel } from "@/components/projects/quarantine-panel";
@@ -141,6 +142,8 @@ export default function ProjectSettingsPage() {
             Configure model preferences →
           </Link>
         </p>
+        {/* #2567 — how deeply analysis reads the code: Thorough / Fast / platform default. */}
+        <CodeExplorationSettingsCard projectId={id} canEdit={canManageSkills} />
         <SafetySettingsCard projectId={id} current={p.safetyMode} />
         <BudgetSettingsCard projectId={id} current={p.monthlyTokenBudget} canEdit={canEditBudget} />
         <AutopilotSettingsCard
