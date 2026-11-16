@@ -831,6 +831,29 @@ describe("ImpactAnalysisDetailPage", () => {
       );
     });
 
+    it("gives the project's own reason: schema analysis was off for the run", () => {
+      mockUse.mockReturnValue(
+        state({
+          data: {
+            ...detail,
+            projectOutcomes: [
+              {
+                projectId: "project-001",
+                outcome: "affected",
+                reason: null,
+                databaseConnected: false,
+                databaseNotCheckedReason: "schema-off",
+              },
+            ],
+          },
+        }),
+      );
+      render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      expect(screen.getByTestId("database-not-checked")).toHaveTextContent(
+        "Database impact not checked (schema analysis was off for this run)",
+      );
+    });
+
     it("says nothing of the kind when the run read the database, or before #2593", () => {
       mockUse.mockReturnValue(
         state({

@@ -226,8 +226,20 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(detail.status).toBe("completed");
       // None is omitted, and the order is the run's project order.
       expect(detail.projectOutcomes).toEqual([
-        { projectId: PA, outcome: "affected", reason: null, databaseConnected: false },
-        { projectId: PB, outcome: "checked-none-affected", reason: null, databaseConnected: false },
+        {
+          projectId: PA,
+          outcome: "affected",
+          reason: null,
+          databaseConnected: false,
+          databaseNotCheckedReason: "schema-off",
+        },
+        {
+          projectId: PB,
+          outcome: "checked-none-affected",
+          reason: null,
+          databaseConnected: false,
+          databaseNotCheckedReason: "schema-off",
+        },
         { projectId: PC, outcome: "not-checked", reason: "no-index" },
       ]);
 
@@ -309,7 +321,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       const res = await getRun(id, "ada");
       expect(res.status).toBe(200);
       expect(res.body.data.projectOutcomes).toEqual([
-        { projectId: PA, outcome: "affected", reason: null, databaseConnected: false },
+        {
+          projectId: PA,
+          outcome: "affected",
+          reason: null,
+          databaseConnected: false,
+          databaseNotCheckedReason: "schema-off",
+        },
         { projectId: PD, outcome: "not-checked", reason: "deleted" },
       ]);
     });

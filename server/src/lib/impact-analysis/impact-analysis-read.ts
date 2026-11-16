@@ -23,6 +23,7 @@ import type {
   ImpactRunCost,
   ImpactSeedEvidence,
   ImpactSymbolRepoRef,
+  ImpactDatabaseNotCheckedReason,
   ImpactTableConsumerView,
   ImpactTableFeedbackVerdict,
   ImpactTableFeedbackView,
@@ -36,8 +37,10 @@ import {
   DDL_RISK_CLASSES,
   deriveImpactItemMatchQuality,
   impactFileLists,
+  impactRequirementKey,
   IMPACT_CONSUMER_RESOLUTIONS,
   IMPACT_CONSUMER_USAGES,
+  IMPACT_DATABASE_NOT_CHECKED_REASONS,
   IMPACT_NOT_CHECKED_REASONS,
   IMPACT_PROJECT_OUTCOMES,
   IMPACT_TABLE_FEEDBACK_VERDICTS,
@@ -116,7 +119,13 @@ const DETAIL_INCLUDE = {
   // #1609 — with each project's recorded outcome.
   // #2593 — and whether the run read its database.
   projects: {
-    select: { projectId: true, outcome: true, outcomeReason: true, databaseConnected: true },
+    select: {
+      projectId: true,
+      outcome: true,
+      outcomeReason: true,
+      databaseConnected: true,
+      databaseNotCheckedReason: true,
+    },
   },
 } satisfies Prisma.ImpactAnalysisInclude;
 
@@ -133,6 +142,7 @@ export function toProjectOutcomes(
     outcome?: string | null;
     outcomeReason?: string | null;
     databaseConnected?: boolean | null;
+    databaseNotCheckedReason?: string | null;
   }[],
 ): ImpactProjectOutcome[] {
   const byProject = new Map(rows.map((r) => [r.projectId, r]));
@@ -154,6 +164,17 @@ export function toProjectOutcomes(
       // #2593 — only for a project the run searched; absent (unknown) before #2593.
       ...(outcome !== "not-checked" && typeof row.databaseConnected === "boolean"
         ? { databaseConnected: row.databaseConnected }
+        : {}),
+      // And why not, from the shared vocabulary only.
+      ...(outcome !== "not-checked" &&
+      row.databaseConnected === false &&
+      (IMPACT_DATABASE_NOT_CHECKED_REASONS as readonly (string | null | undefined)[]).includes(
+        row.databaseNotCheckedReason,
+      )
+        ? {
+            databaseNotCheckedReason:
+              row.databaseNotCheckedReason as ImpactDatabaseNotCheckedReason,
+          }
         : {}),
     });
   }
@@ -1074,7 +1095,8 @@ export async function listImpactAnalyses(
     take: opts.limit ?? 100,
     include: {
       // #2593 — and the requirement, so a list row can say how many were affected.
-      items: { select: { id: true, projectId: true, requirementId: true } },
+      // The title too: an untracked change in two projects is one requirement.
+      items: { select: { id: true, projectId: true, requirementId: true, requirementTitle: true } },
       projects: { select: { projectId: true } },
     },
   });
@@ -1130,14 +1152,18 @@ export async function listImpactAnalyses(
 }
 
 /**
- * #2593 — the distinct requirements among a run's items: a tracked requirement
- * once however many projects it reached, an untracked change on its own.
+ * #2593 — the distinct requirements among a run's items, by
+ * `impactRequirementKey`: a requirement once however many projects it reached.
  * `impactRunHeadline` counts the detail page's figure the same way.
  */
 function affectedRequirementCount(
-  items: ReadonlyArray<{ id: string; requirementId?: string | null }>,
+  items: ReadonlyArray<{
+    id: string;
+    requirementId?: string | null;
+    requirementTitle?: string | null;
+  }>,
 ): number {
-  return new Set(items.map((i) => (i.requirementId ? `r:${i.requirementId}` : `i:${i.id}`))).size;
+  return new Set(items.map(impactRequirementKey)).size;
 }
 
 /**

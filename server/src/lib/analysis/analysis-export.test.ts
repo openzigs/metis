@@ -1581,6 +1581,25 @@ describe("serializeImpactAnalysisMarkdown — one source for the page and the ex
     expect(md).toContain("_Database impact not checked (no database connection)._");
   });
 
+  it("gives schema analysis being off as the reason, not a missing connection, when it was", () => {
+    const md = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        items: [impactItem({ affectedTables: [] })],
+        projectOutcomes: [
+          {
+            projectId: "project-001",
+            outcome: "affected",
+            reason: null,
+            databaseConnected: false,
+            databaseNotCheckedReason: "schema-off",
+          },
+        ],
+      }),
+    );
+    expect(md).toContain("_Database impact not checked (schema analysis was off for this run)._");
+    expect(md).not.toContain("no database connection");
+  });
+
   it("says nothing of the kind when the database was read, the item has tables, or it is unknown", () => {
     const connected = serializeImpactAnalysisMarkdown(
       impactDetail({

@@ -132,6 +132,34 @@ describe("the prompts say the database was not checked (#2593)", () => {
     expect(userText(buildItemSummaryMessages(itemFacts()))).not.toContain("DATABASE: NOT CHECKED");
   });
 
+  it("gives the reason: no connection, or schema analysis turned off", () => {
+    const noConnection = userText(
+      buildItemSummaryMessages(itemFacts({ databaseConnected: false })),
+    );
+    expect(noConnection).toContain("DATABASE: NOT CHECKED — there is no database connection");
+    const schemaOff = userText(
+      buildItemSummaryMessages(
+        itemFacts({ databaseConnected: false, databaseNotCheckedReason: "schema-off" }),
+      ),
+    );
+    expect(schemaOff).toContain(
+      "DATABASE: NOT CHECKED — schema analysis was turned off for this run",
+    );
+    expect(schemaOff).not.toContain("no database connection");
+    // One fact line, no blank line after it.
+    expect(schemaOff).toMatch(/was not checked\.\nPRIMARY affected tables/);
+  });
+
+  it("in the run prompt, says schema analysis was off only when it was for every unread item", () => {
+    const shown = (items: RunItemFact[]) =>
+      userText(buildRunSummaryRequest(runFacts(items)).messages);
+    const off = { databaseConnected: false, databaseNotCheckedReason: "schema-off" } as const;
+    expect(shown([runItem(off), runItem(off)])).toContain("schema analysis was turned off");
+    expect(shown([runItem(off), runItem({ databaseConnected: false })])).toContain(
+      "there is no database connection",
+    );
+  });
+
   it("in the run prompt, when any item's database was not read", () => {
     const shown = (items: RunItemFact[]) =>
       userText(buildRunSummaryRequest(runFacts(items)).messages);
@@ -157,6 +185,20 @@ describe("the no-database-claim gate (#2593)", () => {
     const repair = (calls[1]![0] as ChatMessage[]).at(-1)!.content;
     expect(repair).toMatch(/database was NOT checked/);
     expect(repair).toContain("confined to code");
+    expect(repair).toContain("there is no database connection");
+  });
+
+  it("gives the schema-off reason in the repair message of a run started without it", async () => {
+    const p = provider(() => WALKTHROUGH);
+    await summarizeImpactItem(
+      itemFacts({ databaseConnected: false, databaseNotCheckedReason: "schema-off" }),
+      p,
+      { enabled: true },
+    );
+    const calls = (p.chat as ReturnType<typeof vi.fn>).mock.calls;
+    const repair = (calls[1]![0] as ChatMessage[]).at(-1)!.content;
+    expect(repair).toContain("schema analysis was turned off for this run");
+    expect(repair).not.toContain("no database connection");
   });
 
   it("keeps the repaired draft once it stops claiming", async () => {

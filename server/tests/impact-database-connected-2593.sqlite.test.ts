@@ -145,22 +145,31 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         "up adds the column as NULL on existing rows; reverse drops it; up again re-applies",
         () => {
           expect(before).not.toContain("databaseConnected");
+          expect(before).not.toContain("databaseNotCheckedReason");
 
           sqlite.apply(MIGRATION);
-          expect(columns()).toEqual([...before, "databaseConnected"]);
+          expect(columns()).toEqual([...before, "databaseConnected", "databaseNotCheckedReason"]);
           // An existing run reads as one recorded before #2593: unknown, never false.
-          expect(rows()).toEqual(seeded.map((r) => ({ ...r, databaseConnected: null })));
+          expect(rows()).toEqual(
+            seeded.map((r) => ({ ...r, databaseConnected: null, databaseNotCheckedReason: null })),
+          );
 
           // What the rollback's header says is lost: whether each project's database was read.
           withDb((db) =>
-            db.prepare(`UPDATE "impact_analysis_projects" SET "databaseConnected" = 0`).run(),
+            db
+              .prepare(
+                `UPDATE "impact_analysis_projects" SET "databaseConnected" = 0, "databaseNotCheckedReason" = 'no-connection'`,
+              )
+              .run(),
           );
           withDb((db) => db.exec(rollback));
           expect(columns()).toEqual(before);
           expect(rows()).toEqual(seeded);
 
           sqlite.applyRemaining();
-          expect(rows()).toEqual(seeded.map((r) => ({ ...r, databaseConnected: null })));
+          expect(rows()).toEqual(
+            seeded.map((r) => ({ ...r, databaseConnected: null, databaseNotCheckedReason: null })),
+          );
         },
         MIGRATED_SQLITE_HOOK_TIMEOUT_MS,
       );
@@ -169,8 +178,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(pgUp).toContain(
           `ALTER TABLE "impact_analysis_projects" ADD COLUMN IF NOT EXISTS "databaseConnected" BOOLEAN;`,
         );
+        expect(pgUp).toContain(
+          `ALTER TABLE "impact_analysis_projects" ADD COLUMN IF NOT EXISTS "databaseNotCheckedReason" TEXT;`,
+        );
         expect(pgDown).toContain(
           `ALTER TABLE "impact_analysis_projects" DROP COLUMN IF EXISTS "databaseConnected";`,
+        );
+        expect(pgDown).toContain(
+          `ALTER TABLE "impact_analysis_projects" DROP COLUMN IF EXISTS "databaseNotCheckedReason";`,
         );
         expect(pgDown).toContain(
           `DELETE FROM "_prisma_migrations" WHERE "migration_name" = '${MIGRATION}'`,
@@ -292,7 +307,36 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         expect(res.body.data.status).toBe("completed");
         expect(res.body.data.projectOutcomes).toEqual([
           { projectId: PA, outcome: "affected", reason: null, databaseConnected: true },
-          { projectId: PB, outcome: "affected", reason: null, databaseConnected: false },
+          {
+            projectId: PB,
+            outcome: "affected",
+            reason: null,
+            databaseConnected: false,
+            databaseNotCheckedReason: "no-connection",
+          },
+        ]);
+      });
+
+      it("says the database was not checked because schema analysis was off, not for want of a connection", async () => {
+        const id = await createRun([PA]);
+        await executeImpactAnalysis(id, [PA], {
+          extractor: ONE_CHANGE,
+          mapRequirement: async (_req: unknown, projectId: string) => hit(projectId),
+          // A's connector would answer; the run was started without schema analysis.
+          includeSchemaImpact: false,
+          liveIndexIntrospectorFor: async () => new LiveSchemaIndex([]),
+        });
+
+        const res = await getRun(id);
+        expect(res.status).toBe(200);
+        expect(res.body.data.projectOutcomes).toEqual([
+          {
+            projectId: PA,
+            outcome: "affected",
+            reason: null,
+            databaseConnected: false,
+            databaseNotCheckedReason: "schema-off",
+          },
         ]);
       });
 

@@ -7,6 +7,6 @@ VALUES ('p-2593-a', 'Connected', 'p-2593-a', 'u-2593', now()),
        ('p-2593-b', 'Unconnected', 'p-2593-b', 'u-2593', now());
 INSERT INTO "impact_analyses" ("id", "status", "startedById", "updatedAt")
 VALUES ('ia-2593', 'completed', 'u-2593', now());
-INSERT INTO "impact_analysis_projects" ("analysisId", "projectId", "outcome", "databaseConnected")
-VALUES ('ia-2593', 'p-2593-a', 'affected', true),
-       ('ia-2593', 'p-2593-b', 'checked-none-affected', false);
+INSERT INTO "impact_analysis_projects" ("analysisId", "projectId", "outcome", "databaseConnected", "databaseNotCheckedReason")
+VALUES ('ia-2593', 'p-2593-a', 'affected', true, NULL),
+       ('ia-2593', 'p-2593-b', 'checked-none-affected', false, 'no-connection');

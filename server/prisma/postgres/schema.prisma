@@ -2762,6 +2762,10 @@ model ImpactAnalysisProject {
   /// read), so no affected table is not a finding that no database change is
   /// needed. NULL for a project the run did not search, and before #2593.
   databaseConnected Boolean?
+  /// Issue #2593 — why, where databaseConnected is false: no-connection, or
+  /// schema-off (the run was started with schema analysis turned off). NULL
+  /// otherwise.
+  databaseNotCheckedReason String?
 
   analysis ImpactAnalysis @relation(fields: [analysisId], references: [id], onDelete: Cascade)
   project  Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)

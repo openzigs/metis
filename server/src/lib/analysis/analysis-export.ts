@@ -28,7 +28,7 @@
 import {
   formatCodeCitationLocator,
   DDL_RISK_LABEL,
-  IMPACT_DATABASE_NOT_CHECKED,
+  impactDatabaseNotCheckedLabel,
   IMPACT_TIER_LABEL,
   impactCountLabel,
   impactEditFileKeys,
@@ -43,6 +43,7 @@ import {
   groupImpactTables,
   groupRepresentative,
   type CodeCitation,
+  type ImpactDatabaseNotCheckedReason,
   type DdlRiskClass,
   type GroupedImpactTable,
   type FindingIssueDraft,
@@ -887,10 +888,11 @@ interface ImpactItemLabelContext {
   index: number;
   total: number;
   /**
-   * #2593 — the run did not read this item's project's database, so an item
-   * with no table says so instead of reading as "no database change".
+   * #2593 — why the run did not read this item's project's database (`null`
+   * when it did, or it is unknown), so an item with no table says so instead
+   * of reading as "no database change".
    */
-  databaseNotChecked: boolean;
+  databaseNotChecked: ImpactDatabaseNotCheckedReason | null;
 }
 
 /** Heading text for one impact item — never an opaque "Unlabelled" when we know better. */
@@ -940,7 +942,7 @@ function impactItemSection(item: ImpactItemView, ctx: ImpactItemLabelContext): s
     item.affectedTables.length === 0 &&
     item.affectedTablesSecondary.length === 0
   ) {
-    parts.push(`_${IMPACT_DATABASE_NOT_CHECKED}._`);
+    parts.push(`_${impactDatabaseNotCheckedLabel(ctx.databaseNotChecked)}._`);
   }
 
   // #962/#1004 — the untested write paths, high in the section (as on screen).
@@ -1104,10 +1106,10 @@ export function serializeImpactAnalysisMarkdown(
     )}._`,
     `_${impactReachLabel(detail.totalImpactedSymbols)}_`,
   ];
-  const unconnected = new Set(
+  const unconnected = new Map(
     (detail.projectOutcomes ?? [])
       .filter((o) => o.databaseConnected === false)
-      .map((o) => o.projectId),
+      .map((o) => [o.projectId, o.databaseNotCheckedReason ?? "no-connection"] as const),
   );
 
   // #1004 — the requirement this run analysed, verbatim, ABOVE the narrative.
@@ -1146,7 +1148,7 @@ export function serializeImpactAnalysisMarkdown(
             hasSourceText,
             index: itemNumber,
             total: detail.items.length,
-            databaseNotChecked: unconnected.has(item.projectId),
+            databaseNotChecked: unconnected.get(item.projectId) ?? null,
           }),
         );
       }

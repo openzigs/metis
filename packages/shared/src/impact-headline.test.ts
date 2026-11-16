@@ -5,9 +5,12 @@
 import { describe, expect, it } from "vitest";
 import {
   IMPACT_DATABASE_NOT_CHECKED,
+  IMPACT_DATABASE_NOT_CHECKED_SCHEMA_OFF,
   impactCountLabel,
+  impactDatabaseNotCheckedLabel,
   impactEditFileKeys,
   impactReachLabel,
+  impactRequirementKey,
   impactRunHeadline,
 } from "./impact-headline.js";
 import {
@@ -73,6 +76,40 @@ describe("deriveImpactItemMatchQuality (#2593)", () => {
     expect(
       deriveImpactItemMatchQuality([], evidence({ agentCitations: { used: 0, stale: 0, led: 1 } })),
     ).toEqual({ quality: "weak", reason: "no-entity" });
+  });
+
+  it("keeps a scattered grade when cited files led only a minority of the seeds' files", () => {
+    // One cited file led; the other four direct seeds are still scattered word matches.
+    expect(
+      deriveImpactItemMatchQuality(
+        scatteredSeeds,
+        evidence({ agentCitations: { used: 1, stale: 0, led: 1 } }),
+      ),
+    ).toEqual({ quality: "weak", reason: "scattered" });
+    // Half is not a majority.
+    expect(
+      deriveImpactItemMatchQuality(
+        [...scatteredSeeds, { filePath: "internal/ui/feed.go", confidence: 1 }],
+        evidence({ agentCitations: { used: 3, stale: 0, led: 3 } }),
+      ),
+    ).toEqual({ quality: "weak", reason: "scattered" });
+    // Three of five is.
+    expect(
+      deriveImpactItemMatchQuality(
+        scatteredSeeds,
+        evidence({ agentCitations: { used: 3, stale: 0, led: 3 } }),
+      ),
+    ).toEqual({ quality: "moderate", reason: null });
+  });
+
+  it("counts a file with several seeds once toward the majority", () => {
+    const seeds = [...scatteredSeeds, ...scatteredSeeds.slice(0, 3)];
+    expect(
+      deriveImpactItemMatchQuality(
+        seeds,
+        evidence({ agentCitations: { used: 3, stale: 0, led: 3 } }),
+      ),
+    ).toEqual({ quality: "moderate", reason: null });
   });
 
   it("leaves a strong grade alone", () => {
@@ -170,6 +207,39 @@ describe("impactRunHeadline (#2593)", () => {
     ]);
     expect(headline).toEqual({ requirementCount: 3, editFileCount: 3 });
   });
+
+  it("counts one untracked change once across the projects it reached", () => {
+    // A two-feature document run against two projects: two requirements, not four.
+    const untracked = (id: string, projectId: string, requirementTitle: string) => ({
+      id,
+      projectId,
+      requirementId: null,
+      requirementTitle,
+      affectedSymbols: [],
+    });
+    const headline = impactRunHeadline([
+      untracked("i1", "p1", "Export feeds"),
+      untracked("i2", "p1", "API keys"),
+      untracked("i3", "p2", "Export feeds"),
+      untracked("i4", "p2", " API keys "),
+    ]);
+    expect(headline.requirementCount).toBe(2);
+  });
+});
+
+describe("impactRequirementKey (#2593)", () => {
+  it("prefers the tracked id, then the title, then the item", () => {
+    expect(impactRequirementKey({ id: "i1", requirementId: "r1", requirementTitle: "T" })).toBe(
+      "r:r1",
+    );
+    expect(impactRequirementKey({ id: "i1", requirementId: null, requirementTitle: "T" })).toBe(
+      "t:T",
+    );
+    expect(impactRequirementKey({ id: "i1", requirementId: null, requirementTitle: "  " })).toBe(
+      "i:i1",
+    );
+    expect(impactRequirementKey({ id: "i1" })).toBe("i:i1");
+  });
 });
 
 describe("labels (#2593)", () => {
@@ -186,5 +256,14 @@ describe("labels (#2593)", () => {
     expect(IMPACT_DATABASE_NOT_CHECKED).toBe(
       "Database impact not checked (no database connection)",
     );
+  });
+
+  it("gives the reason the database was not checked", () => {
+    expect(impactDatabaseNotCheckedLabel("no-connection")).toBe(IMPACT_DATABASE_NOT_CHECKED);
+    expect(impactDatabaseNotCheckedLabel(undefined)).toBe(IMPACT_DATABASE_NOT_CHECKED);
+    expect(impactDatabaseNotCheckedLabel("schema-off")).toBe(
+      IMPACT_DATABASE_NOT_CHECKED_SCHEMA_OFF,
+    );
+    expect(IMPACT_DATABASE_NOT_CHECKED_SCHEMA_OFF).not.toMatch(/connection/);
   });
 });

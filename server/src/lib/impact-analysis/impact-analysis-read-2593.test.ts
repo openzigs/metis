@@ -54,7 +54,14 @@ describe("toProjectOutcomes — databaseConnected (#2593)", () => {
 });
 
 describe("listImpactAnalyses — requirementCount (#2593)", () => {
-  const row = (items: Array<{ id: string; projectId: string; requirementId: string | null }>) => ({
+  const row = (
+    items: Array<{
+      id: string;
+      projectId: string;
+      requirementId: string | null;
+      requirementTitle?: string | null;
+    }>,
+  ) => ({
     id: "ia-1",
     status: "completed",
     documentId: null,
@@ -79,6 +86,24 @@ describe("listImpactAnalyses — requirementCount (#2593)", () => {
     ]);
     const [summary] = await listImpactAnalyses({}, { impactAnalysis: { findMany } } as never);
     expect(summary!.requirementCount).toBe(3);
+  });
+
+  it("counts an untracked change once across the projects it reached, by its title", async () => {
+    // A two-feature document run against two projects: two requirements, not four.
+    const findMany = vi.fn(async () => [
+      row([
+        { id: "i1", projectId: "p-a", requirementId: null, requirementTitle: "Export feeds" },
+        { id: "i2", projectId: "p-a", requirementId: null, requirementTitle: "API keys" },
+        { id: "i3", projectId: "p-b", requirementId: null, requirementTitle: "Export feeds" },
+        { id: "i4", projectId: "p-b", requirementId: null, requirementTitle: "API keys" },
+      ]),
+    ]);
+    const [summary] = await listImpactAnalyses({}, { impactAnalysis: { findMany } } as never);
+    expect(summary!.requirementCount).toBe(2);
+    // The title is read, or the count could not see it.
+    expect(findMany.mock.calls[0]).toMatchObject([
+      { include: { items: { select: { requirementTitle: true } } } },
+    ]);
   });
 
   it("counts only the items in projects the reader can see", async () => {

@@ -176,9 +176,9 @@ function ImpactAnalysisDetailView({
   const multiRepoProjects = useImpactMultiRepoProjects(visibleProjectIds);
   // #2593 — the requirements and files to edit the header leads with.
   const headline = useMemo(() => impactRunHeadline(data.items), [data.items]);
-  // #2593 — the projects whose database the run did not read.
-  const databaseConnectedOf = useMemo(
-    () => new Map((data.projectOutcomes ?? []).map((o) => [o.projectId, o.databaseConnected])),
+  // #2593 — the projects whose database the run did not read, and why.
+  const outcomeOf = useMemo(
+    () => new Map((data.projectOutcomes ?? []).map((o) => [o.projectId, o])),
     [data.projectOutcomes],
   );
 
@@ -421,7 +421,8 @@ function ImpactAnalysisDetailView({
                   apiEdgeImpactError={apiEdgeQuery.isError}
                   apiEdgeImpactLoading={apiEdgeQuery.isLoading}
                   currentUserId={user?.id ?? null}
-                  databaseConnected={databaseConnectedOf.get(projectId)}
+                  databaseConnected={outcomeOf.get(projectId)?.databaseConnected}
+                  databaseNotCheckedReason={outcomeOf.get(projectId)?.databaseNotCheckedReason}
                   onMarkFeedback={(itemId, input) => markFeedback.mutate({ itemId, ...input })}
                   onDeleteFeedback={(itemId, feedbackId) =>
                     deleteFeedback.mutate({ itemId, feedbackId })

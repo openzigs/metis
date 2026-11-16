@@ -5,7 +5,12 @@
 -- false when it did not (no connector, or it could not be read). NULL for a
 -- project the run did not search, and on every existing row.
 --
+-- "impact_analysis_projects"."databaseNotCheckedReason" (TEXT, nullable): why,
+-- where "databaseConnected" is false — `no-connection`, or `schema-off` for a
+-- run started with schema analysis turned off. NULL otherwise.
+--
 -- Rollback: server/prisma/postgres/rollbacks/20261203002593_issue2593_impact_database_connected.sql
 -- (applied and re-applied over a seeded run by the postgres-migrate-deploy CI job).
 
 ALTER TABLE "impact_analysis_projects" ADD COLUMN IF NOT EXISTS "databaseConnected" BOOLEAN;
+ALTER TABLE "impact_analysis_projects" ADD COLUMN IF NOT EXISTS "databaseNotCheckedReason" TEXT;

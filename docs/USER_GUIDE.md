@@ -3007,14 +3007,17 @@ dependencies).
    **Low-confidence match.** A card warns *"Low-confidence match — results may
    be incomplete"* when the requirement's wording matched code poorly. The
    export prints the same warning and the same grade (**Match quality**), from
-   the same source. When the code agent's citations led the files to edit, a
-   match spread across several areas is not a weak match, and no warning shows.
+   the same source. When the code agent's citations led most of the files to
+   edit, a match spread across several areas is not a weak match, and no warning
+   shows. If they led only a few, the warning stays.
 
    **Database impact not checked.** When the project has no database connection
    (or the run could not read it), a card that lists no affected table says
    *"Database impact not checked (no database connection)"*, and the summaries
    never say the impact is confined to code. Connect the project's database to
-   have it checked. [#2593]
+   have it checked. A run started with schema analysis turned off says
+   *"Database impact not checked (schema analysis was off for this run)"*
+   instead. [#2593]
 6. Projects with nothing to show are listed together below the report, in a
    collapsed **Not affected or not checked** group, each with what happened:
    **Checked: nothing affected** (METIS searched it and nothing matched),

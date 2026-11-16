@@ -20,6 +20,7 @@ import {
   impactFileKey,
   impactSeedEvidenceSchema,
   type ImpactAffectedRelation,
+  type ImpactDatabaseNotCheckedReason,
   type ImpactNotCheckedReason,
   type ImpactProjectOutcomeKind,
   type ImpactSeedEvidence,
@@ -1426,6 +1427,13 @@ export interface ImpactServiceDeps {
    */
   bindLlmUsageToRun?: (runId: string) => void;
   /**
+   * #2593 — awaited before the run is marked completed or failed, so every
+   * model call's usage row is written by then: the page stops polling at a
+   * terminal status and reads the run's cost once (`ImpactLlmRuntime.flush`).
+   * Absent ⇒ nothing is awaited.
+   */
+  flushLlmUsage?: () => Promise<void>;
+  /**
    * #1609 — whether the run's starter may still open `projectId` once the run
    * is executing. The run executes after the route answered, so access can
    * change in between. Anything but `accessible` is recorded `not-checked` with
@@ -1450,6 +1458,24 @@ interface ProjectOutcomeRecord {
   reason: ImpactNotCheckedReason | null;
   /** #2593 — the run read the project's database schema; unset when it never searched it. */
   databaseConnected?: boolean;
+  /** #2593 — why not, when {@link databaseConnected} is `false`. */
+  databaseNotCheckedReason?: ImpactDatabaseNotCheckedReason;
+}
+
+/**
+ * #2593 — await the run's in-flight usage writes before its terminal status is
+ * written. Accounting never fails the run: a flush error is logged and dropped.
+ */
+async function flushLlmUsage(deps: ImpactServiceDeps, id: string): Promise<void> {
+  if (!deps.flushLlmUsage) return;
+  try {
+    await deps.flushLlmUsage();
+  } catch (err) {
+    log.warn("impact LLM usage flush failed; the run's cost may be short", {
+      id,
+      error: String(err),
+    });
+  }
 }
 
 /**
@@ -1466,6 +1492,9 @@ function projectOutcomeWrites(outcomes: ReadonlyMap<string, ProjectOutcomeRecord
         outcome: o.outcome,
         outcomeReason: o.reason,
         ...(o.databaseConnected === undefined ? {} : { databaseConnected: o.databaseConnected }),
+        ...(o.databaseNotCheckedReason === undefined
+          ? {}
+          : { databaseNotCheckedReason: o.databaseNotCheckedReason }),
       },
     })),
   };
@@ -2154,6 +2183,13 @@ async function runImpactAnalysis(
       // it, "no affected tables" says nothing about the database, and the page
       // and the summaries must not read it as "no database change".
       const databaseConnected = schemaImpactOn && liveIndexForProject(projectId) !== null;
+      // And why not: a run started with schema analysis off never looks, which
+      // is not the same as a project with no database connection.
+      const databaseNotCheckedReason: ImpactDatabaseNotCheckedReason | undefined = databaseConnected
+        ? undefined
+        : schemaImpactOn
+          ? "no-connection"
+          : "schema-off";
 
       for (const change of changes) {
         const result = await computeProjectImpact(change, projectId, {
@@ -2275,6 +2311,7 @@ async function runImpactAnalysis(
               matchQuality: result.matchQuality,
               matchQualityReason: result.matchQualityReason,
               databaseConnected,
+              ...(databaseNotCheckedReason ? { databaseNotCheckedReason } : {}),
               affectedFileCount: result.affectedFileCount,
               affectedSymbolCount: result.affectedSymbolCount,
               affectedSymbols: result.affectedSymbols.map((s) => ({
@@ -2309,6 +2346,7 @@ async function runImpactAnalysis(
           changeType: result.changeType,
           affectedSymbolCount: result.affectedSymbolCount,
           databaseConnected,
+          ...(databaseNotCheckedReason ? { databaseNotCheckedReason } : {}),
           // #984 — hand the run-level summarizer TABLE-granular facts ranked by
           // #936 relevance tier, not the raw per-column rows: a tangential table
           // with many referenced columns must not lead the executive overview
@@ -2498,6 +2536,7 @@ async function runImpactAnalysis(
         outcome: projectAffected ? "affected" : "checked-none-affected",
         reason: null,
         databaseConnected,
+        ...(databaseNotCheckedReason ? { databaseNotCheckedReason } : {}),
       });
     }
     currentProjectId = null;
@@ -2565,6 +2604,7 @@ async function runImpactAnalysis(
         log.warn("impact LLM degradation notice failed; omitting", { id, error: String(err) });
       }
     }
+    await flushLlmUsage(deps, id);
     await prisma.impactAnalysis.update({
       where: { id },
       data: {
@@ -2590,6 +2630,7 @@ async function runImpactAnalysis(
     if (currentProjectId !== null && !outcomes.has(currentProjectId)) {
       outcomes.set(currentProjectId, { outcome: "error", reason: null });
     }
+    await flushLlmUsage(deps, id);
     await prisma.impactAnalysis.update({
       where: { id },
       data: {

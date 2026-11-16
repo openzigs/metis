@@ -19,7 +19,8 @@
 "use client";
 
 import {
-  IMPACT_DATABASE_NOT_CHECKED,
+  impactDatabaseNotCheckedLabel,
+  type ImpactDatabaseNotCheckedReason,
   impactEditFileKeys,
   impactFileKey,
   impactMatchCaveat,
@@ -87,6 +88,8 @@ export interface ChangedRequirementGroupProps {
    * leaving "no tables" to read as "no database change". Absent ⇒ unknown.
    */
   databaseConnected?: boolean;
+  /** #2593 — why it was not read: no connection, or schema analysis was off for the run. */
+  databaseNotCheckedReason?: ImpactDatabaseNotCheckedReason;
 }
 
 interface FileGroup {
@@ -118,6 +121,7 @@ export function ChangedRequirementGroup({
   projectName,
   apiSurfaceUntouched,
   databaseConnected,
+  databaseNotCheckedReason,
 }: ChangedRequirementGroupProps) {
   // #992 — the item's project repo (from the page's provider) for symbol links.
   const repo = useImpactSymbolRepo(item.projectId);
@@ -395,7 +399,7 @@ export function ChangedRequirementGroup({
           data-testid="database-not-checked"
           role="status"
         >
-          {IMPACT_DATABASE_NOT_CHECKED}
+          {impactDatabaseNotCheckedLabel(databaseNotCheckedReason)}
         </p>
       ) : null}
 

@@ -365,6 +365,19 @@ describe("impact-analyses router", () => {
       expect(res.body.data.cost).toEqual({ calls: 3, costUsd: 0.47, unpricedTokens: 0 });
     });
 
+    it("reads the cost once the run has settled, not on every poll of a running run", async () => {
+      for (const status of ["pending", "running"]) {
+        getImpactAnalysisDetail.mockResolvedValue({ ...detail, status });
+        const res = await request(app).get("/impact-analyses/ia-1");
+        expect(res.status).toBe(200);
+        expect(res.body.data.cost).toBeNull();
+      }
+      expect(readImpactRunCost).not.toHaveBeenCalled();
+      getImpactAnalysisDetail.mockResolvedValue({ ...detail, status: "failed" });
+      const res = await request(app).get("/impact-analyses/ia-1");
+      expect(res.body.data.cost).toEqual({ calls: 3, costUsd: 0.47, unpricedTokens: 0 });
+    });
+
     it("returns 404 when the analysis does not exist", async () => {
       getImpactAnalysisDetail.mockResolvedValue(null);
       const res = await request(app).get("/impact-analyses/missing");

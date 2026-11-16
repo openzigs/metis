@@ -151,7 +151,13 @@ describe("#103 getImpactAnalysisDetail query shape", () => {
       where: { id: "ia-88" },
       include: expect.objectContaining({
         projects: {
-          select: { projectId: true, outcome: true, outcomeReason: true, databaseConnected: true },
+          select: {
+            projectId: true,
+            outcome: true,
+            outcomeReason: true,
+            databaseConnected: true,
+            databaseNotCheckedReason: true,
+          },
         },
       }),
     });
@@ -269,7 +275,9 @@ describe("#103 listImpactAnalyses query shape", () => {
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         include: {
-          items: { select: { id: true, projectId: true, requirementId: true } },
+          items: {
+            select: { id: true, projectId: true, requirementId: true, requirementTitle: true },
+          },
           projects: { select: { projectId: true } },
         },
       }),

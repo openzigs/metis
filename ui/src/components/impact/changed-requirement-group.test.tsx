@@ -498,6 +498,21 @@ describe("ChangedRequirementGroup database-not-checked note (#2593)", () => {
     );
   });
 
+  it("gives schema analysis being off as the reason when the run was started without it", () => {
+    render(
+      <ChangedRequirementGroup
+        item={item("strong")}
+        databaseConnected={false}
+        databaseNotCheckedReason="schema-off"
+      />,
+    );
+    const note = screen.getByTestId("database-not-checked");
+    expect(note).toHaveTextContent(
+      "Database impact not checked (schema analysis was off for this run)",
+    );
+    expect(note).not.toHaveTextContent("no database connection");
+  });
+
   it("does not show over a card that lists a table, primary or tangential", () => {
     const { unmount } = render(
       <ChangedRequirementGroup

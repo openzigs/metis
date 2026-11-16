@@ -14,6 +14,7 @@ import {
   impactFileKey,
   impactSymbolRole,
   type ImpactAffectedSymbolView,
+  type ImpactDatabaseNotCheckedReason,
   type ImpactSeedEvidence,
 } from "./impact.js";
 
@@ -50,9 +51,25 @@ export function impactEditFileKeys(item: ImpactEditFileSource): string[] {
   });
 }
 
+/**
+ * #2593 — what makes two impact items the same requirement, for counting: its
+ * tracked id; else, for a change read from a document or pasted text (no
+ * `Requirement` row), its snapshotted title, so one change reaching two
+ * projects counts once; else the item itself.
+ */
+export function impactRequirementKey(item: {
+  id: string;
+  requirementId?: string | null;
+  requirementTitle?: string | null;
+}): string {
+  if (item.requirementId) return `r:${item.requirementId}`;
+  const title = item.requirementTitle?.trim();
+  return title ? `t:${title}` : `i:${item.id}`;
+}
+
 /** #2593 — the run-level headline of an impact result. */
 export interface ImpactRunHeadline {
-  /** Distinct requirements with an impact item (a tracked id, else the item itself). */
+  /** Distinct requirements with an impact item, as {@link impactRequirementKey} tells them apart. */
   requirementCount: number;
   /** Distinct files to edit across every item, a file being (project, repository, path). */
   editFileCount: number;
@@ -61,13 +78,18 @@ export interface ImpactRunHeadline {
 /** #2593 — the requirements and files to edit across a run's items. */
 export function impactRunHeadline(
   items: ReadonlyArray<
-    ImpactEditFileSource & { id: string; projectId: string; requirementId: string | null }
+    ImpactEditFileSource & {
+      id: string;
+      projectId: string;
+      requirementId: string | null;
+      requirementTitle?: string | null;
+    }
   >,
 ): ImpactRunHeadline {
   const requirements = new Set<string>();
   const files = new Set<string>();
   for (const item of items) {
-    requirements.add(item.requirementId ? `r:${item.requirementId}` : `i:${item.id}`);
+    requirements.add(impactRequirementKey(item));
     for (const key of impactEditFileKeys(item)) files.add(`${item.projectId}\u0000${key}`);
   }
   return { requirementCount: requirements.size, editFileCount: files.size };
@@ -93,3 +115,19 @@ export function impactReachLabel(totalImpactedSymbols: number): string {
  * the impact was "confined to code" beside findings that need a migration.
  */
 export const IMPACT_DATABASE_NOT_CHECKED = "Database impact not checked (no database connection)";
+
+/** #2593 — as {@link IMPACT_DATABASE_NOT_CHECKED}, for a run started with schema analysis off. */
+export const IMPACT_DATABASE_NOT_CHECKED_SCHEMA_OFF =
+  "Database impact not checked (schema analysis was off for this run)";
+
+/**
+ * #2593 — the "database not checked" sentence for a reason. A missing reason
+ * reads as no connection, the case the sentence was first written for.
+ */
+export function impactDatabaseNotCheckedLabel(
+  reason: ImpactDatabaseNotCheckedReason | null | undefined,
+): string {
+  return reason === "schema-off"
+    ? IMPACT_DATABASE_NOT_CHECKED_SCHEMA_OFF
+    : IMPACT_DATABASE_NOT_CHECKED;
+}

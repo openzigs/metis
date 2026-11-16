@@ -11,6 +11,7 @@ import type {
   ApiEdgeImpactResult,
   ApiSurfaceUntouched,
   CrossProjectImpactResult,
+  ImpactDatabaseNotCheckedReason,
   ImpactItemView,
   ImpactTableFeedbackVerdict,
   ProjectObjectUsage,
@@ -77,6 +78,8 @@ export interface ProjectImpactSectionProps {
    * `databaseConnected`); forwarded to each requirement group. Absent ⇒ unknown.
    */
   databaseConnected?: boolean;
+  /** #2593 — and why not (its outcome's `databaseNotCheckedReason`); forwarded likewise. */
+  databaseNotCheckedReason?: ImpactDatabaseNotCheckedReason;
 }
 
 export function ProjectImpactSection({
@@ -94,6 +97,7 @@ export function ProjectImpactSection({
   onMarkFeedback,
   onDeleteFeedback,
   databaseConnected,
+  databaseNotCheckedReason,
 }: ProjectImpactSectionProps) {
   const totalSymbols = items.reduce((sum, item) => sum + item.affectedSymbolCount, 0);
   const crossProjectUsage: Record<string, ProjectObjectUsage[]> =
@@ -146,6 +150,7 @@ export function ProjectImpactSection({
               projectName={projectName ?? projectId}
               apiSurfaceUntouched={untouchedByItem.get(item.id) ?? null}
               databaseConnected={databaseConnected}
+              databaseNotCheckedReason={databaseNotCheckedReason}
             />
           ))}
         </div>
