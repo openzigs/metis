@@ -513,6 +513,44 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(admin.body.data.requirements.requirements).toHaveLength(1);
     });
 
+    it("a caller who can read the document but not the run or the check is refused at the run", async () => {
+      // A run over MEMBER's project and another workspace's: its document is
+      // MEMBER's to read, the run (every run project, #1412) is not.
+      await db.impactAnalysis.create({
+        data: { id: "ia-2270-multi", documentId: DOC, startedById: ADMIN, status: "completed" },
+      });
+      for (const projectId of [PROJECT, OTHER_PROJECT]) {
+        await db.impactAnalysisProject.create({ data: { analysisId: "ia-2270-multi", projectId } });
+      }
+      await saveImpactClarifiable({
+        impactAnalysisId: "ia-2270-multi",
+        reading: READING as never,
+        document: { projectId: PROJECT, documentId: DOC },
+        title: "frd.docx",
+      });
+      const member = as(MEMBER, "coordinator", [WORKSPACE]);
+      const unknownRun = await as().post(impact("ia-unknown"), {});
+      const unknownCheck = await as().post(check("pa-unknown"), {});
+      const before = state.questionCalls;
+      // Refused as an unknown run or check is, never reaching the dialog (whose
+      // document MEMBER may read) — so not NO_DIALOG, and no model call.
+      for (const [res, unknown] of [
+        [await member.get(impact("ia-2270-multi")), unknownRun],
+        [await member.post(impact("ia-2270-multi"), {}), unknownRun],
+        // pa-2270 was started by ADMIN, scoped to no product of MEMBER's.
+        [await member.get(check("pa-2270")), unknownCheck],
+        [await member.post(check("pa-2270"), {}), unknownCheck],
+      ] as const) {
+        expect(res.status).toBe(404);
+        expect(res.body.error.code).toBe(unknown.body.error.code);
+        expect(res.body.error.code).not.toBe("NO_DIALOG");
+      }
+      expect(state.questionCalls).toBe(before);
+      // Positive control: the run's dialog is there for a caller who may read it.
+      const admin = await as().get(impact("ia-2270-multi"));
+      expect(admin.body.data.requirements.requirements).toHaveLength(1);
+    });
+
     it("both POSTs are rate limited per user, after the permission check", async () => {
       process.env.SUBJECT_CLARIFY_LIMIT_MAX = "1";
       try {
