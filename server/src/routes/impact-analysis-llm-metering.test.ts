@@ -300,6 +300,45 @@ describe("#1021 — impact LLM stages reach the token ledger", () => {
     });
   });
 
+  it("#2593 has the run-summary call's ledger row written before the run reads completed", async () => {
+    vi.stubEnv("IMPACT_LLM_SUMMARY", "1");
+    const { prisma, analyses } = servicePrismaMock();
+    analyses.set("ia-settle", { id: "ia-settle", sourceText: "text", documentId: null });
+    // The project ledger (`token_usages`) the run's cost is summed from, answering
+    // slowly: each write is still in flight when its model call returns.
+    const ledger: Array<{ agentStep?: unknown; sessionId?: unknown }> = [];
+    const ledgerMock = prismaMock as unknown as { tokenUsage?: unknown };
+    ledgerMock.tokenUsage = {
+      create: vi.fn(async ({ data }: { data: { agentStep?: unknown; sessionId?: unknown } }) => {
+        await new Promise((r) => setTimeout(r, 20));
+        ledger.push(data);
+        return data;
+      }),
+    };
+    // What the ledger held when the completed status was written: the page
+    // stops polling there and reads the run's cost once.
+    let stepsAtCompletion: unknown[] | null = null;
+    const update = prisma.impactAnalysis.update as ReturnType<typeof vi.fn>;
+    const inner = update.getMockImplementation() as (args: unknown) => Promise<unknown>;
+    update.mockImplementation(async (args: { data: { status?: string } }) => {
+      if (args.data.status === "completed") stepsAtCompletion = ledger.map((r) => r.agentStep);
+      return inner(args);
+    });
+
+    try {
+      await executeImpactAnalysis("ia-settle", ["proj-1"], {
+        ...RUN_DEPS,
+        ...impactRunDeps("user-1", ["proj-1"]),
+        prisma: prisma as never,
+      });
+    } finally {
+      delete ledgerMock.tokenUsage;
+    }
+
+    expect(analyses.get("ia-settle")?.status).toBe("completed");
+    expect(stepsAtCompletion).toContain("impact.summary-run");
+  });
+
   it("meters EVERY flag-gated stage the route wires, each under its own agentStep", async () => {
     for (const flag of [
       "IMPACT_LLM_TABLE_FILTER",
@@ -934,7 +973,7 @@ describe("#1024 — graceful degradation with no usable provider", () => {
 
   it("keeps the deterministic run overview when the summarizer degrades", async () => {
     const { row } = await runWith("ia-det-summary", offlineProvider);
-    expect(row.summary).toMatch(/Impacted \d+ symbol\(s\)/);
+    expect(row.summary).toMatch(/Reach: \d+ code symbol\(s\) to review/);
   });
 });
 

@@ -2544,7 +2544,11 @@ async function runImpactAnalysis(
     // Deterministic run-level overview (always available). #932 — when the LLM
     // summarizer is wired and produces a GROUNDED overview, prefer it; otherwise
     // fall back to this deterministic sentence (non-blocking, never throws).
-    const deterministicSummary = `Impacted ${totalImpactedSymbols} symbol(s) across ${projectIds.length} project(s) from ${changes.length} change(s).`;
+    // #2593 — it leads with the changes, as the page header does; the symbol
+    // count is the reach to review, not the size of the change.
+    const deterministicSummary =
+      `${changes.length} change(s) across ${projectIds.length} project(s). ` +
+      `Reach: ${totalImpactedSymbols} code symbol(s) to review; not each one changes.`;
     let summary = deterministicSummary;
     // #1021 — the run overview spans every project, so it belongs to a single
     // project only when the run has exactly one. Otherwise its tokens are billed

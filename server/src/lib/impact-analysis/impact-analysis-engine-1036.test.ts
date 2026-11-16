@@ -456,7 +456,7 @@ describe("the verbatim run-7 #4478 issue, end to end on captured search hits (#1
     };
     const degraded = await run("bm25-only");
     expect(degraded).toMatch(
-      /^Impacted \d+ symbol\(s\) across 1 project\(s\) from 1 change\(s\)\./,
+      /^1 change\(s\) across 1 project\(s\)\. Reach: \d+ code symbol\(s\) to review; not each one changes\./,
     );
     expect(degraded).toContain(
       "\n\nCode search ran on keywords only (BM25) for this project: symbol embeddings were missing or still building",

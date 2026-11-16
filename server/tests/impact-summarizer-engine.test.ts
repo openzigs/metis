@@ -186,7 +186,9 @@ describe("#932 engine wiring — impact summarizer", () => {
     const store = seedStore();
     const detail = await run(store);
     expect(store.items[0].summary).toBeNull();
-    expect(String(detail?.summary)).toMatch(/^Impacted 1 symbol/);
+    expect(String(detail?.summary)).toMatch(
+      /^1 change\(s\) across 1 project\(s\)\. Reach: 1 code symbol/,
+    );
     expect(detail?.items[0].summary).toBeNull();
   });
 
@@ -232,7 +234,9 @@ describe("#932 engine wiring — impact summarizer", () => {
     const store = seedStore();
     const detail = await run(store, summarizer);
     expect(detail?.items[0].summary).toBeNull();
-    expect(String(detail?.summary)).toMatch(/^Impacted 1 symbol/);
+    expect(String(detail?.summary)).toMatch(
+      /^1 change\(s\) across 1 project\(s\)\. Reach: 1 code symbol/,
+    );
   });
 
   it("degrades the item narrative to null on a malformed provider reply, never throwing (#941)", async () => {
@@ -263,6 +267,8 @@ describe("#932 engine wiring — impact summarizer", () => {
     const store = seedStore();
     const detail = await run(store, summarizer);
     expect(store.items[0].summary).toBeNull();
-    expect(String(detail?.summary)).toMatch(/^Impacted 1 symbol/);
+    expect(String(detail?.summary)).toMatch(
+      /^1 change\(s\) across 1 project\(s\)\. Reach: 1 code symbol/,
+    );
   });
 });
