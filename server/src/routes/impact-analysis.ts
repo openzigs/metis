@@ -100,7 +100,7 @@ import {
   type SubjectDialog,
 } from "../lib/clarifications/subject-clarifications.js";
 import { subjectClarifyUserRateLimiter } from "../middleware/subject-clarify-rate-limit.js";
-import { handoffPdfUserRateLimiter } from "../middleware/handoff-export-rate-limit.js";
+import { handoffExportUserRateLimiter } from "../middleware/handoff-export-rate-limit.js";
 import {
   handleSubjectClarifyPost,
   noDialog,
@@ -1592,11 +1592,12 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
   // call). Authorized as GET /:id; the change request is read only within the
   // run's projects, as this reader may see it (#2447), and the run's own
   // clarification answers only when its document is readable to them (#2270).
-  // A PDF launches Chromium, so it is capped per user (handoffPdfUserRateLimiter).
+  // A PDF, or a Word export holding a Mermaid diagram, launches Chromium, so
+  // both formats are capped per user (handoffExportUserRateLimiter).
   r.get(
     "/:id/export",
     requirePermission("analysis.read"),
-    handoffPdfUserRateLimiter,
+    handoffExportUserRateLimiter,
     async (req, res, next) => {
       try {
         const format = z.enum(["docx", "pdf"]).safeParse(req.query.format);

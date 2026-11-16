@@ -3063,7 +3063,7 @@ three downloads [#2595]:
   A finished run that found no code impact can be handed off too; the document
   says no code is affected. The change request is shown as it reads when you
   download, and the analysis as it was run, and the document gives both dates.
-  A PDF is limited to 30 per user every 15 minutes; Word has no such limit.
+  You can download 30 hand-off documents (Word and PDF together) every 15 minutes.
   Creating the document makes no AI call and costs nothing.
 - **Export markdown** is the full record of the run. Each change lists its first
   ten blast-radius symbols and covering tests and counts the rest, so a large run

@@ -178,19 +178,19 @@ describe("GET /impact-analyses/:id/export — #2595", () => {
     expect(exported().markdown).toMatch(/^# Expiring API keys - impact hand-off$/m);
   });
 
-  it("caps PDF exports per user, and leaves the Word export uncounted", async () => {
-    process.env.HANDOFF_PDF_LIMIT_MAX = "1";
+  it("caps hand-off exports per user, Word and PDF alike, before any export runs", async () => {
+    process.env.HANDOFF_EXPORT_LIMIT_MAX = "1";
     try {
       await request(app).get("/impact-analyses/ia-1/export?format=pdf");
       m.exportDocument.mockClear();
-      const limited = await request(app).get("/impact-analyses/ia-1/export?format=pdf");
-      expect(limited.status).toBe(429);
-      expect(limited.body.error.code).toBe("HANDOFF_EXPORT_RATE_LIMITED");
+      for (const format of ["pdf", "docx"]) {
+        const limited = await request(app).get(`/impact-analyses/ia-1/export?format=${format}`);
+        expect(limited.status).toBe(429);
+        expect(limited.body.error.code).toBe("HANDOFF_EXPORT_RATE_LIMITED");
+      }
       expect(m.exportDocument).not.toHaveBeenCalled();
-      const word = await request(app).get("/impact-analyses/ia-1/export?format=docx");
-      expect(word.status).toBe(200);
     } finally {
-      delete process.env.HANDOFF_PDF_LIMIT_MAX;
+      delete process.env.HANDOFF_EXPORT_LIMIT_MAX;
     }
   });
 
