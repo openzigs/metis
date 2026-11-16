@@ -5295,9 +5295,9 @@ read the 1.25× cache write back (#2297). A
 document over `READER_WHOLE_MAX_DOCUMENT_TOKENS` (20,000, about 80 KB) is read sectioned, whose
 cost grows in step with its length rather than with its square.
 
-Requirements Analysis uses it behind `ANALYSIS_DOCUMENT_READER` (off by default; #2255
-measured it on four documents up to 60 KB: recall 1.00 but precision 0.59 to 0.69 against a
-whole-document read's 1.00, mostly repeats, so it stays off; see
+Requirements Analysis uses it behind `ANALYSIS_DOCUMENT_READER` (on by default since #2255:
+on Sonnet 5.5 it holds a whole-document read's requirement recall and precision, each within
+0.05, on every document that read can answer; see
 docs/DOCUMENT_UNDERSTANDING_BASELINE.md):
 `runOneAgent("document")` calls `readSelectedDocuments` instead of `retrieveContext`
 (`analysis/document-reader-agent.ts`). Since #2431 it reads as a shared audience

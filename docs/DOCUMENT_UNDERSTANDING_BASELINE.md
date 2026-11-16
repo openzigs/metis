@@ -3,16 +3,81 @@
 - **Issues:** #2229, Phase 0 of epic #2227 ("METIS understands the documents it is given");
   #2255, the document reader measured on four documents
 - **Measured:** 2026-11-10, at commit `8a0601902` (#2229); 2026-11-12, at commit `658a61dc2`
-  (#2255); on `claude-sonnet-5-5` (production) and `deepseek-flash` (iteration). Each
+  (#2255); 2026-11-15, at commit `2623c200e` on `main` (#2255's flag decision); on `claude-sonnet-5-5` (production) and `deepseek-flash` (iteration). Each
   commit a reading records is on its pull request's branch, which was squash-merged:
   `8a0601902` landed on `main` as `1c93df96e` (#2247), `658a61dc2` as `afde69a5f` (#2362),
   `362294ae3` as `b6c1799b3` (#2415) and `2d78fb104` as `815b914ee` (#2444).
-- **Readings:** `eval-data/readings/doc-understanding/`; #2407 re-measured arm R on 2026-11-12 at commit `362294ae3` (`reader-sonnet-5-5-2407`); #2374 measured arms R and B on 2026-11-13 at commit `2d78fb104` (`reader-sonnet-5-5-2374`, `reader-sonnet-5-5-2374-B-cap21333`); #2319 measured arm R's saved readings on 2026-11-14 at commit `6b9a67824` (`reader-sonnet-5-5-2319`); #2271 measured arm R's questions on 2026-11-14 at commit `a7ad8202f` (`reader-sonnet-5-5-2271`, `reader-deepseek-flash-2271`)
+- **Readings:** `eval-data/readings/doc-understanding/`; #2407 re-measured arm R on 2026-11-12 at commit `362294ae3` (`reader-sonnet-5-5-2407`); #2374 measured arms R and B on 2026-11-13 at commit `2d78fb104` (`reader-sonnet-5-5-2374`, `reader-sonnet-5-5-2374-B-cap21333`); #2319 measured arm R's saved readings on 2026-11-14 at commit `6b9a67824` (`reader-sonnet-5-5-2319`); #2271 measured arm R's questions on 2026-11-14 at commit `a7ad8202f` (`reader-sonnet-5-5-2271`, `reader-deepseek-flash-2271`); #2255's flag decision measured arms R and B on 2026-11-15 at commit `2623c200e` (`reader-sonnet-5-5-2255`, `reader-sonnet-5-5-2255-B-cap21333`)
 - **Harness:** `pnpm --filter server eval:doc-understanding` (`server/src/lib/eval/doc-understanding/`)
+
+## The flag decision (#2255): the reader is on by default
+
+**`ANALYSIS_DOCUMENT_READER` is now on by default.** Re-measured on `main` with every
+change since the first measurement below (#2361, #2407, #2374, #2262, #2321, #2530, #2534)
+and the current labels (the owner's review of the six added labels, #2550), the reader
+holds the whole-document read (arm B) on every document B can read, under the rule set out
+below: R's requirement recall and precision are each no more than 0.05 below B's. An
+operator can still set it false.
+
+Reading `reader-sonnet-5-5-2255` (arms R and B, claude-sonnet-5-5, output cap 16,384) and
+`reader-sonnet-5-5-2255-B-cap21333` (B on 03 at 21,333, as #2255 and #2374 read it: at
+16,384 B cannot finish 03). Both at commit `2623c200e`, one run per document and arm, each
+its own invocation, combined with `--combine`; R ran twice on 01 (below).
+
+| Document | B recall / precision | R recall / precision | Gap (R − B) | Held? |
+|---|---|---|---|---|
+| 01 clinic booking | 0.86 / 1.00 | 0.97 / 0.96 (runs: 0.97 / 0.95, 0.98 / 0.97) | +0.11 / −0.04 | yes |
+| 02 freight claims | 0.87 / 1.00 | 1.00 / 0.98 | +0.13 / −0.02 | yes |
+| 03 community grants | 0.94 / 1.00 (cap 21,333) | 0.99 / 0.98 | +0.05 / −0.02 | yes |
+| 04 library lending | not run: B failed at 16,384 and at 21,333 (#2255) | not run here: 0.99 / 0.92 at #2374 | | no B to compare |
+
+**Why 01 ran twice.** Its first R run scored precision 0.95 against B's 1.00, exactly on
+the 0.05 tolerance, which is about one run's noise. The second scored 0.97. Both runs'
+false requirements are the same two scope lines #2374 found (2.1 "Each site may choose…",
+2.2 "The portal will not offer a symptom checker…"); run 1 also repeated one requirement.
+On 02 the only false requirement is 11's lead-in ("The application must provide management
+reporting directly."), as at #2374. On 03 they are a restatement of a bank-details rule and
+a background line about Small Sparks grants.
+
+**What the analyst is asked.** With the reader on, the analysis asks its first question
+round from the reader's statements (#2271, #2534). Every reading here asked its round:
+#2271 found seven of eight asked nothing.
+
+| Document | R: asked, labelled ambiguities found, worth asking | B: asked, found, worth asking |
+|---|---|---|
+| 01 | 8, 2 of 12, 0.75 (both runs) | 10, 10 of 12, 1.00 |
+| 02 | 8, 0 of 18, 0.25 | 8, 6 of 18, 1.00 |
+| 03 | 8, 1 of 17, 0.50 | 12, 8 of 17, 0.75 |
+
+**The round's questions are the gap this decision leaves.** They find 3 of the 47 labelled
+ambiguities, where B's one reply finds 24. The rule is on requirements, so this does not
+hold the flag back, and it does not compare R with what an analyst gets with the flag
+off: that is arm A, today's ten retrieved chunks, which finds about a quarter of the
+requirements and whose questions were judged worth asking 0.27 of the time on Sonnet
+(#2229, 48 questions a document). Which ambiguities the round chooses to ask about is
+#2576.
+
+**Cost.** R costs $0.66 to $1.12 a document with its extraction and both question rounds
+against B's $0.10 to $0.19. The reader's
+batch calls now hit the prompt cache on the document (#2262): about 0.95 of each later
+batch call's prompt was read from the cache on 01 and 03.
+
+**Not measured.**
+
+- **DeepSeek.** The machine that ran this has no DeepSeek key, so the DeepSeek leg of
+  #2255's run was not repeated. Production runs on Anthropic, and the decision is Sonnet
+  5.5's. The last DeepSeek reading of R is #2271's, at an older commit.
+- **04.** B cannot read it, so the rule has nothing to compare there. A Sonnet R run of 04
+  with its question rounds takes over ten minutes and about $2.20, over what one sitting
+  allowed and more than this run's spend cap left room for. #2374 and #2534 read it.
+
+Spend: **$4.0161** metered on claude-sonnet-5-5 ($3.68 the arms, $0.33 the judge), within the
+$10 cap the owner set for this run: R 01 $0.8784 and $0.7210, R 02 $0.7030, R 03 $1.1807,
+B 01 and 02 $0.2807, B 03 at 21,333 $0.2523. No call hit a rate, quota or credit limit.
 
 ## The reader, measured (#2255)
 
-**`ANALYSIS_DOCUMENT_READER` stays off.** The document reader (arm R) finds every labelled
+**At this first measurement (2026-11-12) `ANALYSIS_DOCUMENT_READER` stayed off.** The document reader (arm R) finds every labelled
 requirement on all four documents, on both models, including the 60 KB one that the
 whole-document read (arm B) cannot answer in one reply. But it does not hold B's precision.
 On Sonnet it scores 0.59 to 0.69, where B scores 1.00 on the three documents it can read.
@@ -713,6 +778,8 @@ documents 02 and 03 once its reduce had failed on the smallest one.
 | `reader-sonnet-5-5-2407` (R × 4 documents × 2 runs) (#2407) | claude-sonnet-5-5 | $2.7935 | $0.5721 | **$3.3656** |
 | `reader-sonnet-5-5-2271` (R with questions × 4 documents) (#2271) | claude-sonnet-5-5 | $2.8310 | $0.0000 | **$2.8310** |
 | `reader-deepseek-flash-2271` (R with questions × 4 documents) (#2271) | deepseek-flash | $0.6136 | $0.0090 | **$0.6226** |
+| `reader-sonnet-5-5-2255` (R × 01 twice, 02, 03; B × 01, 02; cap 16,384) (#2255, flag decision) | claude-sonnet-5-5 | $3.4962 | $0.2677 | **$3.7639** |
+| `reader-sonnet-5-5-2255-B-cap21333` (B × 03) (#2255, flag decision) | claude-sonnet-5-5 | $0.1873 | $0.0650 | **$0.2523** |
 
 Not in the readings: a first smoke run on DeepSeek before the harness was committed, stopped
 by its time limit during arm C (A and B logged $0.0806 with their judges; C's partial spend
@@ -727,6 +794,7 @@ pnpm --filter server eval:doc-understanding --arms A,B --runs 3 --budget 5
 pnpm --filter server eval:doc-understanding --arms B,R --corpus docunderstanding-04-library-lending --budget 8   # #2255, one document per process
 pnpm --filter server eval:doc-understanding --arms R --runs 2 --saved-readings   # #2319, run 2 reuses run 1's readings
 pnpm --filter server eval:doc-understanding --arms R --corpus docunderstanding-01-clinic-booking --budget 3   # #2271, R with its questions, one document per process
+pnpm --filter server eval:doc-understanding --arms B --corpus docunderstanding-01-clinic-booking,docunderstanding-02-freight-claims --budget 1   # #2255 flag decision; R a document per process, B on 03 with ANALYSIS_FINAL_ANSWER_MAX_OUTPUT_TOKENS=21333
 pnpm --filter server eval:doc-understanding --combine a.json,b.json,c.json --reading <name>   # no model call
 pnpm --filter server eval:doc-understanding:build    # after editing a document's frd.src.md
 ```

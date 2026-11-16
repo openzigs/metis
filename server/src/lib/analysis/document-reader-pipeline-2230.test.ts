@@ -346,7 +346,8 @@ describe("#2230 — the document agent through the document reader", () => {
     ]);
   });
 
-  it("is off by default: the document agent retrieves as before and no coverage is recorded", async () => {
+  it("set false, the document agent retrieves as before and no coverage is recorded", async () => {
+    process.env.ANALYSIS_DOCUMENT_READER = "false";
     const { calls, capability, retrieve } = await runPipeline();
     expect(loader).not.toHaveBeenCalled();
     expect(calls.some((c) => c.systemMessage?.includes("from beginning to end"))).toBe(false);

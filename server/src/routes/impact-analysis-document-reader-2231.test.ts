@@ -241,7 +241,7 @@ afterEach(() => {
 });
 
 describe("#2231 — the route wires the document reader into an impact run", () => {
-  it("is off by default: no reader, and the document is split heuristically", () => {
+  it("set false: no reader, and the document is split heuristically", () => {
     vi.stubEnv("ANALYSIS_DOCUMENT_READER", "false");
     expect(impactRunDeps("user-1", ["proj-1"]).documentReader).toBeUndefined();
   });
