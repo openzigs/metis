@@ -317,8 +317,19 @@ describe("recordCodePassCostCeiling (#2569)", () => {
       databaseAnalysisRequested: false,
     });
 
-  it("writes the record and the code-pass-cost-ceiling reason when the ceiling was reached", () => {
+  it("a reached ceiling on a pass that left nothing unreached is recorded, with no reason", () => {
     const t = tracker();
+    recordCodePassCostCeiling(t, { limitUsd: 1, spentUsd: 1.1, reached: true, pricing: "priced" });
+    const cap = finalizeCapability(t);
+    expect(cap.codePassCostCeiling?.reached).toBe(true);
+    expect(cap.reasons).not.toContain("code-pass-cost-ceiling");
+    expect(cap.reasons).not.toContain("code-investigation-cut-short");
+  });
+
+  it("writes the record and the code-pass-cost-ceiling reason when the ceiling cut the pass short", () => {
+    const t = tracker();
+    t.codeInvestigationCutShort = true;
+    t.codeInvestigationGap = { unreached: 1, inconclusive: 0, total: 2 };
     recordCodePassCostCeiling(t, { limitUsd: 1, spentUsd: 1.1, reached: true, pricing: "priced" });
     const cap = finalizeCapability(t);
     expect(cap.codePassCostCeiling).toEqual({

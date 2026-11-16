@@ -140,6 +140,44 @@ describe("CodePassCostCeiling.guard", () => {
     });
   });
 
+  it("refuses a call once the spend is exactly AT the limit (reached means spent >= limit)", async () => {
+    const { provider, chat } = stubProvider(() => "ok");
+    const one = priceCallUsd(PRICED.provider, PRICED.model, TEN_CENTS)!;
+    // Two calls land the spend exactly on the limit, summed as the guard sums them.
+    const ceiling = new CodePassCostCeiling(one + one);
+    const guarded = ceiling.guard(provider);
+    await guarded.chat([{ role: "user", content: "q" }]);
+    await guarded.chat([{ role: "user", content: "q" }]);
+    expect(ceiling.spentUsd).toBe(ceiling.limitUsd);
+    await expect(guarded.chat([{ role: "user", content: "q" }])).rejects.toBeInstanceOf(
+      CostCeilingReachedError,
+    );
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(ceiling.reached).toBe(true);
+  });
+
+  it("a refused grading call (panel, faithfulness) counts its spend but does not mark the pass stopped", async () => {
+    const { provider, chat } = stubProvider(() => "ok");
+    const ceiling = new CodePassCostCeiling(0.15);
+    const own = ceiling.guard(provider);
+    const grading = ceiling.guard(provider, { grading: true });
+    await own.chat([{ role: "user", content: "q" }]);
+    await grading.chat([{ role: "user", content: "q" }]);
+    expect(ceiling.spentUsd).toBeCloseTo(0.2, 10);
+    await expect(grading.chat([{ role: "user", content: "q" }])).rejects.toBeInstanceOf(
+      CostCeilingReachedError,
+    );
+    expect(chat).toHaveBeenCalledTimes(2);
+    expect(ceiling.refusedCalls).toBe(1);
+    expect(ceiling.reached).toBe(false);
+    expect(ceiling.outcome()).toBeNull();
+    // The pass's own refused call is what stops it.
+    await expect(own.chat([{ role: "user", content: "q" }])).rejects.toBeInstanceOf(
+      CostCeilingReachedError,
+    );
+    expect(ceiling.reached).toBe(true);
+  });
+
   it("guards a stream too, and counts its usage chunk", async () => {
     const { provider } = stubProvider(() => "ok");
     const ceiling = new CodePassCostCeiling(0.15);

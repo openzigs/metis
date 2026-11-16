@@ -9,6 +9,7 @@ import { TaskQueue, type TaskStore } from "../src/lib/scheduler/task-queue.js";
 import { InMemoryTaskHandlerRegistry } from "../src/lib/scheduler/task-handlers.js";
 import { TaskAbortError, taskAbortSource } from "../src/lib/scheduler/task-abort.js";
 import { NoDocumentableCodeError } from "../src/lib/docs-gen/no-documentable-code.js";
+import { BudgetExceededError } from "../src/lib/finops/budget-enforcer.js";
 import { isPermanentTaskFailure } from "../src/lib/scheduler/permanent-failure.js";
 import {
   TASK_RETRY_WINDOW_MS,
@@ -749,6 +750,31 @@ describe("TaskQueue retry semantics", () => {
     });
     try {
       const task = await queue.enqueue({ type: "regenerate-generated-document", maxAttempts: 3 });
+      await vi.waitFor(() => expect(rows.get(task.id)?.status).toBe("failed"));
+      await new Promise((r) => setTimeout(r, 20));
+      expect(handler).toHaveBeenCalledOnce();
+      expect(retrying).not.toHaveBeenCalled();
+      expect(rows.get(task.id)).toMatchObject({ status: "failed", attempts: 1 });
+    } finally {
+      await queue.shutdown();
+    }
+  });
+
+  it("#2569 — a scheduled re-run refused for the project's monthly budget is not retried", async () => {
+    const { store, rows } = makeStore();
+    const registry = new InMemoryTaskHandlerRegistry();
+    const handler = vi.fn<TaskHandlerFn>(async () => {
+      // `orchestrator.start` on an over-budget project.
+      throw new BudgetExceededError(1000, 1000);
+    });
+    registry.register({ type: "rerun-analysis", description: "", handler });
+    const retrying = vi.spyOn(store, "markRetrying");
+    const queue = new TaskQueue(store, registry, makeEmitter().emitter, {
+      ...baseConfig,
+      retryBackoffMs: 1,
+    });
+    try {
+      const task = await queue.enqueue({ type: "rerun-analysis", maxAttempts: 3 });
       await vi.waitFor(() => expect(rows.get(task.id)?.status).toBe("failed"));
       await new Promise((r) => setTimeout(r, 20));
       expect(handler).toHaveBeenCalledOnce();

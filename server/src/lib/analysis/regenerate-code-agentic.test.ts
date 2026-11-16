@@ -32,6 +32,7 @@ vi.mock("../socket/job-events.js", () => ({
 }));
 
 const { AnalysisOrchestrator } = await import("./orchestrator.js");
+const { CodePassCostCeiling } = await import("./code-pass-cost-ceiling.js");
 
 const USAGE = { promptTokens: 10, completionTokens: 5, totalTokens: 15 };
 const OUTPUT = { agentKey: "code", summary: "s", findings: [], notes: [] };
@@ -160,6 +161,33 @@ describe("regenerate the code agent through its pipeline mode (#766)", () => {
     expect(calls.map((c) => c.connectorId)).toEqual(["repo_1", "repo_2"]);
     expect(calls[0].projectName).toBe("Miniflux [repo: api]");
     expect(typeof calls[0].tokenBudget).toBe("number");
+    // #2569 — one dollar ceiling across both repositories' passes: $1 (the
+    // default) per requirement of the run.
+    expect(calls[0].costCeiling).toBeInstanceOf(CodePassCostCeiling);
+    expect(calls[1].costCeiling).toBe(calls[0].costCeiling);
+    expect(calls[0].costCeiling.limitUsd).toBe(REQS.length);
+  });
+
+  it("#2569 — a multi-repo Continue shares one ceiling, scaled by its turn multiplier", async () => {
+    prismaMock.repoConnection.findMany.mockResolvedValue([
+      { id: "repo_1", label: "api", isPrimary: false, createdAt: new Date("2026-01-01") },
+      { id: "repo_2", label: "web", isPrimary: false, createdAt: new Date("2026-01-02") },
+    ]);
+    const orch = makeOrchestrator("agentic");
+    // A continuation drops the placeholders it re-investigated: none here.
+    (
+      orch as unknown as { deleteSupersededPlaceholders: () => Promise<void> }
+    ).deleteSupersededPlaceholders = vi.fn(async () => undefined);
+    await orch.regenerateLoadedAgent(
+      { analysisId: "an_1", agentKey: "code", actorId: "u1", extendBudget: true },
+      ANALYSIS,
+      new AbortController(),
+    );
+    const calls = orch.runAgenticCodeAgent.mock.calls.map((c) => c[0]);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].turnMultiplier).toBeGreaterThan(1);
+    expect(calls[1].costCeiling).toBe(calls[0].costCeiling);
+    expect(calls[0].costCeiling.limitUsd).toBe(REQS.length * calls[0].turnMultiplier);
   });
 
   it("keeps the single-shot path when the run would not be agentic", async () => {

@@ -10,4 +10,5 @@ section: Added
   larger budget". A model METIS has no price for is never counted as free: the pass is held to its
   token budget and the run records that its cost could not be priced.
 - An analysis, a regenerate, a Continue and a repository resume are now refused (HTTP 402
-  `BUDGET_EXCEEDED`) while the project is over its own monthly token budget, as chat already is.
+  `BUDGET_EXCEEDED`) while the project is over its own monthly token budget, as chat already is. A
+  scheduled re-run of an over-budget project fails once and is not retried.

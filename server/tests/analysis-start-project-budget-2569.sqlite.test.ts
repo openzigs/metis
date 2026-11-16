@@ -44,6 +44,7 @@ const { errorHandler, notFoundHandler } = await import("../src/middleware/error-
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
 const { AnalysisOrchestrator } = await import("../src/lib/analysis/orchestrator.js");
 const { BudgetExceededError } = await import("../src/lib/finops/budget-enforcer.js");
+const { isPermanentTaskFailure } = await import("../src/lib/scheduler/permanent-failure.js");
 
 const WS = "ws-2569";
 const OVER = "proj-2569-over";
@@ -144,6 +145,16 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       expect(await db.analysis.count({ where: { projectId: OVER } })).toBe(before);
       expect(pipeline).not.toHaveBeenCalled();
+    });
+
+    it("the scheduler's re-run of an over-budget project fails permanently, so it is not retried", async () => {
+      // `rerunAnalysis` (scheduler/handler-overrides.ts) calls `start` as this does.
+      const err = await orchestrator.start({ projectId: OVER, startedById: "system" }).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(BudgetExceededError);
+      expect(isPermanentTaskFailure(err)).toBe(true);
     });
 
     it("a project with budget left still starts", async () => {

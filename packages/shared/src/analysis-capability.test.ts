@@ -197,6 +197,22 @@ describe("#2569 — the code pass's dollar ceiling", () => {
     ).toEqual(["code-investigation-cut-short", "code-pass-cost-ceiling"]);
   });
 
+  it("stays silent when the stopped pass left nothing unreached (its copy promises Continue)", () => {
+    // Nothing cut short: a clean pass whose later call was refused.
+    expect(deriveCapabilityReasons({ ...fullyCapable, codePassCostCeilingReached: true })).toEqual(
+      [],
+    );
+    // Every requirement reached, some inconclusive: no Continue to offer.
+    expect(
+      deriveCapabilityReasons({
+        ...fullyCapable,
+        codeInvestigationCutShort: true,
+        codeInvestigationUnreached: { unreached: 0, inconclusive: 2, total: 2 },
+        codePassCostCeilingReached: true,
+      }),
+    ).toEqual(["code-investigation-inconclusive"]);
+  });
+
   it("stays silent when the ceiling refused nothing, and outside code analysis", () => {
     expect(deriveCapabilityReasons({ ...fullyCapable, codePassCostCeilingReached: false })).toEqual(
       [],

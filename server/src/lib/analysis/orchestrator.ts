@@ -4173,6 +4173,10 @@ export class AnalysisOrchestrator {
             multiplier: input.turnMultiplier,
           });
         const passProvider = costCeiling.guard(this.deps.provider);
+        // The support panel and faithfulness calls spend against the same
+        // ceiling, but a refusal of one only leaves a finding ungraded: it does
+        // not count as the ceiling stopping the pass (`reached`).
+        const gradingProvider = costCeiling.guard(this.deps.provider, { grading: true });
         // #774 — every tool call the loop makes, across every pass, so the run's
         // tool-call error counts can be persisted on the AgentResult. Before
         // #774 the loop's `toolCalls` were returned and DISCARDED here, which is
@@ -4757,7 +4761,7 @@ export class AnalysisOrchestrator {
           // calls and the findings array is returned untouched.
           const agenticEvidence = collectPanelEvidence(fused.chunks, loopResult.toolCalls);
           const panelled = await applySupportPanel(
-            passProvider,
+            gradingProvider,
             validated.findings,
             agenticEvidence,
             { ...(input.signal ? { signal: input.signal } : {}) },
@@ -4770,7 +4774,7 @@ export class AnalysisOrchestrator {
           // `supportPanel`, so a flag-off run is byte-identical to a pre-#1318
           // one and nothing downstream can gate on it. Flag off => no call.
           const scored = await applyFindingFaithfulness(
-            passProvider,
+            gradingProvider,
             validated.findings,
             agenticEvidence,
             { ...(input.signal ? { signal: input.signal } : {}) },

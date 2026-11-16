@@ -91,6 +91,7 @@ export function priceCallUsd(provider: string, model: string, usage: TokenUsage)
 export class CodePassCostCeiling {
   private spent = 0;
   private refused = 0;
+  private refusedGrading = 0;
   private unpriced = false;
 
   /** `limitUsd` of 0 (or less) turns the ceiling off; spend is still counted. */
@@ -101,20 +102,29 @@ export class CodePassCostCeiling {
     return this.spent;
   }
 
-  /** Model calls refused so far. */
+  /** Model calls refused so far, the pass's own and the grading calls'. */
   get refusedCalls(): number {
-    return this.refused;
+    return this.refused + this.refusedGrading;
   }
 
-  /** The ceiling refused at least one call. */
+  /**
+   * The ceiling refused at least one of the PASS's own calls (a loop turn, the
+   * final-answer retry, a salvage or repair call), so a pass stopped short. A
+   * refused grading call (support panel, faithfulness — `guard(p, { grading:
+   * true })`) only leaves a finding ungraded, and does not count.
+   */
   get reached(): boolean {
     return this.refused > 0;
   }
 
-  /** Throws {@link CostCeilingReachedError} once the priced spend has reached the ceiling. */
-  assertCanCall(): void {
+  /**
+   * Throws {@link CostCeilingReachedError} once the priced spend has reached
+   * the ceiling: a call is allowed only while `spent < limit`.
+   */
+  assertCanCall(opts: { grading?: boolean } = {}): void {
     if (this.limitUsd <= 0 || this.spent < this.limitUsd) return;
-    this.refused += 1;
+    if (opts.grading) this.refusedGrading += 1;
+    else this.refused += 1;
     throw new CostCeilingReachedError(this.limitUsd, this.spent);
   }
 
@@ -139,20 +149,25 @@ export class CodePassCostCeiling {
   /**
    * `provider` with every `chat` / `stream` call checked against, and counted
    * towards, this ceiling. Every other member reaches the adapter unchanged.
+   * `grading: true` is for the support panel and faithfulness calls: their
+   * spend counts, but a refusal of one does not make {@link reached} true.
+   *
+   * The provider key prices the call as `meterAnalysisProvider` prices its
+   * `token_usages` row: the key the response reports, else the adapter's. A
+   * stream's `usage` chunk reports no provider (`ChatChunk`), so a stream is
+   * priced on the adapter's key, exactly as its ledger row is.
    */
-  guard(provider: AIProvider): AIProvider {
+  guard(provider: AIProvider, guardOpts: { grading?: boolean } = {}): AIProvider {
+    const keyOf = (reported: string | undefined) => reported ?? provider.key;
     const chat = async (messages: ChatMessage[], opts?: ChatOptions) => {
-      this.assertCanCall();
+      this.assertCanCall(guardOpts);
       const res = await provider.chat(messages, opts);
-      this.record(
-        res.provider ?? provider.key,
-        res.model ?? opts?.model ?? provider.model,
-        res.usage,
-      );
+      this.record(keyOf(res.provider), res.model ?? opts?.model ?? provider.model, res.usage);
       return res;
     };
-    const assertCanCall = () => this.assertCanCall();
-    const record = (model: string, usage: TokenUsage) => this.record(provider.key, model, usage);
+    const assertCanCall = () => this.assertCanCall(guardOpts);
+    const record = (model: string, usage: TokenUsage) =>
+      this.record(keyOf(undefined), model, usage);
     async function* stream(messages: ChatMessage[], opts?: ChatOptions): AsyncGenerator<ChatChunk> {
       assertCanCall();
       for await (const chunk of provider.stream(messages, opts)) {

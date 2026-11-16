@@ -30,7 +30,42 @@ import type { FusedCodeSearcher, SymbolLineLookup } from "../src/lib/rag/fused-c
 const state = vi.hoisted(() => ({
   db: null as unknown,
   loopResults: [] as unknown[],
+  /** The provider each post-loop model step was handed, by step (#2569 review). */
+  stepProviders: {} as Record<"salvageWithRepair" | "supportPanel" | "faithfulness", unknown>,
 }));
+// #2569 review — the salvage repair, support panel and faithfulness steps run
+// for real; the provider each is handed is recorded so a test can show it is
+// the pass's guarded one, never the bare adapter.
+vi.mock("../src/lib/analysis/agentic-degradation.js", async (original) => {
+  const real = await original<typeof import("../src/lib/analysis/agentic-degradation.js")>();
+  return {
+    ...real,
+    salvageWithRepair: (...args: Parameters<typeof real.salvageWithRepair>) => {
+      state.stepProviders.salvageWithRepair = args[0];
+      return real.salvageWithRepair(...args);
+    },
+  };
+});
+vi.mock("../src/lib/analysis/support-panel.js", async (original) => {
+  const real = await original<typeof import("../src/lib/analysis/support-panel.js")>();
+  return {
+    ...real,
+    applySupportPanel: (...args: Parameters<typeof real.applySupportPanel>) => {
+      state.stepProviders.supportPanel = args[0];
+      return real.applySupportPanel(...args);
+    },
+  };
+});
+vi.mock("../src/lib/analysis/finding-faithfulness.js", async (original) => {
+  const real = await original<typeof import("../src/lib/analysis/finding-faithfulness.js")>();
+  return {
+    ...real,
+    applyFindingFaithfulness: (...args: Parameters<typeof real.applyFindingFaithfulness>) => {
+      state.stepProviders.faithfulness = args[0];
+      return real.applyFindingFaithfulness(...args);
+    },
+  };
+});
 vi.mock("../src/lib/prisma.js", async () => {
   const { Prisma } = await import("@prisma/client");
   return {
@@ -66,7 +101,9 @@ const { getAnalysisSnapshot, persistAnalysisCapability } =
 const { runInAnalysisUsageScope, flushAnalysisUsage } =
   await import("../src/lib/analysis/analysis-usage.js");
 const { summarizeUsage } = await import("../src/lib/finops/budget-enforcer.js");
-const { CodePassCostCeiling } = await import("../src/lib/analysis/code-pass-cost-ceiling.js");
+const { CodePassCostCeiling, CostCeilingReachedError } =
+  await import("../src/lib/analysis/code-pass-cost-ceiling.js");
+type AIProvider = import("../src/lib/ai/types.js").AIProvider;
 const { __resetConfigSingleton } = await import("../src/lib/config/config-service.js");
 type AgentLoopResult = import("../src/lib/analysis/agent-loop.js").AgentLoopResult;
 type Tracker = ReturnType<typeof createCapabilityTracker>;
@@ -177,6 +214,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
 
     afterEach(() => {
       state.loopResults.length = 0;
+      state.stepProviders = {} as typeof state.stepProviders;
       setEnv({
         ANALYSIS_CODE_EXPLORATION: undefined,
         ANALYSIS_CODE_PASS_MAX_USD: undefined,
@@ -373,6 +411,68 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await run(orch, "an-2569-shared", { costCeiling: shared });
       expect(chat).toHaveBeenCalledTimes(3);
       expect(loopResult(1)).toMatchObject({ turnsUsed: 0, costCeilingReached: true });
+    });
+
+    it("a Continue (turnMultiplier 2) gets twice the dollar ceiling: five calls where a plain pass gets three", async () => {
+      const counts: Record<string, number> = {};
+      for (const multiplier of [undefined, 2]) {
+        setEnv({ MODEL_PRICES: PRICES, ANALYSIS_CODE_PASS_MAX_USD: "0.25" });
+        const analysisId = `an-2569-continue-${multiplier ?? 1}`;
+        const { orch, tracker, chat } = await orchestratorFor(analysisId, NEVER_ANSWERS);
+        await run(orch, analysisId, multiplier ? { turnMultiplier: multiplier } : {});
+        counts[String(multiplier ?? 1)] = chat.mock.calls.length;
+        expect(tracker.codePassCostCeiling).toMatchObject({
+          limitUsd: 0.25 * (multiplier ?? 1),
+          reached: true,
+        });
+      }
+      // $0.25: calls start at $0, $0.10, $0.20. $0.50: also at $0.30 and $0.40.
+      expect(counts).toEqual({ "1": 3, "2": 5 });
+    });
+
+    /** One $0.10 call through `provider`: true when `ceiling` counted it. */
+    const spendsAgainst = async (provider: unknown, ceiling: { spentUsd: number }) => {
+      const before = ceiling.spentUsd;
+      await (provider as AIProvider).chat([{ role: "user", content: "q" }]);
+      return ceiling.spentUsd - before > 0.09;
+    };
+
+    it("the salvage repair call goes through the pass's ceiling", async () => {
+      setEnv({ MODEL_PRICES: PRICES });
+      const ceiling = new CodePassCostCeiling(100);
+      const { orch, chat } = await orchestratorFor("an-2569-repair", NEVER_ANSWERS);
+      await run(orch, "an-2569-repair", { costCeiling: ceiling });
+      const repair = state.stepProviders.salvageWithRepair;
+      expect(repair).toBeDefined();
+      expect(repair).not.toBe((orch as unknown as { deps: { provider: unknown } }).deps.provider);
+      const calls = chat.mock.calls.length;
+      expect(await spendsAgainst(repair, ceiling)).toBe(true);
+      expect(chat).toHaveBeenCalledTimes(calls + 1);
+    });
+
+    it("the support panel and faithfulness calls spend against the ceiling, and a refusal of one is not the pass stopping", async () => {
+      setEnv({ MODEL_PRICES: PRICES });
+      // The pass answers cleanly, well under a $1 ceiling.
+      const answer = JSON.stringify({ agentKey: "code", summary: "ok", findings: [], notes: [] });
+      const ceiling = new CodePassCostCeiling(1);
+      const { orch, tracker, chat } = await orchestratorFor("an-2569-grading", () => answer);
+      await run(orch, "an-2569-grading", { costCeiling: ceiling });
+      expect(loopResult().hasFinalAnswer).toBe(true);
+      expect(ceiling.spentUsd).toBeLessThan(1);
+      const { supportPanel, faithfulness } = state.stepProviders;
+      expect(supportPanel).toBeDefined();
+      expect(faithfulness).toBeDefined();
+      // Grading calls spend against the pass's ceiling, up to it ...
+      while (ceiling.spentUsd < 1) expect(await spendsAgainst(supportPanel, ceiling)).toBe(true);
+      const calls = chat.mock.calls.length;
+      // ... and the next is refused, without marking the pass stopped.
+      await expect(
+        (faithfulness as AIProvider).chat([{ role: "user", content: "q" }]),
+      ).rejects.toBeInstanceOf(CostCeilingReachedError);
+      expect(chat).toHaveBeenCalledTimes(calls);
+      expect(ceiling.reached).toBe(false);
+      // The run itself said nothing: a clean pass is not stopped by its ceiling.
+      expect(tracker.codePassCostCeiling).toBeUndefined();
     });
 
     it("each finished call is on the usage summary while the pass runs, and after it is cancelled", async () => {

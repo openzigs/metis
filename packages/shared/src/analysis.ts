@@ -3082,8 +3082,10 @@ export const ANALYSIS_CAPABILITY_REASONS = [
   "findings-left-out",
   /**
    * Issue #2569 — the code pass reached its dollar ceiling
-   * (`ANALYSIS_CODE_PASS_MAX_USD`) and stopped. What it found stands; the
-   * requirements it did not settle are `could-not-verify`, never gaps.
+   * (`ANALYSIS_CODE_PASS_MAX_USD`) and stopped before reaching every
+   * requirement (raised only beside `code-investigation-cut-short`). What it
+   * found stands; the requirements it did not settle are `could-not-verify`,
+   * never gaps.
    * {@link AnalysisCapability.codePassCostCeiling} carries the figures.
    */
   "code-pass-cost-ceiling",
@@ -3898,10 +3900,14 @@ export function deriveCapabilityReasons(input: CapabilityReasonInput): AnalysisC
       if (!gap || gap.unreached > 0) reasons.push("code-investigation-cut-short");
       else if ((gap.inconclusive ?? 0) > 0) reasons.push("code-investigation-inconclusive");
     }
-    // #2569 — the dollar ceiling stopped the code pass. Its unreached
-    // requirements also raise `code-investigation-cut-short` above, which
-    // carries the Continue offer.
-    if (input.codePassCostCeilingReached) reasons.push("code-pass-cost-ceiling");
+    // #2569 — the dollar ceiling stopped the code pass and left requirements it
+    // never reached: those raise `code-investigation-cut-short` above, which
+    // carries the Continue offer the banner copy promises. A stopped pass that
+    // reached every requirement (only inconclusive, or nothing) has nothing
+    // could-not-verify for the ceiling to answer for, so raises nothing here.
+    if (input.codePassCostCeilingReached && reasons.includes("code-investigation-cut-short")) {
+      reasons.push("code-pass-cost-ceiling");
+    }
   }
   if (input.databaseAnalysisRequested && !input.schemaContextEnabled) {
     reasons.push("schema-context-disabled");
