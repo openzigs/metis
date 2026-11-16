@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "key": "68465d1956cd19bc83a30d2478bab62f90bae53ac1e393cab366da15f478d0ac",
+  "key": "da213d67530a4512b2349f82449faa9e673ed0c69d01794dd866152bff6a8d70",
   "request": {
     "promptPreview": "<<<REQUIREMENT>>>\nCustomers can pay an invoice by instant bank transfer.\n<<<END REQUIREMENT>>>\n\n<<<CRITERIA>>>\n[1] Pay an invoice by instant bank transfer\n<<<END CRITERIA>>>\n\n<<<REPOSITORY>>>\npayments",
     "messageCount": 2,
@@ -9,11 +9,11 @@
     }
   },
   "response": {
-    "content": "{\"criteria\": [{\"index\": 1, \"verdict\": \"implemented\", \"excerpts\": [1], \"reason\": \"payInvoiceByInstantTransfer in excerpt 1 does this.\"}]}",
+    "content": "{\"criteria\": [{\"index\": 1, \"verdict\": \"gap-confirmed\", \"excerpts\": [1], \"reason\": \"Excerpt 1 is where it would live, and it is not there.\"}]}",
     "usage": {
-      "promptTokens": 330,
-      "completionTokens": 14,
-      "totalTokens": 344,
+      "promptTokens": 335,
+      "completionTokens": 20,
+      "totalTokens": 355,
       "cacheReadTokens": 0,
       "cacheWriteTokens": 0
     },
@@ -22,5 +22,5 @@
     "offline": true,
     "finishReason": "stop"
   },
-  "recordedAt": "2026-11-16T00:48:14.545Z"
+  "recordedAt": "2026-11-16T12:35:43.247Z"
 }

@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "key": "5df3e4dc23eb138039f02c6cc5cd6be1eb4475690eb292f35b3a7c6839c4aa3c",
+  "request": {
+    "promptPreview": "Round 1/3. Generate clarifying questions for these ambiguities:\n\nRequirement \"Secure user sign-in\" (id: REQ-CLARIFY-235):\n  - authentication-method: The requirement does not state which authentication",
+    "messageCount": 2,
+    "options": {
+      "model": "offline-stub",
+      "disableTools": true
+    }
+  },
+  "response": {
+    "content": "{\"questions\":[{\"requirementId\":\"REQ-CLARIFY-235\",\"ambiguityField\":\"authentication-method\",\"question\":\"Which authentication method and factors must the secure sign-in use?\",\"context\":\"The requirement says 'securely' without naming a mechanism or factor count.\"}]}",
+    "usage": {
+      "promptTokens": 64,
+      "completionTokens": 64,
+      "totalTokens": 128,
+      "cacheReadTokens": 0,
+      "cacheWriteTokens": 0
+    },
+    "model": "e2e-replay-235",
+    "provider": "offline-stub",
+    "offline": false
+  },
+  "recordedAt": "2026-11-16T12:37:07.629Z"
+}

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "key": "e19d2e389eb387bec67cad31676aae6df1074735332ed8f5c264640204025fc7",
+  "key": "c99235c1d4bafe9d59129c245834f62c2833edf455e29056eb7def431cc2d817",
   "request": {
     "promptPreview": "<<<REQUIREMENT>>>\nCustomers can pay an invoice by instant bank transfer and get a receipt by email.\n<<<END REQUIREMENT>>>\n\n<<<CRITERIA>>>\n[1] Pay an invoice by instant bank transfer\n[2] Email a receip",
     "messageCount": 2,
@@ -11,9 +11,9 @@
   "response": {
     "content": "{\"criteria\": [{\"index\": 1, \"verdict\": \"implemented\", \"excerpts\": [1], \"reason\": \"payInvoiceByInstantTransfer in excerpt 1 does this.\"}, {\"index\": 2, \"verdict\": \"gap-confirmed\", \"excerpts\": [1], \"reason\": \"Excerpt 1 is where it would live, and it is not there.\"}]}",
     "usage": {
-      "promptTokens": 345,
+      "promptTokens": 366,
       "completionTokens": 33,
-      "totalTokens": 378,
+      "totalTokens": 399,
       "cacheReadTokens": 0,
       "cacheWriteTokens": 0
     },
@@ -22,5 +22,5 @@
     "offline": true,
     "finishReason": "stop"
   },
-  "recordedAt": "2026-11-16T00:48:16.965Z"
+  "recordedAt": "2026-11-16T12:35:45.292Z"
 }
