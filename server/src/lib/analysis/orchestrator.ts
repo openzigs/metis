@@ -242,6 +242,7 @@ import {
   markLiveAgentSynthesizing,
   recordLiveToolCall,
   setLiveAgentContinuation,
+  setLiveAgentMode,
 } from "./live-agent-progress.js";
 import { readSourceRequirements, toSynthesisSourceItems } from "./source-items.js";
 import { assessShallowCodePass, buildCodePassContinuation } from "./code-pass-coverage.js";
@@ -4011,6 +4012,8 @@ export class AnalysisOrchestrator {
           fileToolsAvailable,
         });
         this.noteCodePassMode(input.analysisId, codePass);
+        // #2570 — and on the live entry, so the page can say which mode runs.
+        setLiveAgentMode(input.analysisId, agentKey, codePass.mode);
 
         // #2314 — an analysis's findings, citations and snippets are persisted
         // and read by every project member. A scheduled run reads code as a
@@ -4237,12 +4240,17 @@ export class AnalysisOrchestrator {
               ...(nativeTools ? { native: nativeTools } : {}),
               maxTurns,
               maxTokens: effectiveBudget,
-              onToolCall: explore
-                ? () => {
-                    passToolCalls += 1;
-                    recordLiveToolCall(input.analysisId, agentKey);
-                  }
-                : () => recordLiveToolCall(input.analysisId, agentKey),
+              // #2570 — the live entry classifies each executed call (files
+              // read, searches run) and keeps counts only.
+              onToolCall: (call) => {
+                if (explore) passToolCalls += 1;
+                recordLiveToolCall(input.analysisId, agentKey, {
+                  tool: call.tool,
+                  args: call.args,
+                  ...(typeof call.isError === "boolean" ? { isError: call.isError } : {}),
+                  ...(input.connectorId ? { repo: input.connectorId } : {}),
+                });
+              },
               signal: input.signal,
               model: input.model,
               promptCaching: { system: true, messages: true },
