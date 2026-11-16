@@ -33,6 +33,8 @@ export * from "./schema-impact.js";
 // #2565 — the analysis code pass mode (explore | fast) and why a run used it.
 export * from "./code-exploration.js";
 export * from "./impact-table-grouping.js";
+// #2593 — what an impact result leads with (requirements and files to edit).
+export * from "./impact-headline.js";
 export * from "./cross-project.js";
 export * from "./requirement-links.js";
 export * from "./requirement-approval.js";

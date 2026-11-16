@@ -187,6 +187,42 @@ describe("createImpactLlmRuntime — metering (#1021)", () => {
     });
   });
 
+  // #2593 — the run's id is its session's, so the ledger can be summed for it.
+  it("#2593 — a bound run names the backing session, and so every usage row", async () => {
+    const createSession = vi.fn(async (input: { id?: string }) => input.id ?? "random");
+    const { runtime, record, recordProjectUsage } = runtimeWith({ createSession });
+    runtime.bindRun("ia-2593");
+    const provider = runtime.instrument(fakeProvider(), "document-read");
+
+    await provider.chat([]);
+    await runtime.flush();
+
+    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ id: "ia-2593" }));
+    expect(recordProjectUsage.mock.calls[0][0]).toMatchObject({ sessionId: "ia-2593" });
+    expect(record.mock.calls[0][0]).toMatchObject({ sessionId: "ia-2593" });
+  });
+
+  it("#2593 — with no session, the ledger row still names the bound run", async () => {
+    const { runtime, recordProjectUsage } = runtimeWith({
+      createSession: vi.fn(async () => null),
+    });
+    runtime.bindRun("ia-2593");
+    await runtime.instrument(fakeProvider(), "summary-run").chat([]);
+    await runtime.flush();
+
+    expect(recordProjectUsage.mock.calls[0][0]).toMatchObject({ sessionId: "ia-2593" });
+  });
+
+  it("#2593 — an unbound run creates its session with no id of its own", async () => {
+    const { runtime, createSession } = runtimeWith();
+    await runtime.instrument(fakeProvider(), "seeding").chat([]);
+    await runtime.flush();
+
+    expect((createSession.mock.calls[0] as unknown as [{ id?: string }])[0]).not.toHaveProperty(
+      "id",
+    );
+  });
+
   it("#792 — flush() waits for the project-ledger write to land", async () => {
     let land!: () => void;
     const landed = new Promise<void>((r) => (land = r));

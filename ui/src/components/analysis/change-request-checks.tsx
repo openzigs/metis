@@ -283,8 +283,10 @@ function ImpactResults({ query }: { query: ListQuery<ImpactAnalysisSummary> }) {
         <li key={r.id} className="text-xs" data-testid="change-request-impact-result">
           <Link href={`/impact-analyses/${encodeURIComponent(r.id)}`} className="hover:underline">
             {STATUS_LABEL[r.status] ?? r.status}
-            {r.status === "completed"
-              ? ` · ${r.totalImpactedSymbols} affected symbol${r.totalImpactedSymbols === 1 ? "" : "s"}`
+            {/* #2593 — the requirements affected, not the raw symbol reach
+                ("3305 affected symbols" for a two-requirement change). */}
+            {r.status === "completed" && r.requirementCount !== undefined
+              ? ` · ${r.requirementCount} requirement${r.requirementCount === 1 ? "" : "s"} affected`
               : ""}{" "}
             · {new Date(r.startedAt).toLocaleString()}
           </Link>

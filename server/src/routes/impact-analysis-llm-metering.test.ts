@@ -293,6 +293,11 @@ describe("#1021 — impact LLM stages reach the token ledger", () => {
     expect(new Set(tokenRows.map((r) => r.agentStep))).toEqual(
       new Set(["impact.summary-item", "impact.summary-run"]),
     );
+    // #2593 — the route binds the run: its session is created with the run's id,
+    // which is what the detail sums the ledger by.
+    expect(prismaMock.aISession.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ id: "ia-meter", userId: "user-1" }),
+    });
   });
 
   it("meters EVERY flag-gated stage the route wires, each under its own agentStep", async () => {

@@ -19,7 +19,10 @@
 "use client";
 
 import {
+  IMPACT_DATABASE_NOT_CHECKED,
+  impactEditFileKeys,
   impactFileKey,
+  impactMatchCaveat,
   impactRepoCount,
   impactSymbolRole,
   type ApiSurfaceUntouched,
@@ -78,6 +81,12 @@ export interface ChangedRequirementGroupProps {
    * word overlap, not impact, and the card says so.
    */
   apiSurfaceUntouched?: ApiSurfaceUntouched | null;
+  /**
+   * #2593 — `false` when the run did not read this project's database: a card
+   * with no affected table then says the database was not checked, instead of
+   * leaving "no tables" to read as "no database change". Absent ⇒ unknown.
+   */
+  databaseConnected?: boolean;
 }
 
 interface FileGroup {
@@ -108,6 +117,7 @@ export function ChangedRequirementGroup({
   onDeleteFeedback,
   projectName,
   apiSurfaceUntouched,
+  databaseConnected,
 }: ChangedRequirementGroupProps) {
   // #992 — the item's project repo (from the page's provider) for symbol links.
   const repo = useImpactSymbolRepo(item.projectId);
@@ -129,11 +139,8 @@ export function ChangedRequirementGroup({
   // #1762 — with seed evidence: the server's edit order, each file's sources and
   // verdict; a doubtful file is listed but not counted as a file to edit.
   const editRows = item.seedEvidence ? orderEditFiles(editFileGroups, item.seedEvidence) : null;
-  const editFiles = new Set(
-    editRows
-      ? editRows.filter((r) => !isDoubtful(r)).map((r) => r.key)
-      : editFileGroups.map((g) => g.key),
-  );
+  // #2593 — the shared count, which the page header and the export also use.
+  const editFiles = new Set(impactEditFileKeys(item));
   const editFileCount = editFiles.size;
   // "More to review": the blast-radius files and (#1820) the doubtful files, each
   // once. A file to edit is not "more to review".
@@ -156,6 +163,12 @@ export function ChangedRequirementGroup({
   // below), not the table+column rows in the bucket, so the number agrees with
   // the per-table disclosures. A table with 16 column rows is ONE pruned table.
   const secondaryTableCount = new Set(item.affectedTablesSecondary.map((t) => t.tableName)).size;
+  // #2593 — the banner's words come from the same grade the export prints.
+  const matchCaveat = impactMatchCaveat(item);
+  const databaseNotChecked =
+    databaseConnected === false &&
+    item.affectedTables.length === 0 &&
+    item.affectedTablesSecondary.length === 0;
 
   return (
     <Card className="space-y-3 p-4" data-testid="changed-requirement-group">
@@ -188,15 +201,13 @@ export function ChangedRequirementGroup({
           cause instead of always claiming "didn't name an entity" — that wording is
           only accurate for the zero-seed case, not the scattered-seeds case.
           Distinct from the #936 relevance tiers (per-table) and #957 risk badges. */}
-      {item.matchQuality === "weak" ? (
+      {matchCaveat ? (
         <p
           className="rounded border border-warning/40 bg-warning-muted px-3 py-2 text-sm text-warning"
           data-testid="weak-match-banner"
           role="status"
         >
-          {item.matchQualityReason === "scattered"
-            ? "Low-confidence match — the requirement matched code across several unrelated areas; results may be incomplete."
-            : "Low-confidence match — the requirement didn't clearly name an entity/screen; results may be incomplete. Consider naming the feature, table, or module."}
+          {matchCaveat}
         </p>
       ) : null}
 
@@ -376,6 +387,16 @@ export function ChangedRequirementGroup({
             ))}
           </div>
         </details>
+      ) : null}
+
+      {databaseNotChecked ? (
+        <p
+          className="rounded border border-border/60 bg-muted/40 px-3 py-2 text-sm text-muted-foreground"
+          data-testid="database-not-checked"
+          role="status"
+        >
+          {IMPACT_DATABASE_NOT_CHECKED}
+        </p>
       ) : null}
 
       <AffectedTablesSection

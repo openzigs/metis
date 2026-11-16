@@ -515,4 +515,39 @@ describe("#289 — agent-phase findings in the results view", () => {
       errors.mockRestore();
     }
   });
+
+  // #2593 — "Could not verify" beside "INFERRED 90%" read as two verdicts at odds.
+  it("#2593 — a finding the code check did not back shows no confidence percentage", async () => {
+    const [code, custom, ...rest] = SNAPSHOT.agentResults;
+    apiMock.get.mockResolvedValue({
+      ...SNAPSHOT,
+      agentResults: [
+        {
+          ...code,
+          findings: [
+            { ...code!.findings[0]!, confidence: 0.9, verificationStatus: "could-not-verify" },
+          ],
+        },
+        custom,
+        ...rest,
+      ],
+    });
+    renderPage();
+    await waitForResults();
+
+    const findings = screen.getByTestId("findings-section");
+    const unbacked = within(findings)
+      .getByText("Reconciliation manager lacks XDOCK support")
+      .closest("[data-confidence]") as HTMLElement;
+    expect(within(unbacked).getByTestId("verification-badge-could-not-verify")).toBeVisible();
+    const badge = within(unbacked).getByTestId("derivation-badge-inferred");
+    expect(badge).toHaveTextContent(/^INFERRED$/);
+    // A finding with no verdict keeps its percentage.
+    const other = within(findings)
+      .getByText("Admin routes have no authorization check")
+      .closest("[data-confidence]") as HTMLElement;
+    expect(within(other).getByTestId("derivation-badge-inferred")).toHaveTextContent(
+      "INFERRED 70%",
+    );
+  });
 });

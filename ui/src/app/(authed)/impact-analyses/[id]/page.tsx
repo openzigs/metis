@@ -10,7 +10,13 @@ import { useMemo } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import type { ImpactItemView } from "@metis/shared";
+import {
+  impactCountLabel,
+  impactReachLabel,
+  impactRunHeadline,
+  type ImpactItemView,
+} from "@metis/shared";
+import { formatRunCost, RECORDED_COST_HEADER } from "@/lib/run-cost";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -168,6 +174,13 @@ function ImpactAnalysisDetailView({
   const symbolRepos = useImpactProjectRepos(visibleProjectIds);
   // #1965 — the projects with several repositories, whose file rows name theirs.
   const multiRepoProjects = useImpactMultiRepoProjects(visibleProjectIds);
+  // #2593 — the requirements and files to edit the header leads with.
+  const headline = useMemo(() => impactRunHeadline(data.items), [data.items]);
+  // #2593 — the projects whose database the run did not read.
+  const databaseConnectedOf = useMemo(
+    () => new Map((data.projectOutcomes ?? []).map((o) => [o.projectId, o.databaseConnected])),
+    [data.projectOutcomes],
+  );
 
   return (
     <div className="space-y-6 p-2 md:p-0" data-testid="impact-detail-root">
@@ -199,8 +212,31 @@ function ImpactAnalysisDetailView({
             {data.status}
           </Badge>
         }
-        description={`${data.projectIds.length} project(s) · ${data.totalImpactedSymbols} impacted symbol(s)`}
+        description={
+          // #2593 — the requirements and the files to edit lead; the raw symbol
+          // reach ("3305 impacted symbols" over two requirements) follows, saying
+          // what it is.
+          `${impactCountLabel(headline.requirementCount, "requirement")} · ` +
+          `${impactCountLabel(headline.editFileCount, "file")} to edit · ` +
+          impactCountLabel(data.projectIds.length, "project")
+        }
       >
+        <p className="text-xs text-muted-foreground" data-testid="impact-detail-reach">
+          {impactReachLabel(data.totalImpactedSymbols)}
+        </p>
+        {/* #2593 — what the run cost, from the ledger Usage & cost reads. */}
+        {data.cost ? (
+          <p className="text-xs text-muted-foreground" data-testid="impact-detail-cost">
+            {data.cost.calls === 0
+              ? // No call billed to the run: it made none, or ran before #2593 billed them to it.
+                "Cost: none recorded for this run"
+              : `${RECORDED_COST_HEADER}: ${formatRunCost({
+                  costCents: null,
+                  costUsd: data.cost.costUsd,
+                  unpricedTokens: data.cost.unpricedTokens,
+                })}`}
+          </p>
+        ) : null}
         {/* #963 — export + publish actions. Enabled once the run has completed
             with at least one impact item; publishing to Jira is idempotent. */}
         <div className="flex flex-wrap items-center gap-2 pt-1" data-testid="impact-detail-actions">
@@ -385,6 +421,7 @@ function ImpactAnalysisDetailView({
                   apiEdgeImpactError={apiEdgeQuery.isError}
                   apiEdgeImpactLoading={apiEdgeQuery.isLoading}
                   currentUserId={user?.id ?? null}
+                  databaseConnected={databaseConnectedOf.get(projectId)}
                   onMarkFeedback={(itemId, input) => markFeedback.mutate({ itemId, ...input })}
                   onDeleteFeedback={(itemId, feedbackId) =>
                     deleteFeedback.mutate({ itemId, feedbackId })

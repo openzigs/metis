@@ -942,7 +942,12 @@ describe("serializeImpactAnalysisMarkdown (#963)", () => {
     });
     // Header + run summary line + run narrative.
     expect(md).toContain("# Impact analysis");
-    expect(md).toContain("Status: completed · 2 project(s) · 4 impacted symbol(s)");
+    // #2593 — requirements and files to edit lead; the symbol reach follows.
+    expect(md).toContain("Status: completed · 1 requirement · 1 file to edit · 2 projects.");
+    expect(md).toContain(
+      "Reach: 4 code symbols — the callers and related code to review; not each one changes.",
+    );
+    expect(md).not.toContain("impacted symbol(s)");
     expect(md).toContain("One requirement change impacts two projects.");
     // Project section uses the display name.
     expect(md).toContain("## Project: Alpha");
@@ -1523,6 +1528,83 @@ function ordersTableRows(columnCount: number): ImpactAffectedTableView[] {
   }
   return rows;
 }
+
+describe("serializeImpactAnalysisMarkdown — one source for the page and the export (#2593)", () => {
+  it("prints the match grade and the banner's caveat, never the top seed's raw confidence", () => {
+    const md = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        items: [
+          impactItem({ confidence: 1, matchQuality: "weak", matchQualityReason: "scattered" }),
+        ],
+      }),
+    );
+    expect(md).not.toContain("**Confidence:**");
+    expect(md).toContain("- **Match quality:** weak");
+    expect(md).toContain(
+      "> **Low-confidence match — the requirement matched code across several unrelated areas; results may be incomplete.**",
+    );
+  });
+
+  it("prints no caveat when the match is not weak", () => {
+    const md = serializeImpactAnalysisMarkdown(impactDetail());
+    expect(md).toContain("- **Match quality:** strong");
+    expect(md).not.toContain("Low-confidence match");
+  });
+
+  it("counts the files to edit the page counts", () => {
+    const md = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        items: [
+          impactItem({
+            affectedSymbols: [
+              impactSymbol(),
+              impactSymbol({ id: "s2", filePath: "src/orders/repo.ts" }),
+              impactSymbol({ id: "s3", filePath: "src/api/caller.ts", depth: 1 }),
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(md).toContain("- **Files to edit:** 2");
+    expect(md).toContain("· 2 files to edit ·");
+  });
+
+  it("says the database was not checked where an item lists no table and the run did not read it", () => {
+    const md = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        items: [impactItem({ affectedTables: [] })],
+        projectOutcomes: [
+          { projectId: "project-001", outcome: "affected", reason: null, databaseConnected: false },
+        ],
+      }),
+    );
+    expect(md).toContain("_Database impact not checked (no database connection)._");
+  });
+
+  it("says nothing of the kind when the database was read, the item has tables, or it is unknown", () => {
+    const connected = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        items: [impactItem({ affectedTables: [] })],
+        projectOutcomes: [
+          { projectId: "project-001", outcome: "affected", reason: null, databaseConnected: true },
+        ],
+      }),
+    );
+    const withTables = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        projectOutcomes: [
+          { projectId: "project-001", outcome: "affected", reason: null, databaseConnected: false },
+        ],
+      }),
+    );
+    const unknown = serializeImpactAnalysisMarkdown(
+      impactDetail({ items: [impactItem({ affectedTables: [] })] }),
+    );
+    for (const md of [connected, withTables, unknown]) {
+      expect(md).not.toContain("Database impact not checked");
+    }
+  });
+});
 
 describe("serializeImpactAnalysisMarkdown — requirement text (#1004)", () => {
   it("exports the analysed requirement text verbatim, as a quoted block", () => {

@@ -16,7 +16,7 @@
  */
 import type { PrismaClient } from "@prisma/client";
 import {
-  deriveMatchQualityDetailed,
+  deriveImpactItemMatchQuality,
   impactFileKey,
   impactSeedEvidenceSchema,
   type ImpactAffectedRelation,
@@ -895,10 +895,13 @@ export async function computeProjectImpact(
       return impactFileKey({ filePath: s.filePath, repo: repoId ? { id: repoId } : null });
     }),
   );
-  const { quality: matchQuality, reason: matchQualityReason } = deriveMatchQualityDetailed(
+  // #2593 — through the seed evidence, as the read path does: cited files that
+  // led the files to edit are not a scattered word match.
+  const { quality: matchQuality, reason: matchQualityReason } = deriveImpactItemMatchQuality(
     affectedSymbols
       .filter((s) => s.relation === "direct")
       .map((s) => ({ confidence: s.confidence, filePath: s.filePath })),
+    seedEvidence,
   );
 
   // #1005 — CLAUSE-vs-IMPACT reconciliation. Runs LAST, over the FINAL surfaced
@@ -1417,6 +1420,12 @@ export interface ImpactServiceDeps {
    */
   llmDegradationNotice?: () => string | null;
   /**
+   * #2593 — told the run's id before any model call, so the calls are billed
+   * to it and the detail can show what the run cost (`ImpactLlmRuntime.bindRun`).
+   * Absent ⇒ the calls are billed as before, and the run shows no cost.
+   */
+  bindLlmUsageToRun?: (runId: string) => void;
+  /**
    * #1609 — whether the run's starter may still open `projectId` once the run
    * is executing. The run executes after the route answered, so access can
    * change in between. Anything but `accessible` is recorded `not-checked` with
@@ -1439,6 +1448,8 @@ export type ProjectExecutionAccess = "accessible" | "restricted" | "deleted";
 interface ProjectOutcomeRecord {
   outcome: ImpactProjectOutcomeKind;
   reason: ImpactNotCheckedReason | null;
+  /** #2593 — the run read the project's database schema; unset when it never searched it. */
+  databaseConnected?: boolean;
 }
 
 /**
@@ -1451,7 +1462,11 @@ function projectOutcomeWrites(outcomes: ReadonlyMap<string, ProjectOutcomeRecord
   return {
     updateMany: [...outcomes].map(([projectId, o]) => ({
       where: { projectId },
-      data: { outcome: o.outcome, outcomeReason: o.reason },
+      data: {
+        outcome: o.outcome,
+        outcomeReason: o.reason,
+        ...(o.databaseConnected === undefined ? {} : { databaseConnected: o.databaseConnected }),
+      },
     })),
   };
 }
@@ -1931,6 +1946,8 @@ async function runImpactAnalysis(
   deps: ImpactServiceDeps = {},
 ): Promise<void> {
   const prisma = resolvePrisma(deps);
+  // #2593 — before the document is read: that is a model call too.
+  deps.bindLlmUsageToRun?.(id);
   // #1036 — an issue is read as ONE change with sub-aspects; anything else keeps
   // the heuristic splitter (the shape-aware extractor falls back to it).
   const extractor = deps.extractor ?? shapeAwareChangeExtractor;
@@ -2133,6 +2150,10 @@ async function runImpactAnalysis(
         }
       }
       const liveIndexForProject = deps.liveIndexFor ?? (() => liveIndex);
+      // #2593 — whether this project's database schema was read at all. Without
+      // it, "no affected tables" says nothing about the database, and the page
+      // and the summaries must not read it as "no database change".
+      const databaseConnected = schemaImpactOn && liveIndexForProject(projectId) !== null;
 
       for (const change of changes) {
         const result = await computeProjectImpact(change, projectId, {
@@ -2253,6 +2274,7 @@ async function runImpactAnalysis(
               confidence: result.confidence,
               matchQuality: result.matchQuality,
               matchQualityReason: result.matchQualityReason,
+              databaseConnected,
               affectedFileCount: result.affectedFileCount,
               affectedSymbolCount: result.affectedSymbolCount,
               affectedSymbols: result.affectedSymbols.map((s) => ({
@@ -2286,6 +2308,7 @@ async function runImpactAnalysis(
           severity: result.severity,
           changeType: result.changeType,
           affectedSymbolCount: result.affectedSymbolCount,
+          databaseConnected,
           // #984 — hand the run-level summarizer TABLE-granular facts ranked by
           // #936 relevance tier, not the raw per-column rows: a tangential table
           // with many referenced columns must not lead the executive overview
@@ -2474,6 +2497,7 @@ async function runImpactAnalysis(
       outcomes.set(projectId, {
         outcome: projectAffected ? "affected" : "checked-none-affected",
         reason: null,
+        databaseConnected,
       });
     }
     currentProjectId = null;

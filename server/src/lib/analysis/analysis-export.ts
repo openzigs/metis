@@ -28,7 +28,13 @@
 import {
   formatCodeCitationLocator,
   DDL_RISK_LABEL,
+  IMPACT_DATABASE_NOT_CHECKED,
   IMPACT_TIER_LABEL,
+  impactCountLabel,
+  impactEditFileKeys,
+  impactMatchCaveat,
+  impactReachLabel,
+  impactRunHeadline,
   impactFileKey,
   impactRepoCount,
   impactSymbolRole,
@@ -880,6 +886,11 @@ interface ImpactItemLabelContext {
    */
   index: number;
   total: number;
+  /**
+   * #2593 — the run did not read this item's project's database, so an item
+   * with no table says so instead of reading as "no database change".
+   */
+  databaseNotChecked: boolean;
 }
 
 /** Heading text for one impact item — never an opaque "Unlabelled" when we know better. */
@@ -910,14 +921,27 @@ function impactItemSection(item: ImpactItemView, ctx: ImpactItemLabelContext): s
     parts.push(mdBlock(item.summary));
   }
 
+  // #2593 — the match grade the page's banner shows, with the banner's own
+  // words when it is weak. The raw `confidence` (the top seed's, ~1.00 by
+  // construction) printed "1.00" under a low-confidence warning, so it is gone.
+  const caveat = impactMatchCaveat(item);
+  if (caveat) parts.push(`> **${caveat}**`);
   parts.push(
     [
+      meta("Files to edit", String(impactEditFileKeys(item).length)),
+      meta("Match quality", item.matchQuality),
       meta("Impact score", item.impactScore.toFixed(2)),
-      meta("Confidence", item.confidence.toFixed(2)),
       meta("Affected files", String(item.affectedFileCount)),
       meta("Affected symbols", String(item.affectedSymbolCount)),
     ].join("\n"),
   );
+  if (
+    ctx.databaseNotChecked &&
+    item.affectedTables.length === 0 &&
+    item.affectedTablesSecondary.length === 0
+  ) {
+    parts.push(`_${IMPACT_DATABASE_NOT_CHECKED}._`);
+  }
 
   // #962/#1004 — the untested write paths, high in the section (as on screen).
   parts.push(...writePathGapSection(item.writePathGaps));
@@ -1066,12 +1090,25 @@ export function serializeImpactAnalysisMarkdown(
     else itemsByProject.set(item.projectId, [item]);
   }
 
+  // #2593 — lead with the requirements and the files to edit; the symbol reach
+  // follows, saying what it is.
+  const headline = impactRunHeadline(detail.items);
   const blocks: string[] = [
     "# Impact analysis",
-    `_Status: ${mdInline(detail.status)} · ${projectIds.length} project(s) · ${
-      detail.totalImpactedSymbols
-    } impacted symbol(s)._`,
+    `_Status: ${mdInline(detail.status)} · ${impactCountLabel(
+      headline.requirementCount,
+      "requirement",
+    )} · ${impactCountLabel(headline.editFileCount, "file")} to edit · ${impactCountLabel(
+      projectIds.length,
+      "project",
+    )}._`,
+    `_${impactReachLabel(detail.totalImpactedSymbols)}_`,
   ];
+  const unconnected = new Set(
+    (detail.projectOutcomes ?? [])
+      .filter((o) => o.databaseConnected === false)
+      .map((o) => o.projectId),
+  );
 
   // #1004 — the requirement this run analysed, verbatim, ABOVE the narrative.
   blocks.push(...requirementTextSection(detail.sourceText));
@@ -1109,6 +1146,7 @@ export function serializeImpactAnalysisMarkdown(
             hasSourceText,
             index: itemNumber,
             total: detail.items.length,
+            databaseNotChecked: unconnected.has(item.projectId),
           }),
         );
       }

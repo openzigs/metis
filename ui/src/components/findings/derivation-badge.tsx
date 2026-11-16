@@ -50,7 +50,25 @@ export interface DerivationBadgeProps {
   onReview?: (input: { agentResultId: string; confidence: number }) => void | Promise<void>;
   /** Optional className to layer on top of the variant styles. */
   className?: string;
+  /**
+   * #2593 — the code check could not back the finding (`could-not-verify`,
+   * `unverified`, `ungrounded`): an `inferred` badge then drops its percentage.
+   * "INFERRED 90%" beside "Could not verify" read as two verdicts at odds; the
+   * 90% is the agent's own confidence, which the check did not confirm. The
+   * tooltip still states it, and says why it is not shown.
+   */
+  withholdConfidence?: boolean;
 }
+
+/**
+ * #2593 — the verification states under which an agent's own confidence is not
+ * shown as a percentage: the code check did not back the finding.
+ */
+export const UNBACKED_VERIFICATION_STATUSES: ReadonlySet<string> = new Set([
+  "could-not-verify",
+  "unverified",
+  "ungrounded",
+]);
 
 const BASE =
   "inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs font-medium tabular-nums whitespace-nowrap";
@@ -93,7 +111,7 @@ function formatRawConfidence(value: number): string {
 }
 
 export function DerivationBadge(props: DerivationBadgeProps): React.ReactElement {
-  const { derivation, confidence, agentResultId, onReview, className } = props;
+  const { derivation, confidence, agentResultId, onReview, className, withholdConfidence } = props;
   const variant = VARIANTS[derivation];
   const [open, setOpen] = React.useState(false);
   const [submitting, setSubmitting] = React.useState(false);
@@ -114,7 +132,9 @@ export function DerivationBadge(props: DerivationBadgeProps): React.ReactElement
   if (derivation === "inferred") {
     const pct = clampPercent(confidence);
     const raw = formatRawConfidence(confidence);
-    const tooltip = `Inferred by analysis agent. Confidence ${raw}. Source agent run: ${agentResultId}`;
+    const tooltip = withholdConfidence
+      ? `Inferred by analysis agent, which rated it ${raw}. The code check did not back it, so that rating is not shown as a percentage. Source agent run: ${agentResultId}`
+      : `Inferred by analysis agent. Confidence ${raw}. Source agent run: ${agentResultId}`;
     return (
       <span
         data-testid={variant.testid}
@@ -123,9 +143,7 @@ export function DerivationBadge(props: DerivationBadgeProps): React.ReactElement
         className={joinClasses(BASE, variant.className, className)}
       >
         {variant.icon}
-        <span>
-          {variant.label} {pct}%
-        </span>
+        <span>{withholdConfidence ? variant.label : `${variant.label} ${pct}%`}</span>
       </span>
     );
   }

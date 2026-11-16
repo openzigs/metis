@@ -168,6 +168,14 @@ export interface ImpactLlmRuntime {
   degradationNotice(): string | null;
   /** Await every in-flight metering write. Test/shutdown helper. */
   flush(): Promise<void>;
+  /**
+   * #2593 — bill the run's calls to `runId`: the backing `AISession` is created
+   * with that id, so every usage row of the run carries it as its `sessionId`
+   * and the run's cost is the ledger's sum for it — the figure Usage & cost
+   * shows. Call it before the first model call; a session already created keeps
+   * its id.
+   */
+  bindRun(runId: string): void;
 }
 
 /** Default hard deadline for ONE impact LLM call. */
@@ -233,23 +241,24 @@ export interface ImpactLlmRuntimeOptions {
    * off, or `null` when one cannot be created (the per-user row is then
    * skipped, loudly; the project-ledger row is still written, #792).
    */
-  createSession?: (input: {
-    actorId: string;
-    projectId: string | null;
-    provider: string;
-    model: string;
-  }) => Promise<string | null>;
+  createSession?: (input: ImpactUsageSessionInput) => Promise<string | null>;
 }
 
-function defaultCreateSession(input: {
+/** What the backing `AISession` is created from. */
+export interface ImpactUsageSessionInput {
   actorId: string;
   projectId: string | null;
   provider: string;
   model: string;
-}): Promise<string | null> {
+  /** #2593 — the session's id: the run's, once {@link ImpactLlmRuntime.bindRun} named it. */
+  id?: string;
+}
+
+function defaultCreateSession(input: ImpactUsageSessionInput): Promise<string | null> {
   return defaultPrisma.aISession
     .create({
       data: {
+        ...(input.id ? { id: input.id } : {}),
         userId: input.actorId,
         projectId: input.projectId,
         title: "Impact analysis",
@@ -287,6 +296,8 @@ export function createImpactLlmRuntime(opts: ImpactLlmRuntimeOptions): ImpactLlm
 
   const inflight = new Set<Promise<void>>();
   let sessionPromise: Promise<string | null> | null = null;
+  // #2593 — the run the calls are billed to, once the engine has created it.
+  let runId: string | null = null;
 
   const ensureSession = (provider: string, model: string): Promise<string | null> => {
     if (!sessionPromise) {
@@ -295,6 +306,7 @@ export function createImpactLlmRuntime(opts: ImpactLlmRuntimeOptions): ImpactLlm
         projectId: fallbackProjectId,
         provider,
         model,
+        ...(runId ? { id: runId } : {}),
       }).catch((err: unknown) => {
         // No session ⇒ no FK target ⇒ no per-user usage rows (the project
         // ledger needs none, #792). Say so once, loudly: an operator missing
@@ -330,7 +342,8 @@ export function createImpactLlmRuntime(opts: ImpactLlmRuntimeOptions): ImpactLlm
       const ledgerWrite = projectId
         ? recordProjectUsage({
             projectId,
-            sessionId: sessionId ?? "",
+            // #2593 — with no session, the row still names the run it was spent on.
+            sessionId: sessionId ?? runId ?? "",
             userId: opts.actorId,
             provider: providerKey,
             model,
@@ -497,6 +510,9 @@ export function createImpactLlmRuntime(opts: ImpactLlmRuntimeOptions): ImpactLlm
     },
     snapshot: () => IMPACT_LLM_STAGES.filter((s) => stats.has(s)).map((s) => ({ ...statsFor(s) })),
     degradationNotice: () => buildDegradationNotice(stats),
+    bindRun(id) {
+      runId = id;
+    },
     async flush() {
       while (inflight.size > 0) {
         await Promise.allSettled([...inflight]);

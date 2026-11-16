@@ -117,7 +117,10 @@ import { isDocumentReaderEnabled } from "../lib/document-reader/flag.js";
 import { readDocumentOnce, type ReadingCacheDeps } from "../lib/document-reader/reading-cache.js";
 import type { AIProvider } from "../lib/ai/types.js";
 import { createChildLogger } from "../lib/logger.js";
-import { listImpactAnalyses } from "../lib/impact-analysis/impact-analysis-read.js";
+import {
+  listImpactAnalyses,
+  readImpactRunCost,
+} from "../lib/impact-analysis/impact-analysis-read.js";
 import {
   assertHasRequirements,
   changeRequestRef,
@@ -589,6 +592,7 @@ export function impactRunDeps(
     ...(tableRecoveryJudge ? { tableRecoveryJudge } : {}),
     ...(impactSummarizer ? { impactSummarizer } : {}),
     llmDegradationNotice: () => runtime.degradationNotice(),
+    bindLlmUsageToRun: (runId) => runtime.bindRun(runId),
     liveIndexIntrospectorFor,
   };
 }
@@ -1284,7 +1288,9 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
         detail.projectIds,
         userSourceReader(actor.id),
       );
-      res.json(ok({ ...detail, changeRequest }));
+      // #2593 — what the run cost, over its projects (every one readable here).
+      const cost = await readImpactRunCost(detail.id, detail.projectIds);
+      res.json(ok({ ...detail, changeRequest, cost }));
     } catch (err) {
       next(asAppError(err));
     }

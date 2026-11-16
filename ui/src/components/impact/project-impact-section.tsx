@@ -72,6 +72,11 @@ export interface ProjectImpactSectionProps {
   ) => void;
   /** Issue #966 — remove a feedback mark on the given item. */
   onDeleteFeedback?: (itemId: string, feedbackId: string) => void;
+  /**
+   * #2593 — whether the run read this project's database (its outcome's
+   * `databaseConnected`); forwarded to each requirement group. Absent ⇒ unknown.
+   */
+  databaseConnected?: boolean;
 }
 
 export function ProjectImpactSection({
@@ -88,6 +93,7 @@ export function ProjectImpactSection({
   currentUserId,
   onMarkFeedback,
   onDeleteFeedback,
+  databaseConnected,
 }: ProjectImpactSectionProps) {
   const totalSymbols = items.reduce((sum, item) => sum + item.affectedSymbolCount, 0);
   const crossProjectUsage: Record<string, ProjectObjectUsage[]> =
@@ -139,6 +145,7 @@ export function ProjectImpactSection({
               onDeleteFeedback={onDeleteFeedback}
               projectName={projectName ?? projectId}
               apiSurfaceUntouched={untouchedByItem.get(item.id) ?? null}
+              databaseConnected={databaseConnected}
             />
           ))}
         </div>

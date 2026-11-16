@@ -150,7 +150,9 @@ describe("#103 getImpactAnalysisDetail query shape", () => {
     expect(prisma.impactAnalysis.findFirst).toHaveBeenCalledWith({
       where: { id: "ia-88" },
       include: expect.objectContaining({
-        projects: { select: { projectId: true, outcome: true, outcomeReason: true } },
+        projects: {
+          select: { projectId: true, outcome: true, outcomeReason: true, databaseConnected: true },
+        },
       }),
     });
   });
@@ -267,7 +269,7 @@ describe("#103 listImpactAnalyses query shape", () => {
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         include: {
-          items: { select: { projectId: true } },
+          items: { select: { id: true, projectId: true, requirementId: true } },
           projects: { select: { projectId: true } },
         },
       }),

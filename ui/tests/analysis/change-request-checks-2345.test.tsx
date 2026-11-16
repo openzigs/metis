@@ -205,7 +205,8 @@ describe("#2345 — the change request's Impact and portfolio card", () => {
       {
         id: "ia-new",
         status: "completed",
-        totalImpactedSymbols: 3,
+        totalImpactedSymbols: 3305,
+        requirementCount: 2,
         startedAt: "2026-11-12T10:00:00Z",
       },
       {
@@ -237,7 +238,9 @@ describe("#2345 — the change request's Impact and portfolio card", () => {
       "/impact-analyses/ia-new",
       "/impact-analyses/ia-old",
     ]);
-    expect(impact[0]).toHaveTextContent("Completed · 3 affected symbols");
+    // #2593 — the requirements affected lead, never the raw symbol reach.
+    expect(impact[0]).toHaveTextContent("Completed · 2 requirements affected");
+    expect(impact[0]).not.toHaveTextContent("3305");
     expect(impact[0]).toHaveTextContent("Latest");
     expect(impact[1]).not.toHaveTextContent("Latest");
     expect(impact[1]).toHaveTextContent("Failed");

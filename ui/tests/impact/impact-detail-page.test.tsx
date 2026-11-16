@@ -727,4 +727,132 @@ describe("ImpactAnalysisDetailPage", () => {
       );
     });
   });
+
+  // #2593 — the header leads with requirements and files to edit; the symbol
+  // reach is secondary and says what it is; the run's cost is on the page.
+  describe("#2593 — what the result page leads with", () => {
+    const baseItem = detail.items[0]!;
+    const sym = (id: string, filePath: string, depth: number) => ({
+      ...baseItem.affectedSymbols[0]!,
+      id,
+      codeSymbolId: id,
+      filePath,
+      depth,
+      relation: depth === 0 ? ("direct" as const) : ("caller" as const),
+    });
+    const twoRequirements: ImpactAnalysisDetail = {
+      ...detail,
+      totalImpactedSymbols: 3305,
+      items: [
+        {
+          ...baseItem,
+          id: "item-1",
+          requirementId: "req-1",
+          affectedSymbols: [
+            sym("s1", "internal/api/api_key.go", 0),
+            sym("s2", "internal/storage/api_key.go", 0),
+            sym("s3", "internal/ui/settings.go", 2),
+          ],
+        },
+        {
+          ...baseItem,
+          id: "item-2",
+          requirementId: "req-2",
+          requirementTitle: "Show expiry",
+          affectedSymbols: [sym("s4", "internal/api/api_key.go", 0)],
+        },
+      ],
+    };
+
+    it("leads with the requirements and the files to edit, and calls the symbol count reach", () => {
+      mockUse.mockReturnValue(state({ data: twoRequirements }));
+      render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      const root = screen.getByTestId("impact-detail-root");
+      expect(root).toHaveTextContent("2 requirements · 2 files to edit · 1 project");
+      expect(root).not.toHaveTextContent("impacted symbol(s)");
+      expect(screen.getByTestId("impact-detail-reach")).toHaveTextContent(
+        "Reach: 3305 code symbols — the callers and related code to review; not each one changes.",
+      );
+    });
+
+    it("shows the run's recorded cost", () => {
+      mockUse.mockReturnValue(
+        state({ data: { ...detail, cost: { calls: 9, costUsd: 0.47, unpricedTokens: 0 } } }),
+      );
+      render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      expect(screen.getByTestId("impact-detail-cost")).toHaveTextContent(
+        "Cost (as recorded): $0.4700",
+      );
+    });
+
+    it("says unpriced tokens are unpriced, never $0", () => {
+      mockUse.mockReturnValue(
+        state({ data: { ...detail, cost: { calls: 2, costUsd: null, unpricedTokens: 1500 } } }),
+      );
+      render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      const cost = screen.getByTestId("impact-detail-cost");
+      expect(cost).toHaveTextContent("unpriced tok");
+      expect(cost).not.toHaveTextContent("$0");
+    });
+
+    it("says no cost was recorded for a run with no billed call, and shows nothing when the ledger was unreadable", () => {
+      mockUse.mockReturnValue(
+        state({ data: { ...detail, cost: { calls: 0, costUsd: null, unpricedTokens: 0 } } }),
+      );
+      const { unmount } = render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      expect(screen.getByTestId("impact-detail-cost")).toHaveTextContent(
+        "Cost: none recorded for this run",
+      );
+      unmount();
+      mockUse.mockReturnValue(state({ data: { ...detail, cost: null } }));
+      render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      expect(screen.queryByTestId("impact-detail-cost")).toBeNull();
+    });
+
+    it("says the database was not checked on a requirement with no table, when the run did not read it", () => {
+      mockUse.mockReturnValue(
+        state({
+          data: {
+            ...detail,
+            projectOutcomes: [
+              {
+                projectId: "project-001",
+                outcome: "affected",
+                reason: null,
+                databaseConnected: false,
+              },
+            ],
+          },
+        }),
+      );
+      render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      expect(screen.getByTestId("database-not-checked")).toHaveTextContent(
+        "Database impact not checked (no database connection)",
+      );
+    });
+
+    it("says nothing of the kind when the run read the database, or before #2593", () => {
+      mockUse.mockReturnValue(
+        state({
+          data: {
+            ...detail,
+            projectOutcomes: [
+              {
+                projectId: "project-001",
+                outcome: "affected",
+                reason: null,
+                databaseConnected: true,
+              },
+            ],
+          },
+        }),
+      );
+      const { unmount } = render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      expect(screen.queryByTestId("database-not-checked")).toBeNull();
+      unmount();
+      mockUse.mockReturnValue(state({ data: detail }));
+      render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      expect(screen.queryByTestId("database-not-checked")).toBeNull();
+    });
+  });
 });
