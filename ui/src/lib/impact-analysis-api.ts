@@ -33,6 +33,23 @@ export interface ImpactJiraPublishResult {
   url: string;
 }
 
+/**
+ * #2594 — what "Publish to Jira" would do, read before the analyst confirms.
+ * Nothing is sent to Jira to compute it.
+ */
+export interface ImpactJiraPublishPreview {
+  provider: "jira";
+  /** The METIS run project whose Jira connection the issue is created through. */
+  project: { id: string; name: string };
+  jiraProjectKey: string;
+  /** The Jira site's base URL; null when the connection is gone. */
+  jiraSite: string | null;
+  title: string;
+  /** 1, or 0 when the run was published before (a re-publish creates nothing). */
+  issuesToCreate: number;
+  alreadyPublished: { issueKey: string; url: string; publishedAt: string } | null;
+}
+
 export const impactAnalysisApi = {
   create: (body: CreateImpactAnalysisInput) =>
     apiFetch<CreateImpactAnalysisResponse>(BASE, { method: "POST", body }),
@@ -92,6 +109,10 @@ export const impactAnalysisApi = {
       method: "POST",
       body,
     }),
+
+  /** #2594 — preview the Jira publish; writes nothing. */
+  previewJiraPublish: (id: string) =>
+    apiFetch<ImpactJiraPublishPreview>(`${BASE}/${encodeURIComponent(id)}/publish/jira/preview`),
 
   /**
    * Issue #966 — mark (or re-mark) an affected-table row relevant/not-relevant.

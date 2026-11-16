@@ -49,10 +49,13 @@ vi.mock("@/lib/connectors-api", () => ({
 // #963 — export + Jira-publish actions.
 const exportReport = vi.fn();
 const publishToJira = vi.fn();
+// #2594 — the confirmation's preview.
+const previewJiraPublish = vi.fn();
 vi.mock("@/lib/impact-analysis-api", () => ({
   impactAnalysisApi: {
     exportReport: (...a: unknown[]) => exportReport(...a),
     publishToJira: (...a: unknown[]) => publishToJira(...a),
+    previewJiraPublish: (...a: unknown[]) => previewJiraPublish(...a),
   },
 }));
 const triggerDownload = vi.fn();
@@ -700,7 +703,35 @@ describe("ImpactAnalysisDetailPage", () => {
       await waitFor(() => expect(triggerDownload).toHaveBeenCalledTimes(1));
     });
 
-    it("publishes to Jira and shows the issue link", async () => {
+    const preview = {
+      provider: "jira",
+      project: { id: "project-002", name: "Beta" },
+      jiraProjectKey: "IMP",
+      jiraSite: "https://jira.example.com",
+      title: "Impact analysis: Summary",
+      issuesToCreate: 1,
+      alreadyPublished: null,
+    };
+
+    it("#2594 — opens a confirmation and sends nothing until the analyst confirms", async () => {
+      previewJiraPublish.mockResolvedValue(preview);
+      mockUse.mockReturnValue(state({ data: detail }));
+      render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      fireEvent.click(screen.getByTestId("impact-publish-jira"));
+      await waitFor(() =>
+        expect(screen.getByTestId("impact-publish-confirm-key")).toHaveTextContent("IMP"),
+      );
+      expect(previewJiraPublish).toHaveBeenCalledWith("ia-0000000001");
+      expect(publishToJira).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      await waitFor(() =>
+        expect(screen.queryByTestId("impact-publish-confirm")).not.toBeInTheDocument(),
+      );
+      expect(publishToJira).not.toHaveBeenCalled();
+    });
+
+    it("publishes to the previewed project on confirm and shows the issue link", async () => {
+      previewJiraPublish.mockResolvedValue(preview);
       publishToJira.mockResolvedValue({
         provider: "jira",
         issueKey: "IMP-9",
@@ -710,19 +741,45 @@ describe("ImpactAnalysisDetailPage", () => {
       render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
       fireEvent.click(screen.getByTestId("impact-publish-jira"));
       await waitFor(() =>
+        expect(screen.getByTestId("impact-publish-confirm-submit")).not.toBeDisabled(),
+      );
+      fireEvent.click(screen.getByTestId("impact-publish-confirm-submit"));
+      await waitFor(() =>
         expect(screen.getByTestId("impact-publish-jira-link")).toHaveTextContent("IMP-9"),
       );
-      expect(publishToJira).toHaveBeenCalledWith("ia-0000000001");
+      expect(publishToJira).toHaveBeenCalledWith("ia-0000000001", { projectId: "project-002" });
+      await waitFor(() =>
+        expect(screen.queryByTestId("impact-publish-confirm")).not.toBeInTheDocument(),
+      );
     });
 
-    it("surfaces a publish error inline", async () => {
-      publishToJira.mockRejectedValue(new Error("No project has Jira configured"));
+    it("shows a preview error and offers no confirm when Jira is not configured", async () => {
+      previewJiraPublish.mockRejectedValue(new Error("No project has Jira configured"));
       mockUse.mockReturnValue(state({ data: detail }));
       render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
       fireEvent.click(screen.getByTestId("impact-publish-jira"));
       await waitFor(() =>
-        expect(screen.getByTestId("impact-publish-error")).toHaveTextContent(
+        expect(screen.getByTestId("impact-publish-confirm-preview-error")).toHaveTextContent(
           "No project has Jira configured",
+        ),
+      );
+      expect(screen.getByTestId("impact-publish-confirm-submit")).toBeDisabled();
+      expect(publishToJira).not.toHaveBeenCalled();
+    });
+
+    it("surfaces a publish error in the confirmation", async () => {
+      previewJiraPublish.mockResolvedValue(preview);
+      publishToJira.mockRejectedValue(new Error("Jira connection is in error state"));
+      mockUse.mockReturnValue(state({ data: detail }));
+      render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      fireEvent.click(screen.getByTestId("impact-publish-jira"));
+      await waitFor(() =>
+        expect(screen.getByTestId("impact-publish-confirm-submit")).not.toBeDisabled(),
+      );
+      fireEvent.click(screen.getByTestId("impact-publish-confirm-submit"));
+      await waitFor(() =>
+        expect(screen.getByTestId("impact-publish-error")).toHaveTextContent(
+          "Jira connection is in error state",
         ),
       );
     });
