@@ -1144,6 +1144,8 @@ export interface ReusedClarifyingAnswer {
   recordId: string;
   answeredAt: string;
   fromAnalysisId?: string;
+  /** #2270 — the kind of run `fromAnalysisId` names; absent reads as an analysis. */
+  fromOrigin?: "analysis" | "impact" | "portfolio";
   round: number;
   citation?: ClarifyingQuestionCitation;
 }

@@ -39,6 +39,7 @@ import type {
   ClarificationState,
   ClarifyingQuestion,
   QuestionImpact,
+  ReusedAnswerOrigin,
   StructuredRequirement,
   StructuredRequirements,
   UncertaintyKind,
@@ -344,6 +345,8 @@ export interface PriorAnswer {
   /** ISO 8601. */
   answeredAt: string;
   fromAnalysisId?: string;
+  /** #2270 — the kind of run `fromAnalysisId` names. */
+  fromOrigin?: ReusedAnswerOrigin;
 }
 
 /**
@@ -440,6 +443,7 @@ export class ClarificationDialog {
         recordId: prior.recordId,
         answeredAt: prior.answeredAt,
         ...(prior.fromAnalysisId ? { fromAnalysisId: prior.fromAnalysisId } : {}),
+        ...(prior.fromOrigin ? { fromOrigin: prior.fromOrigin } : {}),
         round: state.currentRound,
         ...(q.citation ? { citation: q.citation } : {}),
         ...(q.governing ? { governing: q.governing } : {}),

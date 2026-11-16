@@ -200,17 +200,13 @@ function documentReaderOn(provider: AIProvider, signal?: AbortSignal): Portfolio
 }
 
 /**
- * #2272 — the document a check is started from, or 404: it must be live (not
- * soft-deleted) and in a project the caller can read, like a requirement
- * (`loadReadableSourceRequirement`). #2546 — and its access list must let the
- * caller see it: the check reads its text and shows its requirements. Unknown,
- * deleted and unreadable answer alike (no existence oracle). A readable one
- * that is a repository's file, or not yet `ready`, is a 400.
+ * #2546 — the live document `user` may read now, or null: in a project they
+ * can read, then its access list lets them see it. An access-list refusal is
+ * audited (`portfolio_assessment.document.denied`): a member probing
+ * restricted document ids leaves a trace. #2270 — the check's clarification
+ * dialog reads its document through it too, so that refusal is audited alike.
  */
-async function loadReadableSourceDocument(
-  user: AuthPayload,
-  documentId: string,
-): Promise<{ id: string; projectId: string; title: string }> {
+async function readableDocument(user: AuthPayload, documentId: string) {
   const doc = await prisma.document.findFirst({
     where: { id: documentId, deletedAt: null },
     select: {
@@ -223,24 +219,38 @@ async function loadReadableSourceDocument(
       aclSubjects: true,
     },
   });
-  const notFound = () => new AppError(404, "NOT_FOUND", "Document not found");
   if (
     !doc ||
     !(await canAccessProjectDiscussions({ id: user.userId, role: user.role }, doc.projectId))
   ) {
-    throw notFound();
+    return null;
   }
   if (!(await canSeeDocument(user.userId, doc))) {
-    // #2546 — refused as for an unknown document, and audited: a member probing
-    // restricted document ids leaves a trace.
     audit({
       actor: { id: user.userId },
       action: "portfolio_assessment.document.denied",
       target: { type: "document", id: documentId },
       metadata: { reason: "acl-denied", projectId: doc.projectId },
     });
-    throw notFound();
+    return null;
   }
+  return doc;
+}
+
+/**
+ * #2272 — the document a check is started from, or 404: it must be live (not
+ * soft-deleted) and in a project the caller can read, like a requirement
+ * (`loadReadableSourceRequirement`). #2546 — and its access list must let the
+ * caller see it: the check reads its text and shows its requirements. Unknown,
+ * deleted and unreadable answer alike (no existence oracle). A readable one
+ * that is a repository's file, or not yet `ready`, is a 400.
+ */
+async function loadReadableSourceDocument(
+  user: AuthPayload,
+  documentId: string,
+): Promise<{ id: string; projectId: string; title: string }> {
+  const doc = await readableDocument(user, documentId);
+  if (!doc) throw new AppError(404, "NOT_FOUND", "Document not found");
   // Only after the read check, so neither answer is an existence oracle. The page offers
   // neither; the API refuses them too: a repository's file is code, not requirements, and a
   // document still ingesting (or failed) has no text the check can rely on.
@@ -470,25 +480,14 @@ async function saveCheckClarifiable(id: string, read: DocumentReadingOf): Promis
 
 /**
  * #2270 — the check's clarification dialog for `user`, or null when it has
- * none, or its document is deleted or one `user` may not read now (its
- * project, then its access list, as `loadReadableSourceDocument`). The
- * caller has checked the check itself (`viewPortfolioAssessment`).
+ * none, or its document is deleted or one `user` may not read now
+ * (`readableDocument`, which audits an access-list refusal). The caller has
+ * checked the check itself (`viewPortfolioAssessment`).
  */
 async function readableCheckDialog(user: AuthPayload, id: string): Promise<SubjectDialog | null> {
   const dialog = await readSubjectDialog({ kind: "portfolio", id });
   if (!dialog) return null;
-  const doc = await prisma.document.findFirst({
-    where: { id: dialog.documentId, deletedAt: null },
-    select: { projectId: true, aclSubjects: true },
-  });
-  if (
-    !doc ||
-    !(await canAccessProjectDiscussions({ id: user.userId, role: user.role }, doc.projectId)) ||
-    !(await canSeeDocument(user.userId, doc))
-  ) {
-    return null;
-  }
-  return dialog;
+  return (await readableDocument(user, dialog.documentId)) ? dialog : null;
 }
 
 /**

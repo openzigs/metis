@@ -110,6 +110,22 @@ describe("#2236 — reused answers in the clarification panel", () => {
     expect(reused).toHaveTextContent("2 questions already answered in this project");
   });
 
+  it("#2270 — names the kind of run an answer was given in", () => {
+    renderPanel(
+      base({
+        reused: [
+          { ...REUSED, recordId: "rec-i", fromOrigin: "impact" },
+          { ...REUSED, recordId: "rec-p", fromOrigin: "portfolio" },
+          { ...REUSED, recordId: "rec-a", fromOrigin: "analysis" },
+        ],
+      }),
+    );
+    const reused = screen.getByTestId("clarification-reused");
+    expect(reused).toHaveTextContent("in an earlier impact analysis");
+    expect(reused).toHaveTextContent("in an earlier portfolio check");
+    expect(reused).toHaveTextContent("in an earlier analysis");
+  });
+
   it("shows nothing when nothing was reused", () => {
     renderPanel(base());
     expect(screen.queryByTestId("clarification-reused")).toBeNull();

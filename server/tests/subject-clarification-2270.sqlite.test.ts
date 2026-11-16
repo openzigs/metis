@@ -76,11 +76,18 @@ const { impactAnalysisRouter, saveImpactClarifiable } =
 const { portfolioAssessmentsRouter } = await import("../src/routes/portfolio-assessments.js");
 const { errorHandler, notFoundHandler } = await import("../src/middleware/error-handler.js");
 const { issueTokens } = await import("../src/lib/auth/jwt.js");
+const { audit } = await import("../src/lib/audit/audit-service.js");
 
 const WORKSPACE = "ws-2270";
 const PROJECT = "proj-2270";
 const ADMIN = "u-2270-admin";
 const OUTSIDER = "u-2270-outsider";
+/** A coordinator who is a member of WORKSPACE only. */
+const MEMBER = "u-2270-member";
+/** A project of another workspace, which MEMBER cannot read. */
+const OTHER_WORKSPACE = "ws-2270-other";
+const OTHER_PROJECT = "proj-2270-other";
+const OTHER_DOC = "doc-2270-other";
 const DOC = "doc-2270";
 const RESTRICTED_DOC = "doc-2270-restricted";
 
@@ -169,38 +176,43 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       a.use(errorHandler);
       return a;
     };
-    const token = (userId: string, role: "admin" | "coordinator") =>
+    const token = (userId: string, role: "admin" | "coordinator", workspaces?: string[]) =>
       issueTokens({
         userId,
         username: userId,
         role,
-        // A coordinator (who holds both permissions) with no access to the project.
+        // A coordinator (who holds both permissions) with no access to the project,
+        // unless given the workspaces it is a member of.
         permissions: [],
-        workspaces: role === "admin" ? [WORKSPACE] : [],
+        workspaces: workspaces ?? (role === "admin" ? [WORKSPACE] : []),
       }).accessToken;
-    const as = (userId = ADMIN, role: "admin" | "coordinator" = "admin") => ({
+    const as = (
+      userId = ADMIN,
+      role: "admin" | "coordinator" = "admin",
+      workspaces?: string[],
+    ) => ({
       get: (path: string) =>
         request(app())
           .get(path)
-          .set("Authorization", `Bearer ${token(userId, role)}`),
+          .set("Authorization", `Bearer ${token(userId, role, workspaces)}`),
       post: (path: string, body: object) =>
         request(app())
           .post(path)
-          .set("Authorization", `Bearer ${token(userId, role)}`)
+          .set("Authorization", `Bearer ${token(userId, role, workspaces)}`)
           .send(body),
     });
     const impact = (id: string) => `/api/impact-analyses/${id}/clarify`;
     const check = (id: string) => `/api/portfolio-assessments/${id}/clarify`;
 
-    async function seedDocument(id: string, aclSubjects = "[]") {
+    async function seedDocument(id: string, aclSubjects = "[]", projectId = PROJECT) {
       await db.document.create({
         data: {
           id,
-          projectId: PROJECT,
+          projectId,
           filename: `${id}.docx`,
           mimeType: "text/markdown",
           sizeBytes: 10,
-          storagePath: `${PROJECT}/${id}`,
+          storagePath: `${projectId}/${id}`,
           checksum: `sum-${id}`,
           status: "ready",
           uploadedById: ADMIN,
@@ -228,13 +240,28 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       db = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: sqlite.url }) });
       state.db = db;
       await db.workspace.create({ data: { id: WORKSPACE, name: "ws", slug: WORKSPACE } });
-      for (const id of [ADMIN, OUTSIDER]) {
+      for (const id of [ADMIN, OUTSIDER, MEMBER]) {
         await db.user.create({
           data: { id, username: id, displayName: id, email: `${id}@example.test` },
         });
       }
       await db.workspaceMember.create({
         data: { workspaceId: WORKSPACE, userId: ADMIN, role: "member" },
+      });
+      await db.workspaceMember.create({
+        data: { workspaceId: WORKSPACE, userId: MEMBER, role: "member" },
+      });
+      await db.workspace.create({
+        data: { id: OTHER_WORKSPACE, name: "other", slug: OTHER_WORKSPACE },
+      });
+      await db.project.create({
+        data: {
+          id: OTHER_PROJECT,
+          name: OTHER_PROJECT,
+          slug: OTHER_PROJECT,
+          createdById: ADMIN,
+          workspaceId: OTHER_WORKSPACE,
+        },
       });
       await db.project.create({
         data: {
@@ -247,6 +274,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       });
       await seedDocument(DOC);
       await seedDocument(RESTRICTED_DOC, JSON.stringify([{ kind: "user", value: "u-someone" }]));
+      await seedDocument(OTHER_DOC, "[]", OTHER_PROJECT);
       await seedImpactRun("ia-2270", DOC);
       await db.portfolioAssessment.create({
         data: {
@@ -368,7 +396,13 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         [],
       );
       expect(res.body.data.reused).toEqual([
-        expect.objectContaining({ requirementId: "T1", answer: ANSWER, fromAnalysisId: "ia-2270" }),
+        // #2270 — with the kind of run it was given in, so the panel names it.
+        expect.objectContaining({
+          requirementId: "T1",
+          answer: ANSWER,
+          fromAnalysisId: "ia-2270",
+          fromOrigin: "impact",
+        }),
       ]);
       expect(res.body.data.completed).toBe(true);
       const row = await db.subjectClarificationDialog.findUnique({
@@ -425,11 +459,83 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           })!,
         },
       );
+      vi.mocked(audit).mockClear();
       expect((await as().get(check("pa-2270-restricted"))).body.data).toEqual({
         state: null,
         requirements: null,
       });
+      // The access-list refusal is audited, as starting a check on it is (#2546).
+      expect(audit).toHaveBeenCalledWith({
+        actor: { id: ADMIN },
+        action: "portfolio_assessment.document.denied",
+        target: { type: "document", id: RESTRICTED_DOC },
+        metadata: { reason: "acl-denied", projectId: PROJECT },
+      });
       expect((await as().post(check("pa-2270-restricted"), {})).status).toBe(404);
+    });
+
+    it("a check whose dialog's document is in a project the caller cannot read has none for them", async () => {
+      // MEMBER may read the check (its source project is theirs, they started it),
+      // but the document its dialog quotes is in another workspace's project.
+      await db.portfolioAssessment.create({
+        data: {
+          id: "pa-2270-cross",
+          statement: "s",
+          scope: "all-accessible",
+          status: "completed",
+          sourceProjectId: PROJECT,
+          sourceDocumentId: OTHER_DOC,
+          createdById: MEMBER,
+        },
+      });
+      const { saveSubjectClarifiable, clarifiableRequirements } =
+        await import("../src/lib/clarifications/subject-clarifications.js");
+      await saveSubjectClarifiable(
+        { kind: "portfolio", id: "pa-2270-cross" },
+        {
+          projectId: OTHER_PROJECT,
+          documentId: OTHER_DOC,
+          requirements: clarifiableRequirements(READING as never, {
+            documentId: OTHER_DOC,
+            title: "frd.docx",
+          })!,
+        },
+      );
+      const member = as(MEMBER, "coordinator", [WORKSPACE]);
+      const read = await member.get(check("pa-2270-cross"));
+      expect(read.status).toBe(200);
+      expect(read.body.data).toEqual({ state: null, requirements: null });
+      const post = await member.post(check("pa-2270-cross"), {});
+      expect(post.status).toBe(404);
+      expect(post.body.error.code).toBe("NO_DIALOG");
+      // An admin, who may read every project, sees the cross-project dialog.
+      const admin = await as().get(check("pa-2270-cross"));
+      expect(admin.body.data.requirements.requirements).toHaveLength(1);
+    });
+
+    it("both POSTs are rate limited per user, after the permission check", async () => {
+      process.env.SUBJECT_CLARIFY_LIMIT_MAX = "1";
+      try {
+        for (const [i, path] of [impact("ia-2270-limited"), check("pa-2270-limited")].entries()) {
+          const limitedUser = `u-2270-limited-${i}`;
+          await db.user.create({
+            data: {
+              id: limitedUser,
+              username: limitedUser,
+              displayName: limitedUser,
+              email: `${limitedUser}@example.test`,
+            },
+          });
+          const caller = as(limitedUser);
+          // The first passes the limiter, and the route answers it (an unknown id).
+          expect((await caller.post(path, {})).status).toBe(404);
+          const limited = await caller.post(path, {});
+          expect(limited.status).toBe(429);
+          expect(limited.body.error.code).toBe("CLARIFY_RATE_LIMITED");
+        }
+      } finally {
+        delete process.env.SUBJECT_CLARIFY_LIMIT_MAX;
+      }
     });
 
     it("a run with no dialog answers none, and answers before a start are refused", async () => {

@@ -105,6 +105,8 @@ describe("#2270 — SubjectClarificationSection", () => {
     renderSection("portfolio");
     expect(await screen.findByText("Search returns results fast.")).toBeTruthy();
     expect(screen.getByText(/found 1 place in 1 requirement/)).toBeTruthy();
+    // Metered to the document's project: a run can span several projects.
+    expect(screen.getByText(/cost is added to the document's project/)).toBeTruthy();
     expect(api.start).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId("subject-clarify-ask"));
     await waitFor(() => expect(api.start).toHaveBeenCalledWith("portfolio", "ia-1"));

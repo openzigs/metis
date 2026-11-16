@@ -246,7 +246,13 @@ export function priorAnswerSourceFor(
           recordId: record.id,
           answer: record.answer,
           answeredAt: record.answeredAt.toISOString(),
-          ...(record.analysisId ? { fromAnalysisId: record.analysisId } : {}),
+          // #2270 — and which kind of run it was, so the panel names it.
+          ...(record.analysisId
+            ? {
+                fromAnalysisId: record.analysisId,
+                fromOrigin: record.origin === "spec-kit" ? "analysis" : record.origin,
+              }
+            : {}),
         });
       }
       return out;

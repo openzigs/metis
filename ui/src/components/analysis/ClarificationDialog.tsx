@@ -19,6 +19,7 @@ import {
   type ClarifyingQuestionCitation,
   type ClarifyImportResult,
   type ClarifySubmitResult,
+  type ReusedClarifyingAnswer,
   type SetAsideClarifyingQuestion,
   type StructuredRequirement,
 } from "@/lib/analysis-api";
@@ -280,7 +281,7 @@ export function ReusedAnswers({
             </p>
             <p className="text-xs text-muted-foreground">
               Answered {new Date(r.answeredAt).toLocaleDateString()}
-              {r.fromAnalysisId ? " in an earlier analysis" : ""}
+              {r.fromAnalysisId ? ` in ${EARLIER_RUN[r.fromOrigin ?? "analysis"]}` : ""}
             </p>
             {r.citation && <QuestionCitation citation={r.citation} />}
           </div>
@@ -289,6 +290,13 @@ export function ReusedAnswers({
     </details>
   );
 }
+
+/** #2270 — how the panel names the kind of run a reused answer was given in. */
+const EARLIER_RUN: Record<NonNullable<ReusedClarifyingAnswer["fromOrigin"]>, string> = {
+  analysis: "an earlier analysis",
+  impact: "an earlier impact analysis",
+  portfolio: "an earlier portfolio check",
+};
 
 /**
  * #2235 — a round asks at most a fixed number of questions, the highest-impact

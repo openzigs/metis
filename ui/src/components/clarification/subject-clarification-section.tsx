@@ -23,11 +23,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 
-const RESULT_NAME: Record<ClarifySubjectKind, string> = {
-  impact: "impact analysis",
-  portfolio: "portfolio check",
-};
-
 export function subjectClarifyKey(kind: ClarifySubjectKind, id: string) {
   return ["clarify", kind, id] as const;
 }
@@ -160,7 +155,7 @@ export function SubjectClarificationSection({
             {start.isPending || startInFlight ? "Preparing questions…" : "Ask these questions"}
           </Button>
           <span className="text-xs text-muted-foreground">
-            Runs the model; its cost is added to this {RESULT_NAME[kind]}'s project.
+            Runs the model; its cost is added to the document's project.
           </span>
         </div>
       ) : (
