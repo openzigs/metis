@@ -8,6 +8,8 @@ import { ApiError, apiFetch } from "@/lib/api-client";
 import { API_BASE } from "@/lib/config";
 import type {
   AnalysisDatabaseAwareReason,
+  CodeExplorationSetting,
+  CodePassModeDecision,
   DatabaseAwareAnalysisSetting,
   DocumentSource,
   SqlLineageReason,
@@ -43,9 +45,19 @@ export interface Project {
   databaseAwareAnalysis?: DatabaseAwareAnalysisSetting;
   /** Epic #882 — per-project SQL-lineage extraction intent (`auto`/`on`/`off`). */
   sqlLineage?: SqlLineageSetting;
+  /** #2566 — how deeply analysis reads the code (`auto`/`explore`/`fast`). */
+  codeExploration?: CodeExplorationSetting;
+  /** #2566 — what `codeExploration` resolves to against the platform default now. */
+  codeExplorationResolved?: CodePassModeDecision;
   createdById: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/** #2567 — a project's analysis depth setting and what it resolves to (from `GET /projects/:id`). */
+export interface CodeExplorationState {
+  setting: CodeExplorationSetting;
+  resolved: CodePassModeDecision;
 }
 
 /** #1169 — `GET /projects/:id/pr-review-budget`. */
@@ -243,6 +255,16 @@ export const projectsApi = {
     id: string,
     body: { databaseAwareAnalysis: DatabaseAwareAnalysisSetting },
   ) => apiFetch<Project>(`/projects/${id}/database-aware-analysis`, { method: "PATCH", body }),
+  // #2567 — the analysis depth setting, read from the project (`GET /projects/:id`, #2566).
+  getCodeExploration: async (id: string): Promise<CodeExplorationState> => {
+    const project = await apiFetch<Project>(`/projects/${id}`);
+    return {
+      setting: project.codeExploration ?? "auto",
+      resolved: project.codeExplorationResolved ?? { mode: "fast", reason: "platform-default" },
+    };
+  },
+  updateCodeExploration: (id: string, body: { codeExploration: CodeExplorationSetting }) =>
+    apiFetch<Project>(`/projects/${id}/code-exploration`, { method: "PATCH", body }),
   // Epic #882 (#894) — per-project SQL-lineage intent + resolved state.
   getSqlLineage: (id: string) => apiFetch<SqlLineageState>(`/projects/${id}/sql-lineage`),
   updateSqlLineage: (id: string, body: { sqlLineage: SqlLineageSetting }) =>
