@@ -29,6 +29,7 @@ import {
   resolveCodePassMode,
   resolveExploreTranscriptTokens,
 } from "./code-pass-variant.js";
+import { DEFAULT_CODE_PASS_MODE } from "./code-exploration-setting.js";
 import { DEFAULT_TRANSCRIPT_COMPACTION } from "./context-window-manager.js";
 import { FILE_NOT_FOUND } from "./tools/read-file-slice.js";
 import { normalizeRepoPath, type CodeAccessFilter } from "./tools/code-access.js";
@@ -91,9 +92,16 @@ const HIDING_SECRET: CodeAccessFilter = {
 };
 
 describe("the mode decision", () => {
-  it("reads the platform key, and an unset or unknown value is fast", () => {
+  it("reads the platform key: unset is explore (#2587), a set but unknown value is fast", () => {
+    expect(DEFAULT_CODE_PASS_MODE).toBe("explore");
+    expect(readCodeExplorationSetting()).toBe("explore");
+    process.env.ANALYSIS_CODE_EXPLORATION = "fast";
+    __resetConfigSingleton();
     expect(readCodeExplorationSetting()).toBe("fast");
-    process.env.ANALYSIS_CODE_EXPLORATION = "explore";
+    process.env.ANALYSIS_CODE_EXPLORATION = " FAST ";
+    __resetConfigSingleton();
+    expect(readCodeExplorationSetting()).toBe("fast");
+    process.env.ANALYSIS_CODE_EXPLORATION = "";
     __resetConfigSingleton();
     expect(readCodeExplorationSetting()).toBe("explore");
     process.env.ANALYSIS_CODE_EXPLORATION = "deep";

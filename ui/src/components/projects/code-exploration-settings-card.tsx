@@ -14,7 +14,10 @@
  *
  * The copy is written for a business analyst and is tested to stay free of
  * implementation words. The measured gain is hedged to the product it was
- * measured on (#2560: Miniflux; neutral on the fixture portfolio).
+ * measured on (#2560 / #2568: Miniflux; neutral on the fixture portfolio).
+ * #2587 — Thorough is the platform default out of the box; the line under the
+ * choices still names the default the server resolved, which an administrator
+ * may have set to Fast.
  */
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -52,7 +55,8 @@ export const ANALYSIS_DEPTH_OPTIONS: ReadonlyArray<{
   {
     value: "auto",
     label: "Use the platform default",
-    description: "Follow the choice your administrator made for every project.",
+    description:
+      "Follow the choice your administrator made for every project. Out of the box, that is Thorough.",
   },
 ];
 

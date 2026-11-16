@@ -101,6 +101,8 @@ describe("CodeExplorationSettingsCard", () => {
     expect(screen.getByText("Thorough")).toBeInTheDocument();
     expect(screen.getByText("Fast")).toBeInTheDocument();
     expect(screen.getByText("Use the platform default")).toBeInTheDocument();
+    // #2587 — the out-of-the-box default is Thorough.
+    expect(screen.getByText(/Out of the box, that is Thorough\./)).toBeInTheDocument();
     await waitFor(() => expect(radio("fast").checked).toBe(true));
     expect(radio("explore").checked).toBe(false);
     expect(radio("auto").checked).toBe(false);

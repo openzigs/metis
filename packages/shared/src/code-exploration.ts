@@ -7,6 +7,7 @@
  * - `explore`: the code pass explores the working tree first (`grep_files`,
  *   `list_files`, whole-file reads), then answers (A20 of #2560, measured on
  *   Miniflux: Recall@5 +0.19 at about +46% cost and +7 s per item).
+ *   The platform default since #2587.
  * - `fast`: the code pass as it was before #2565 (graph and symbol search,
  *   200-line reads). The kill switch.
  */

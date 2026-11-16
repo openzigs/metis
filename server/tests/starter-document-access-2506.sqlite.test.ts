@@ -373,14 +373,18 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     // Restore the flag's prior value rather than deleting it (#2255), so a
     // value `tests/setup.ts` or the shell gave it survives this file.
     let priorReaderFlag: string | undefined;
+    let priorExploration: string | undefined;
     beforeEach(() => {
       priorReaderFlag = process.env.ANALYSIS_DOCUMENT_READER;
+      priorExploration = process.env.ANALYSIS_CODE_EXPLORATION;
     });
 
     afterEach(() => {
       searchedAs.length = 0;
       if (priorReaderFlag === undefined) delete process.env.ANALYSIS_DOCUMENT_READER;
       else process.env.ANALYSIS_DOCUMENT_READER = priorReaderFlag;
+      if (priorExploration === undefined) delete process.env.ANALYSIS_CODE_EXPLORATION;
+      else process.env.ANALYSIS_CODE_EXPLORATION = priorExploration;
       __resetConfigSingleton();
     });
 
@@ -395,6 +399,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     const prepare = (path: (typeof paths)[string]) => {
       // #2255 — each path sets the flag itself rather than relying on the default.
       process.env.ANALYSIS_DOCUMENT_READER = path.reader ? "true" : "false";
+      // #2587 — the code pass explores by default, and explore has no
+      // search_knowledge (#2565): the code agent's path is the fast pass's tool.
+      process.env.ANALYSIS_CODE_EXPLORATION = "fast";
       __resetConfigSingleton();
       return orchestrator({ emptySearch: path.emptySearch });
     };

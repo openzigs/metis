@@ -384,6 +384,27 @@ describe("GET /api/admin/config/:key", () => {
       else process.env.CHAT_CODE_SEARCH_TOOLS = saved;
     }
   });
+
+  it("#2587: an unset ANALYSIS_CODE_EXPLORATION reports its explore default", async () => {
+    const saved = process.env.ANALYSIS_CODE_EXPLORATION;
+    delete process.env.ANALYSIS_CODE_EXPLORATION;
+    try {
+      __resetConfigSingleton();
+      const token = await login("admin");
+      const res = await request(app)
+        .get("/api/admin/config/ANALYSIS_CODE_EXPLORATION")
+        .set("Authorization", `Bearer ${token}`);
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({
+        source: "unset",
+        value: null,
+        defaultValue: "explore",
+      });
+    } finally {
+      if (saved === undefined) delete process.env.ANALYSIS_CODE_EXPLORATION;
+      else process.env.ANALYSIS_CODE_EXPLORATION = saved;
+    }
+  });
 });
 
 describe("PUT /api/admin/config/:key — secrets", () => {
