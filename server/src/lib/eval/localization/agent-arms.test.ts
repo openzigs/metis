@@ -6,14 +6,17 @@ import {
   AGENT_ARM_IDS,
   AGENT_VARIANTS,
   createA20Arm,
+  createA21Arm,
   createA3AArm,
   EXPLORER_ITEM_CAP_USD,
   createA3Arm,
   createA3NArm,
+  passLoopTotals,
   resolveCitations,
   type AgentCitation,
   type AgentPass,
   type AgentPassRequest,
+  type AgentPassResult,
 } from "./agent-arms.js";
 import { AGENT_ARMS } from "./agent-env.js";
 import { buildArms, createA0Arm, MODEL_ARMS } from "./arms.js";
@@ -547,5 +550,109 @@ describe("A20 — the Claude-Code-style explorer (#2560)", () => {
       run: 1,
     });
     expect(agentPass.mock.calls[0]![0]).not.toHaveProperty("costCapUsd");
+  });
+});
+
+describe("A21 — production's explore-mode pass (#2568)", () => {
+  /** A pass loop that ended the way `end` says, with 1000 of a 4000-token budget. */
+  const loopOf = (end: Partial<NonNullable<AgentPassResult["loop"]>> = {}) => ({
+    tokensUsed: 1000,
+    tokenBudget: 4000,
+    promptTokens: 200,
+    cacheReadTokens: 600,
+    cacheWriteTokens: 200,
+    budgetExhausted: false,
+    turnsExhausted: false,
+    costCeilingReached: false,
+    repeatedToolCalls: 1,
+    ...end,
+  });
+
+  it("is a model arm on its own pass, with no eval-only cap, scoring its citations alone", async () => {
+    expect(MODEL_ARMS.has("A21")).toBe(true);
+    expect(AGENT_VARIANTS.A21).toEqual({ id: "A21", toolset: "production-explore", union: false });
+    const meter = fakeMeter();
+    const agentPass = stubPass(
+      meter,
+      { r: [cite("b.go"), cite("a.go")], s: [cite("a.go")] },
+      {
+        perPass: 0.6,
+      },
+    );
+    const arm = createA21Arm({ search, agentPass, meter, provider });
+    const out = await arm.localize(item, corpusOf(["r", "s"]), { run: 1 });
+    expect(out.rankedFiles).toEqual(["r:b.go", "s:a.go", "r:a.go"]);
+    expect(out.agent?.passGroup).toBe("production-explore");
+    // Past A20's $1 per item, and still no cap is handed to either pass.
+    for (const [req] of agentPass.mock.calls) {
+      expect(req.toolset).toBe("production-explore");
+      expect(req).not.toHaveProperty("costCapUsd");
+    }
+    expect(arm.configuration).not.toHaveProperty("costCapPerItemUsd");
+    expect(String(arm.configuration.agentPass)).toMatch(
+      /resolveAgenticMaxTurns and agenticPassEffectiveBudget\(ANALYSIS_AGENT_TOKEN_BUDGET\)/,
+    );
+    expect(String(arm.configuration.tools)).toMatch(/^buildExploreCodePass/);
+    expect(arm.label).toMatch(/production's explore-mode code pass/);
+  });
+
+  it("sums its passes' loops into the reading's agent stats", async () => {
+    const meter = fakeMeter();
+    const loops: Record<string, ReturnType<typeof loopOf>> = {
+      r: loopOf({ budgetExhausted: true, tokensUsed: 4200 }),
+      s: loopOf(),
+    };
+    const agentPass = vi.fn(async (req: AgentPassRequest) => {
+      meter.charge(0.01);
+      return { citations: [], turns: 3, toolCalls: 2, answered: true, loop: loops[req.repo] };
+    });
+    const out = await createA21Arm({ search, agentPass, meter, provider }).localize(
+      item,
+      corpusOf(["r", "s"]),
+      { run: 1 },
+    );
+    expect(out.agent?.loop).toEqual({
+      passes: 2,
+      degraded: 1,
+      budgetStops: 1,
+      turnStops: 0,
+      costCeilingStops: 0,
+      tokensUsed: 5200,
+      tokenBudget: 8000,
+      budgetedPasses: 2,
+      budgetedTokensUsed: 5200,
+      maxBudgetShare: 4200 / 4000,
+      promptTokens: 400,
+      cacheReadTokens: 1200,
+      cacheWriteTokens: 400,
+      repeatedToolCalls: 2,
+    });
+  });
+
+  it("counts a pass degraded when a bound cut it or it has no schema-valid answer", () => {
+    const pass = (answered: boolean, loop?: ReturnType<typeof loopOf>): AgentPassResult => ({
+      citations: [],
+      turns: 1,
+      toolCalls: 0,
+      answered,
+      ...(loop ? { loop } : {}),
+    });
+    expect(passLoopTotals(pass(true, loopOf()))?.degraded).toBe(0);
+    expect(passLoopTotals(pass(false, loopOf()))?.degraded).toBe(1);
+    expect(passLoopTotals(pass(true, loopOf({ turnsExhausted: true })))).toMatchObject({
+      degraded: 1,
+      turnStops: 1,
+    });
+    expect(passLoopTotals(pass(true, loopOf({ costCeilingReached: true })))).toMatchObject({
+      degraded: 1,
+      costCeilingStops: 1,
+    });
+    // A20 has no token budget: no budget share is read for it.
+    expect(passLoopTotals(pass(true, loopOf({ tokenBudget: null })))).toMatchObject({
+      budgetedPasses: 0,
+      tokenBudget: 0,
+      maxBudgetShare: 0,
+    });
+    expect(passLoopTotals(pass(true))).toBeUndefined();
   });
 });

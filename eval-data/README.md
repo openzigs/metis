@@ -716,6 +716,7 @@ pnpm eval:localization --merge <dir> --md
 | `A3N` (A3-nograph) | `list_files`, `read_file_slice` and `grep_files`; no seeded blocks | the cited files alone |
 | `A3P` (A3-primitives, #2327) | `A3A`'s, with `search_code_symbols`'s filters and `grep_files` (chat's search primitives) | the cited files alone |
 | `A20` (explorer, #2560) | `grep_files`, `list_files`, whole-file `read_file_slice`, `search_code_graph`, filtered `search_code_symbols`; the seeded blocks as hints | the cited files alone (below) |
+| `A21` (production explore, #2568) | production's explore mode (`buildExploreCodePass`, #2565) at production's bounds | the cited files alone (below) |
 
 - **One pass per item and repository.** The pass uses the orchestrator's own functions
   (`extractNewRequirementCandidates`, `assembleAgenticPassSeeds`, `buildAgenticPassPrompt`,
@@ -826,6 +827,111 @@ Recall@10 **+0.107 [0.02, 0.20]**, MRR **+0.089 [0.01, 0.19]**, and edit precisi
   $0.50 for both. The total stays under the $20 pre-approval. These slices ran before the
   partials recorded spend per model call. That change keeps a killed slice's finished calls,
   but a call in flight is still lost.
+
+### Production explore (A21), 2026-11-16 (#2568)
+
+`A21` is the code pass that production runs with `ANALYSIS_CODE_EXPLORATION=explore` (#2565).
+It differs from `A20` only in its limits, which are production's. Its citations are scored alone
+and paired with `A3A`.
+
+- **Pass:** `buildExploreCodePass`, the function the orchestrator calls. That gives the explore
+  steps, A20's five tools, `read_file_slice` at `ANALYSIS_EXPLORE_READ_MAX_LINES` (1,000 lines,
+  80,000 characters) and the explore transcript ceiling (`ANALYSIS_EXPLORE_TRANSCRIPT_TOKENS`,
+  64k, never more than half the model's window). The explorer nudge comes first, then #1388's
+  continuation, and the final-answer retry runs with its reasoning setting and evidence digest.
+- **Limits:** `resolveAgenticMaxTurns` (10 turns at one requirement), the effective
+  `ANALYSIS_AGENT_TOKEN_BUDGET`, and #2569's dollar ceiling (`ANALYSIS_CODE_PASS_MAX_USD`, $1 per
+  requirement) on the provider. There is no eval-only cap. As for A3A, there is no escalation and
+  no post-loop salvage.
+- **The eval cannot drift from production.** `server/tests/eval-a21-parity-2568.sqlite.test.ts`
+  runs the orchestrator's explore pass and A21 over the same project, clone and requirements
+  (one and six). It checks that both hand `runAgentLoop` the same system and user messages,
+  tools, `maxTurns`, `maxTokens`, compaction, prompt caching and retry, and that the
+  continuation sends the same nudges.
+- **New report lines (#2568).** Every agent arm's report now has a `loops:` line. It gives the
+  passes that ended degraded (cut by the token budget, the turn cap or the dollar ceiling, or
+  with no schema-valid answer), the tokens per pass against the effective budget, the cache-read
+  share of prompt tokens, and repeated identical tool calls. Partials recorded before #2568 do
+  not carry these counts, so they show no such line.
+
+```bash
+pnpm eval:materialize localization-01-miniflux-heldout      # $0; and localization-02-fixture-portfolio
+pnpm eval:localization --corpus localization-01-miniflux-heldout --arms A0,A3A,A21 \
+  --reference A3A --runs 1 --budget 4.0 --embed --items 0:4     # then 4:8 … with --resume <dir>
+pnpm eval:localization --merge <dir> --arms A0,A3A,A21 --reference A3A --md
+pnpm eval:code-pass-live --mode fast --budget 0.75              # then --mode explore
+```
+
+**Spend cap.** The owner capped this run at **$5.00** in total (issue comment, 2026-11-16).
+The planned measurement needed about $15 at these rates: Miniflux × 2 runs, the fixture
+portfolio × 1 and the live pair. So it was cut down to the live pair first, then Miniflux × 1
+run until the runner's look-ahead refused the next item. That gave 20 A3A items and 19 A21
+items, paired on 19. The fixture portfolio and Miniflux's second run were **not measured**.
+
+| Miniflux, `claude-sonnet-5-5`, 19 paired items × 1 run | A3A | A21 | Δ A21 − A3A (95% CI) |
+|---|---:|---:|---:|
+| Recall@5 | 0.66 | 0.84 | **+0.180 [0.04, 0.34]**, p = 0.009 |
+| Recall@10 | 0.68 | 0.94 | **+0.253 [0.08, 0.44]**, p = 0.001 |
+| Edit precision | 0.45 | 0.52 | +0.068 [−0.05, +0.22], p = 0.35 |
+| MRR | 0.73 | 0.90 | +0.171 [−0.04, +0.39], p = 0.12 |
+| Turns / tool calls per pass | 3.2 / 6.4 | 5.3 / 12.8 | |
+| Cost per item | $0.066 | $0.128 (max $0.29) | +94% |
+| Wall time per item | 20 s | 38 s (max 107 s) | |
+| Passes degraded | 0 of 20 | 0 of 19 | |
+| Tokens per pass / effective budget | 2,826 / 98,386 (3%, max 4%) | 5,557 / 98,383 (6%, max 20%) | |
+| Cache reads, share of prompt tokens | 72% | 76% | |
+| Repeated identical tool calls | 3 (0.15 per pass) | 2 (0.11 per pass) | |
+
+Against A0, A21 reads Recall@5 +0.323 [0.19, 0.47] and edit precision +0.343 [0.25, 0.44].
+A3A cited no answer file for MF-4510, MF-4516, MF-4554 and MF-4557. A21 found one for all four,
+at Recall@5 0.50 to 1.00, the same pattern as A20 in #2560. A21 scored lower than A3A on Recall@5
+on one item, MF-4526 (0.33 against 0.67).
+
+**The live multi-requirement run** (`pnpm eval:code-pass-live`): one "Evaluate new requirements"
+analysis on the materialized Miniflux project. It used five held-out items as five paragraphs
+(MF-4483, MF-4520, MF-4557, MF-4575 and MF-4605), the code agent only, and one code pass per run.
+
+| | fast | explore | explore / fast |
+|---|---:|---:|---:|
+| Wall time | 160 s | 216 s | 1.35× |
+| Code-pass turns (of `maxTurns`) | 5 of 10 | 8 of 10 | |
+| Code-pass tokens (uncached prompt + output) / effective budget | 6,655 / 97,359 | 22,452 / 97,359 | 3.4× |
+| Model calls in the run (code pass and grading) | 25 | 28 | |
+| Cost, run meter = ledger (`token_usages`, all `analysis`) | $0.3702 | $0.5742 | **1.55×** |
+| Escalation | off: one pass, not split | off: one pass, not split | |
+
+The escalation policy (#739) is off by default, so neither run split into a deep and a standard
+pass, and there is no per-pass split of the spend to report. At five requirements the explore
+pass used 8 of its 10 turns. With more requirements in one pass, the turn cap could bind before
+the token budget. `resolveAgenticMaxTurns` gives 2 turns per requirement above the floor of 10.
+
+**The pre-registered rule** (#2568, written before the run):
+
+| # | Condition | Result | Held? |
+|---|---|---|---|
+| 1 | Miniflux Recall@5 Δ ≥ +0.10, CI excluding 0 | +0.180 [0.04, 0.34] (19 items × 1 run, not 24 × 2) | yes, on the partial run |
+| 2 | Miniflux edit precision Δ ≥ −0.05 | +0.068 | yes |
+| 3 | Fixture portfolio Recall@5 Δ ≥ −0.07 | **not measured** (spend cap) | **not shown** |
+| 4 | Mean cost per item ≤ $0.20; live code pass ≤ 2× fast | $0.128; 1.55× | yes |
+| 5 | Degraded share of A21 passes ≤ A3A's + 5 points | 0% against 0% | yes |
+
+**Result: the default stays `fast`.** The rule flips the default only when every condition
+holds, and condition 3 was not measured. The four conditions that were measured all held. On
+Miniflux, A21's gain over A3A (+0.18 Recall@5) matches A20's (+0.19). So production's limits
+did not cost the gain: A21 used 6% of its token budget and 5.3 of its 10 turns on average. Its
+cost per item rose more than A20's did (+94% against +46%), because A3A was cheaper in this run
+($0.066 against $0.082). A21 itself cost about what A20 did ($0.128 against $0.120). The next
+step is the epic's: run the fixture portfolio (about $3 at these rates) and Miniflux's last five
+items and second run, then apply this rule unchanged.
+
+- **Not run:** the optional A21 smoke on the OpenAI-compatible path (DeepSeek). It is not a gate,
+  and it did not fit the cap.
+- **Spend: $4.6939 recorded**, under the $5.00 cap.
+  - $3.7495 for the Miniflux slices, from the run meter. That meter prices every call at the
+    usage-ledger rates. The eval's agent passes do not write `token_usages`, as in #2560.
+  - $0.9444 for the two live runs. The eval database's ledger and the meter agree on this
+    figure: 53 `token_usages` rows, none of them unpriced.
+  - No call was lost to a timeout, and no 429, 402, quota or billing error occurred.
 
 ### Rebuilding a corpus
 

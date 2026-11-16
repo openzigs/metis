@@ -16,6 +16,7 @@
  *   pnpm eval:localization --arms A0,A3,A3A,A3N --shard 1/10   # #1755 analysis-agent citations (materialize first)
  *   pnpm eval:localization --arms A0,A3A,A7,A7O --reference A3A --items 0:4   # #1818 the shipped IMPACT_AGENT_SEEDS order
  *   pnpm eval:localization --arms A0,A3A,A20 --reference A3A --embed --items 0:2  # #2560 the Claude-Code-style explorer
+ *   pnpm eval:localization --arms A0,A3A,A21 --reference A3A --embed --items 0:2  # #2568 production's explore mode
  *   pnpm eval:localization --merge <dir> --arms A0,A7,A7O --table-guard --embed --guard-steps 5
  *                                                # #1823 A7's table guard, 5 more steps per call
  *   pnpm eval:localization --embed               # embed missing vectors with the local model
@@ -515,8 +516,9 @@ async function agentPassFor(
   const states = await materializedStates(corpora);
   const { assertClonesFor, createMaterializedAgentPass, withSearchPrimitives } =
     await import("../src/lib/eval/localization/agent-pass.js");
-  // #1819 — before any pass: A3N's file tools read only the clone (#2560: A20's too).
-  const cloneArms = ["A3N", "A20"].filter((id) => armIds.includes(id));
+  // #1819 — before any pass: A3N's file tools read only the clone (#2560: A20's
+  // too; #2568: and A21's).
+  const cloneArms = ["A3N", "A20", "A21"].filter((id) => armIds.includes(id));
   if (cloneArms.length > 0) await assertClonesFor(states, cloneArms.join("/"));
   const { prisma } = await import("../src/lib/prisma.js");
   const { assembleAgenticCodeTools } = await import("../src/lib/analysis/orchestrator.js");
@@ -556,7 +558,7 @@ async function agentPassFor(
           )
         : tools;
     },
-    // #2560 — A20: production's graph search and the filtered symbol search.
+    // #2560 — A20 (and #2568's A21): production's graph search and the filtered symbol search.
     explorerSearchTools: () => ({
       searchCodeGraph: searchCodeGraphTool,
       searchCodeSymbols: createSearchSymbolsTool(undefined, { filters: true }),

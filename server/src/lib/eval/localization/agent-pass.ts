@@ -29,6 +29,14 @@
  * ({@link EXPLORER_TRANSCRIPT_TOKENS}); what bounds it is a dollar cap per
  * item (`costCapUsd`), checked before every model call. A pass stopped by the
  * cap has no answer, and scores as no citation.
+ *
+ * #2568 — the `production-explore` tool set (arm A21) is production's explore
+ * mode as `runAgenticPass` runs it (#2565): {@link buildExploreCodePass}'s
+ * tools, steps and transcript ceiling, production's turn cap and token budget,
+ * #1388's continuation behind the explorer nudge, the final-answer retry with
+ * its reasoning setting and evidence digest, and #2569's dollar ceiling on the
+ * provider. There is no eval-only cap. `server/tests/eval-a21-parity-2568.sqlite.test.ts`
+ * proves its loop matches the orchestrator's, so the eval cannot drift.
  */
 import { promises as fs } from "node:fs";
 import type { AIProvider } from "../../ai/types.js";
@@ -42,6 +50,11 @@ import {
   isSchemaValidFinalAnswer,
 } from "../../analysis/agentic-degradation.js";
 import {
+  buildEvidenceDigest,
+  DEFAULT_RETRY_EVIDENCE_TOKENS,
+  formatEvidenceForAnswer,
+} from "../../analysis/agentic-evidence.js";
+import {
   extractJsonObject,
   resolveFinalAnswerMaxOutputTokens,
 } from "../../analysis/agent-runner.js";
@@ -50,9 +63,14 @@ import {
   buildAgenticPassPrompt,
   resolveAgentTokenBudget,
   resolveAgenticMaxTurns,
+  resolveRecoveryReasoning,
   type AgenticPassSeeds,
 } from "../../analysis/agentic-pass-context.js";
+import { createCodePassCostCeiling } from "../../analysis/code-pass-cost-ceiling.js";
+import { buildCodePassContinuation } from "../../analysis/code-pass-coverage.js";
 import {
+  buildExploreCodePass,
+  countRepeatedToolCalls,
   EXPLORER_NUDGE,
   GRAPH_STEPS,
   explorerSystemMessage as productionExplorerSystemMessage,
@@ -73,6 +91,7 @@ import {
   EXPLORER_TRANSCRIPT_TOKENS,
   type AgentCitation,
   type AgentPass,
+  type AgentPassLoop,
   type AgentPassRequest,
   type AgentPassResult,
 } from "./arm-core.js";
@@ -111,7 +130,8 @@ export interface MaterializedAgentPassDeps {
   /**
    * #2560 — the explorer's (A20) search tools for a verified clone: production's
    * `search_code_graph` and `search_code_symbols` with its filters on. The pass
-   * adds the file tools ({@link explorerTools}).
+   * adds the file tools ({@link explorerTools}). #2568 — A21 reads the same
+   * two through {@link buildExploreCodePass}, as the orchestrator does.
    */
   explorerSearchTools?: () => { searchCodeGraph: AgentTool; searchCodeSymbols: AgentTool };
   /** #2560 — the run meter's dollars spent so far: what a pass's `costCapUsd` is read against. */
@@ -268,6 +288,21 @@ export async function assertClonesFor(
   }
 }
 
+/** #2568 — what the report reads about how a pass's loop ended and what it spent. */
+export function loopStats(result: AgentLoopResult, tokenBudget: number | null): AgentPassLoop {
+  return {
+    tokensUsed: result.usage.totalTokens,
+    tokenBudget,
+    promptTokens: result.usage.promptTokens,
+    cacheReadTokens: result.usage.cacheReadTokens ?? 0,
+    cacheWriteTokens: result.usage.cacheWriteTokens ?? 0,
+    budgetExhausted: result.budgetExhausted,
+    turnsExhausted: result.turnsExhausted,
+    costCeilingReached: result.costCeilingReached === true,
+    repeatedToolCalls: countRepeatedToolCalls(result.toolCalls),
+  };
+}
+
 /** The pass over a materialized corpus. Throws on an unmaterialized corpus or repository. */
 export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): AgentPass {
   const runLoop = deps.runLoop ?? runAgentLoop;
@@ -286,20 +321,27 @@ export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): Ag
     const project = await deps.loadProject(repo.projectId);
     const cloneDir = await existingDir(repo.cloneDir);
     const explorer = request.toolset === "explorer";
+    const productionExplore = request.toolset === "production-explore";
     const graph = request.toolset !== "files";
     // #1810 — the file tools read only the clone. Without it every A3N call
     // fails, and the pass would score about 0 at full cost; the graph pass runs
     // without a working tree, as production does. #2560 — A20 explores with the
-    // file tools first, so it needs the clone too.
-    if ((!graph || explorer) && cloneDir === undefined) {
+    // file tools first, so it needs the clone too. #2568 — production runs a
+    // pass with no working tree fast (`no-working-tree`), so A21 without the
+    // clone would measure A3A under A21's label: refused instead.
+    if ((!graph || explorer || productionExplore) && cloneDir === undefined) {
+      const arm = explorer ? "A20" : productionExplore ? "A21" : "A3N";
       throw new Error(
-        `${explorer ? "A20" : "A3N"} needs the clone of ${request.corpus}/${request.repo}, and ${repo.cloneDir} is not a directory: run pnpm eval:materialize ${request.corpus}`,
+        `${arm} needs the clone of ${request.corpus}/${request.repo}, and ${repo.cloneDir} is not a directory: run pnpm eval:materialize ${request.corpus}`,
       );
     }
     if (explorer && (!deps.explorerSearchTools || !deps.spentUsd)) {
       throw new Error(
         "A20 needs the explorer's search tools and the run meter (explorerSearchTools, spentUsd)",
       );
+    }
+    if (productionExplore && !deps.explorerSearchTools) {
+      throw new Error("A21 needs the explore pass's search tools (explorerSearchTools)");
     }
     const extracted = await deps.extractRequirements(request.text);
     const requirements = extracted.length > 0 ? extracted : [{ id: "NR-1", text: request.text }];
@@ -313,11 +355,22 @@ export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): Ag
           databaseAware: project.databaseAware,
         })
       : NO_SEEDS;
-    const tools = explorer
-      ? explorerTools(deps.explorerSearchTools!())
-      : graph
-        ? deps.graphTools(cloneDir, request.toolset === "graph-primitives")
-        : [...FILE_ONLY_TOOLS];
+    // #2568 — production's explore pass, built by the function the
+    // orchestrator calls, at production's settings (read cap, transcript).
+    const explorePass = productionExplore
+      ? buildExploreCodePass({
+          search: deps.explorerSearchTools!(),
+          providerKey: deps.provider.key,
+          model,
+        })
+      : undefined;
+    const tools = explorePass
+      ? explorePass.tools
+      : explorer
+        ? explorerTools(deps.explorerSearchTools!())
+        : graph
+          ? deps.graphTools(cloneDir, request.toolset === "graph-primitives")
+          : [...FILE_ONLY_TOOLS];
     const prompt = buildAgenticPassPrompt({
       projectName: project.name,
       projectDescription: project.description,
@@ -325,17 +378,28 @@ export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): Ag
       seeds,
       fileToolsAvailable: cloneDir !== undefined,
     });
-    const systemMessage = explorer
-      ? explorerSystemMessage(prompt.systemMessage)
-      : graph
-        ? prompt.systemMessage
-        : filesOnlySystemMessage(prompt.systemMessage);
+    const systemMessage = explorePass
+      ? explorePass.systemMessage(prompt.systemMessage)
+      : explorer
+        ? explorerSystemMessage(prompt.systemMessage)
+        : graph
+          ? prompt.systemMessage
+          : filesOnlySystemMessage(prompt.systemMessage);
     const toolContext: ToolContext = {
       projectId: repo.projectId,
       connectorId: repo.connectorId,
       ...(cloneDir ? { cloneDir } : {}),
     };
     const native = resolveAnalysisNativeTools(deps.provider, model, tools);
+    // Production's bounds (A3A's, and A21's): the turn cap and the token
+    // budget less the seeded blocks.
+    const maxTurns = resolveAgenticMaxTurns(requirements.length);
+    const tokenBudget = agenticPassEffectiveBudget(resolveAgentTokenBudget(), seeds);
+    // #2568 — A21 calls the model through #2569's dollar ceiling, as
+    // `runAgenticPass` calls it through `passProvider`.
+    const provider = productionExplore
+      ? createCodePassCostCeiling({ requirementCount: requirements.length }).guard(deps.provider)
+      : deps.provider;
     // #2560 — the explorer's bounds: a long turn cap, no token budget, a wider
     // transcript, and a dollar cap checked before every model call.
     let modelCalls = 0;
@@ -371,10 +435,25 @@ export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): Ag
             nudge: () => (toolCallsMade === 0 ? EXPLORER_NUDGE : null),
           },
         }
-      : {
-          maxTurns: resolveAgenticMaxTurns(requirements.length),
-          maxTokens: agenticPassEffectiveBudget(resolveAgentTokenBudget(), seeds),
-        };
+      : explorePass
+        ? {
+            maxTurns,
+            maxTokens: tokenBudget,
+            onToolCall: () => {
+              toolCallsMade += 1;
+            },
+            // The orchestrator's: the explorer nudge once, before any tool
+            // call, then #1388's continuation.
+            continuation: explorePass.continuation(
+              buildCodePassContinuation({
+                requirementIds: requirements.map((r) => r.id),
+                isValidFinalAnswer: isSchemaValidFinalAnswer,
+              }),
+              () => toolCallsMade,
+            ),
+            transcriptCompaction: explorePass.transcriptCompaction,
+          }
+        : { maxTurns, maxTokens: tokenBudget };
     // The cap stops the pass with no answer: scored as no citation, and the
     // item's cost (at or past the cap) says why.
     const capped = (): AgentPassResult => ({
@@ -386,7 +465,7 @@ export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): Ag
     let result: AgentLoopResult;
     try {
       result = await runLoop(
-        deps.provider,
+        provider,
         { systemMessage, userMessage: prompt.userMessage, tools, toolContext },
         {
           ...(native ? { native } : {}),
@@ -397,6 +476,17 @@ export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): Ag
             instruction: FINAL_ANSWER_INSTRUCTION,
             isValidFinalAnswer: isSchemaValidFinalAnswer,
             maxOutputTokens: resolveFinalAnswerMaxOutputTokens(model, deps.provider.key),
+            // #2568 — A21's retry is the orchestrator's: its reasoning setting
+            // (#1063) and the untruncated evidence (#726).
+            ...(explorePass
+              ? {
+                  reasoning: resolveRecoveryReasoning(model),
+                  evidence: (calls: Parameters<typeof buildEvidenceDigest>[0]) =>
+                    formatEvidenceForAnswer(
+                      buildEvidenceDigest(calls, { maxTokens: DEFAULT_RETRY_EVIDENCE_TOKENS }),
+                    ),
+                }
+              : {}),
           },
         },
       );
@@ -412,6 +502,7 @@ export function createMaterializedAgentPass(deps: MaterializedAgentPassDeps): Ag
       turns: result.turnsUsed,
       toolCalls: result.toolCalls.length,
       answered: result.hasFinalAnswer,
+      loop: loopStats(result, explorer ? null : tokenBudget),
     };
   };
 }

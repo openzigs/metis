@@ -38,6 +38,7 @@ import {
   aggregateItems,
   averageRuns,
   scoreObservation,
+  type AgentLoopTotals,
   type ArmAggregate,
   type ItemRunScore,
   type ItemScore,
@@ -856,6 +857,31 @@ const f3 = (x: number) => x.toFixed(3);
 const ci = ([lo, hi]: [number, number]) => `[${f2(lo)}, ${f2(hi)}]`;
 const money = (x: number | null) => (x === null ? "unpriced" : `$${x.toFixed(4)}`);
 
+/**
+ * #2568 — an agent arm's loops in one line: how many passes ended degraded,
+ * their tokens against their budgets, the cache-read share of the prompt and
+ * the repeated identical tool calls.
+ */
+export function loopLine(l: AgentLoopTotals): string {
+  const pct = (x: number) => `${(x * 100).toFixed(0)}%`;
+  const perPass = (n: number) => (l.passes === 0 ? "n/a" : (n / l.passes).toFixed(1));
+  const stops = l.budgetStops + l.turnStops + l.costCeilingStops;
+  const unanswered = l.degraded - Math.min(l.degraded, stops);
+  const prompt = l.promptTokens + l.cacheReadTokens + l.cacheWriteTokens;
+  return (
+    `loops: ${l.degraded} of ${l.passes} passes degraded (${pct(l.passes === 0 ? 0 : l.degraded / l.passes)}; ` +
+    `${l.budgetStops} token-budget, ${l.turnStops} turn-limit, ${l.costCeilingStops} cost-ceiling, ` +
+    `${unanswered} other with no schema-valid answer); ` +
+    `${Math.round(l.passes === 0 ? 0 : l.tokensUsed / l.passes)} tokens per pass` +
+    (l.budgetedPasses > 0
+      ? `, ${pct(l.budgetedTokensUsed / l.tokenBudget)} of the effective budget on average ` +
+        `(${Math.round(l.tokenBudget / l.budgetedPasses)} per pass), at most ${pct(l.maxBudgetShare)}`
+      : ", no token budget") +
+    `; cache reads ${prompt === 0 ? "n/a" : pct(l.cacheReadTokens / prompt)} of prompt tokens; ` +
+    `${l.repeatedToolCalls} repeated identical tool calls (${perPass(l.repeatedToolCalls)} per pass).`
+  );
+}
+
 /** The paired-metric and McNemar rows of one comparison table. */
 function comparisonRows(cmp: {
   arm: string;
@@ -1021,6 +1047,7 @@ export function toMarkdownReport(report: LocalizationReport): string {
             : `${resolved} of ${t.citedFiles} (${f2(resolved / t.citedFiles)})`
         }. The Graph resolution column keeps only resolved files, so it reads 1.00 by construction.`,
     );
+    if (t.loop) lines.push(`  - ${loopLine(t.loop)}`);
   }
   if (passArms.length > 0) lines.push("");
   // #1784 — only a portfolio can name a file outside the answer's repository.

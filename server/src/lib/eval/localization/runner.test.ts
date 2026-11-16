@@ -1355,6 +1355,85 @@ describe("agent-pass counts and split passes in the report (#1810)", () => {
     expect(md).not.toContain("Separate agent passes");
   });
 
+  // #2568 — the flip rule's degradation share, the budget share, cache reads, repeats.
+  it("sums the passes' loops and reports degraded passes, budget share, cache reads and repeated calls", async () => {
+    const loop = (budgetStop: boolean) => ({
+      passes: 2,
+      degraded: budgetStop ? 1 : 0,
+      budgetStops: budgetStop ? 1 : 0,
+      turnStops: 0,
+      costCeilingStops: 0,
+      tokensUsed: 3000,
+      tokenBudget: 8000,
+      budgetedPasses: 2,
+      budgetedTokensUsed: 3000,
+      maxBudgetShare: budgetStop ? 1.05 : 0.25,
+      promptTokens: 1000,
+      cacheReadTokens: 3000,
+      cacheWriteTokens: 0,
+      repeatedToolCalls: 1,
+    });
+    const report = await runLocalizationEval(portfolioOf(2), {
+      arms: [
+        arm("A0", () => 1),
+        passArm("A21", (item, run) => stats({ loop: loop(run === 1 && item.id === "I-1") })),
+      ],
+      runs: 2,
+      meter: new FakeMeter(),
+    });
+    expect(report.arms[1]!.aggregate.agent?.loop).toMatchObject({
+      passes: 8,
+      degraded: 1,
+      budgetStops: 1,
+      tokensUsed: 12000,
+      tokenBudget: 32000,
+      maxBudgetShare: 1.05,
+      cacheReadTokens: 12000,
+      repeatedToolCalls: 4,
+    });
+    expect(toMarkdownReport(report)).toContain(
+      "  - loops: 1 of 8 passes degraded (13%; 1 token-budget, 0 turn-limit, 0 cost-ceiling, " +
+        "0 other with no schema-valid answer); 1500 tokens per pass, 38% of the effective budget " +
+        "on average (4000 per pass), at most 105%; cache reads 75% of prompt tokens; " +
+        "4 repeated identical tool calls (0.5 per pass).",
+    );
+  });
+
+  it("reads no budget share for passes that had none, and no line for partials before #2568", async () => {
+    const noBudget = {
+      passes: 1,
+      degraded: 1,
+      budgetStops: 0,
+      turnStops: 0,
+      costCeilingStops: 0,
+      tokensUsed: 500,
+      tokenBudget: 0,
+      budgetedPasses: 0,
+      budgetedTokensUsed: 0,
+      maxBudgetShare: 0,
+      promptTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+      repeatedToolCalls: 0,
+    };
+    const report = await runLocalizationEval(corpus(1), {
+      arms: [
+        arm("A0", () => 1),
+        passArm("A20", () => stats({ passes: 1, loop: noBudget })),
+        passArm("A3A", () => stats({ passes: 1 })),
+      ],
+      runs: 1,
+      meter: new FakeMeter(),
+    });
+    const md = toMarkdownReport(report);
+    expect(md).toContain(
+      "  - loops: 1 of 1 passes degraded (100%; 0 token-budget, 0 turn-limit, 0 cost-ceiling, " +
+        "1 other with no schema-valid answer); 500 tokens per pass, no token budget; " +
+        "cache reads n/a of prompt tokens; 0 repeated identical tool calls (0.0 per pass).",
+    );
+    expect(md.match(/ {2}- loops:/g)).toHaveLength(1);
+  });
+
   it("does not call the turns a sum on one repository, and says when no file was cited", async () => {
     const report = await runLocalizationEval(corpus(1), {
       arms: [

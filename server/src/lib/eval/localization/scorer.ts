@@ -41,6 +41,62 @@ export interface AgentRunStats {
    * re-validated them (#1831), and how many the stage set aside (#1832).
    */
   citationFreshness?: CitationFreshnessCounts;
+  /** #2568 — how the passes' loops ended and what they spent; absent on partials from before #2568. */
+  loop?: AgentLoopTotals;
+}
+
+/**
+ * #2568 — the loops of an agent arm's passes, summed: how many ended degraded
+ * (the token budget, the turn cap or the dollar ceiling cut them, or there was
+ * no schema-valid answer), their tokens against their budgets, their cache
+ * reads and their repeated identical tool calls.
+ */
+export interface AgentLoopTotals {
+  /** Passes that carried loop counts. */
+  passes: number;
+  /** Passes that ended `token-budget`, `turn-limit`, `cost-ceiling` or with no schema-valid answer. */
+  degraded: number;
+  budgetStops: number;
+  turnStops: number;
+  costCeilingStops: number;
+  tokensUsed: number;
+  /** Summed over the passes that had a budget ({@link budgetedPasses}). */
+  tokenBudget: number;
+  budgetedPasses: number;
+  /** The tokens used by those passes, the numerator of the budget share. */
+  budgetedTokensUsed: number;
+  /** The largest share of its budget one pass used (0 with no budgeted pass). */
+  maxBudgetShare: number;
+  promptTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  repeatedToolCalls: number;
+}
+
+/** #2568 — loop totals summed; the budget share is the largest of them. */
+export function addLoopTotals(
+  totals: readonly (AgentLoopTotals | undefined)[],
+): AgentLoopTotals | undefined {
+  const present = totals.filter((t): t is AgentLoopTotals => t !== undefined);
+  if (present.length === 0) return undefined;
+  const sum = (k: Exclude<keyof AgentLoopTotals, "maxBudgetShare">) =>
+    present.reduce((n, t) => n + t[k], 0);
+  return {
+    passes: sum("passes"),
+    degraded: sum("degraded"),
+    budgetStops: sum("budgetStops"),
+    turnStops: sum("turnStops"),
+    costCeilingStops: sum("costCeilingStops"),
+    tokensUsed: sum("tokensUsed"),
+    tokenBudget: sum("tokenBudget"),
+    budgetedPasses: sum("budgetedPasses"),
+    budgetedTokensUsed: sum("budgetedTokensUsed"),
+    maxBudgetShare: Math.max(...present.map((t) => t.maxBudgetShare)),
+    promptTokens: sum("promptTokens"),
+    cacheReadTokens: sum("cacheReadTokens"),
+    cacheWriteTokens: sum("cacheWriteTokens"),
+    repeatedToolCalls: sum("repeatedToolCalls"),
+  };
 }
 
 /** #1834 — stored citations by re-validation state, and the stale ones the stage set aside. */
@@ -81,7 +137,11 @@ export interface AgentTotals {
   unresolvedFiles: number;
   /** #1834 — summed over the readings that carried them (staleness readings). */
   citationFreshness?: CitationFreshnessCounts;
+  /** #2568 — summed over the readings that carried them. */
+  loop?: AgentLoopTotals;
 }
+
+const withLoop = (l: AgentLoopTotals | undefined) => (l ? { loop: l } : {});
 
 function addAgentTotals(totals: readonly AgentTotals[]): AgentTotals | null {
   if (totals.length === 0) return null;
@@ -95,6 +155,7 @@ function addAgentTotals(totals: readonly AgentTotals[]): AgentTotals | null {
     citedFiles: sum((t) => t.citedFiles),
     unresolvedFiles: sum((t) => t.unresolvedFiles),
     ...withFreshness(addFreshness(totals.map((t) => t.citationFreshness))),
+    ...withLoop(addLoopTotals(totals.map((t) => t.loop))),
   };
 }
 
@@ -298,6 +359,7 @@ export function averageRuns(id: string, runs: readonly ItemRunScore[]): ItemScor
               citedFiles: r.agent.citedFiles,
               unresolvedFiles: r.agent.unresolvedFiles,
               ...withFreshness(r.agent.citationFreshness),
+              ...withLoop(r.agent.loop),
             },
           ]
         : [],

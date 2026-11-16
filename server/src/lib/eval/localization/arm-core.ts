@@ -54,7 +54,15 @@ export type AgentToolset =
    * (filters on); the seeded blocks as hints only; a long turn cap, no token
    * budget, a dollar cap per item.
    */
-  | "explorer";
+  | "explorer"
+  /**
+   * #2568 — production's explore mode (A21): the pass `runAgenticPass` runs
+   * with `ANALYSIS_CODE_EXPLORATION=explore` (#2565), at production's bounds —
+   * `resolveAgenticMaxTurns`, `ANALYSIS_AGENT_TOKEN_BUDGET`, the explore
+   * transcript ceiling, #1388's continuation behind the explorer nudge, and
+   * #2569's dollar ceiling. No eval-only cap.
+   */
+  | "production-explore";
 
 /**
  * #2560 — the explorer's turn cap: about the depth Claude Code works at, where
@@ -99,6 +107,25 @@ export interface AgentPassResult {
   toolCalls: number;
   /** The loop produced a schema-valid final answer. */
   answered: boolean;
+  /** #2568 — how the loop ended and what it spent; absent on a pass stopped before its loop returned. */
+  loop?: AgentPassLoop;
+}
+
+/** #2568 — one pass's loop: how it ended, its tokens against its budget, its cache reads. */
+export interface AgentPassLoop {
+  /** The loop's total tokens: what `ANALYSIS_AGENT_TOKEN_BUDGET` is counted against. */
+  tokensUsed: number;
+  /** The effective token budget the loop ran under; null when it had none (A20). */
+  tokenBudget: number | null;
+  /** Uncached prompt tokens (Anthropic's `input_tokens`). */
+  promptTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  budgetExhausted: boolean;
+  turnsExhausted: boolean;
+  costCeilingReached: boolean;
+  /** Tool calls that repeat an earlier (tool, arguments) pair of the same pass. */
+  repeatedToolCalls: number;
 }
 
 export type AgentPass = (request: AgentPassRequest) => Promise<AgentPassResult>;
