@@ -17,7 +17,6 @@
  * and says why (`no-working-tree`).
  */
 import {
-  CODE_PASS_MODES,
   resolveCodeExploration,
   type CodePassMode,
   type CodePassModeDecision,
@@ -32,10 +31,13 @@ import { listFilesTool } from "./tools/list-files.js";
 import { createReadFileSliceTool } from "./tools/read-file-slice.js";
 import type { AgentTool } from "./tools/types.js";
 
-/** The platform key that picks the mode (`explore | fast`). */
-export const CODE_EXPLORATION_KEY = "ANALYSIS_CODE_EXPLORATION";
-/** The platform default until #2568 re-measures and flips it. */
-export const DEFAULT_CODE_PASS_MODE: CodePassMode = "fast";
+// The platform key and its reader live in a light module (#2566), so the
+// project service can read the setting without importing the explore tools.
+export {
+  CODE_EXPLORATION_KEY,
+  DEFAULT_CODE_PASS_MODE,
+  readCodeExplorationSetting,
+} from "./code-exploration-setting.js";
 
 /** `read_file_slice`'s line cap per call in `explore` mode (A20's). */
 export const EXPLORE_READ_MAX_LINES_KEY = "ANALYSIS_EXPLORE_READ_MAX_LINES";
@@ -127,14 +129,6 @@ export function explorerTools(
     search.searchCodeGraph,
     search.searchCodeSymbols,
   ];
-}
-
-/** The platform key's mode; an unset or unknown value is the default. */
-export function readCodeExplorationSetting(): CodePassMode {
-  const raw = getConfigService().get(CODE_EXPLORATION_KEY)?.trim().toLowerCase();
-  return (CODE_PASS_MODES as readonly string[]).includes(raw ?? "")
-    ? (raw as CodePassMode)
-    : DEFAULT_CODE_PASS_MODE;
 }
 
 /**

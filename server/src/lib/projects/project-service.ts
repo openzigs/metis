@@ -26,7 +26,7 @@ import {
   type RoleKey,
   type UpdateProjectInput,
 } from "@metis/shared";
-import { readCodeExplorationSetting } from "../analysis/code-pass-variant.js";
+import { readCodeExplorationSetting } from "../analysis/code-exploration-setting.js";
 import { prisma } from "../prisma.js";
 import { SUPPORTED_PROVIDER_KEYS } from "../ai/config.js";
 import { audit } from "../audit/audit-service.js";
@@ -638,6 +638,18 @@ export function codeExplorationStateOf(
 }
 
 /**
+ * A project as the GET and PATCH routes return it: its `codeExploration`
+ * normalised, and what that resolves to (`codeExplorationResolved`). One
+ * shape for both, so the two responses cannot drift (#2567 reads them).
+ */
+export function withCodeExploration<T extends { codeExploration: string }>(
+  project: T,
+): T & { codeExplorationResolved: ProjectCodeExplorationState["resolved"] } {
+  const state = codeExplorationStateOf(project.codeExploration);
+  return { ...project, codeExploration: state.setting, codeExplorationResolved: state.resolved };
+}
+
+/**
  * Validate and persist a per-project `codeExploration` override. The route
  * validates with `updateCodeExplorationSchema` first; this re-checks the
  * whitelist so a direct service call cannot store another value (OWASP A03),
@@ -666,7 +678,7 @@ export async function updateProjectCodeExploration(
     action: "project.codeExploration.update",
     target: { type: "project", id: projectId },
     metadata: {
-      previous: (project as { codeExploration?: string }).codeExploration ?? null,
+      previous: project.codeExploration ?? null,
       next: codeExploration,
     },
   });

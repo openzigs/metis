@@ -2,7 +2,8 @@
 # Issue #2566 — prove a Postgres migration's committed rollback on a real
 # database: with the chain deployed, seed rows, apply the rollback, assert the
 # column is gone and the rows survive, re-deploy, assert the column is back with
-# its default and the rows still survive.
+# the default it had before (information_schema.columns.column_default) and the
+# rows still survive.
 #
 #   scripts/ci/postgres-rollback-roundtrip.sh <migration> <table> <column> <seed.sql> <survivor query>
 #
@@ -24,6 +25,9 @@ psql_() { docker exec -i "${NAME}" psql -U metis -d metis -v ON_ERROR_STOP=1 -tA
 column_count() {
   psql_ -c "SELECT count(*) FROM information_schema.columns WHERE table_name = '${TABLE}' AND column_name = '${COLUMN}'"
 }
+column_default() {
+  psql_ -c "SELECT coalesce(column_default, '<none>') FROM information_schema.columns WHERE table_name = '${TABLE}' AND column_name = '${COLUMN}'"
+}
 expect() {
   if [ "$2" != "$3" ]; then
     echo "::error::$1: expected '$3', got '$2'"
@@ -33,6 +37,7 @@ expect() {
 }
 
 expect "column before the rollback" "$(column_count)" "1"
+default_before="$(column_default)"
 psql_ -1 < "${SEED_SQL}"
 before="$(psql_ -c "${SURVIVORS}")"
 [ -n "${before}" ] || { echo "::error::the seed left no survivor rows"; exit 1; }
@@ -46,3 +51,4 @@ expect "migration forgotten" \
 (cd server && pnpm prisma migrate deploy)
 expect "column after re-deploy" "$(column_count)" "1"
 expect "rows after re-deploy" "$(psql_ -c "${SURVIVORS}")" "${before}"
+expect "column default after re-deploy" "$(column_default)" "${default_before}"

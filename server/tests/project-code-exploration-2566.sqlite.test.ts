@@ -39,7 +39,30 @@ const SERVER_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const state = vi.hoisted(() => ({
   db: null as unknown,
   audits: [] as Array<{ action: string; metadata?: unknown }>,
+  warnings: [] as string[],
 }));
+// The orchestrator's warnings, so a degraded read can be seen to say so.
+vi.mock("../src/lib/logger.js", async (original) => {
+  const actual = await original<typeof import("../src/lib/logger.js")>();
+  return {
+    ...actual,
+    createChildLogger: (module: string) => {
+      const child = actual.createChildLogger(module);
+      if (module !== "analysis-orchestrator") return child;
+      return new Proxy(child, {
+        get(target, prop, receiver) {
+          if (prop === "warn") {
+            return (message: string, ...rest: unknown[]) => {
+              state.warnings.push(message);
+              return target.warn(message, ...(rest as []));
+            };
+          }
+          return Reflect.get(target, prop, receiver);
+        },
+      });
+    },
+  };
+});
 vi.mock("../src/lib/prisma.js", async () => {
   const { Prisma } = await import("@prisma/client");
   return {
@@ -376,6 +399,52 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           await (state.db as PrismaClient).project.update({
             where: { id: B },
             data: { codeExploration: "auto" },
+          });
+        }
+      });
+
+      it("a failed project read degrades to the platform default, not fast, and the pass still runs", async () => {
+        process.env.ANALYSIS_CODE_EXPLORATION = "explore";
+        __resetConfigSingleton();
+        const client = state.db as PrismaClient;
+        await client.project.update({ where: { id: A }, data: { codeExploration: "fast" } });
+        // Only the orchestrator's read of the setting fails; every other query is the real one.
+        const failing = new Proxy(client, {
+          get(target, prop) {
+            const value = Reflect.get(target, prop) as unknown;
+            if (prop === "project") {
+              const delegate = value as PrismaClient["project"];
+              return new Proxy(delegate, {
+                get(d, key) {
+                  if (key === "findFirst") {
+                    return async (args?: { select?: { codeExploration?: boolean } }) => {
+                      if (args?.select?.codeExploration)
+                        throw new Error("projects table unreadable");
+                      return d.findFirst(args as never);
+                    };
+                  }
+                  return Reflect.get(d, key) as unknown;
+                },
+              });
+            }
+            return typeof value === "function" ? (value as () => unknown).bind(target) : value;
+          },
+        });
+        state.db = failing;
+        state.warnings.length = 0;
+        try {
+          expect(await codePassSnapshot(A)).toMatchObject({
+            codePassMode: "explore",
+            codePassModeReason: "platform-default",
+          });
+          expect(state.warnings).toContain(
+            "Project code exploration setting unreadable; using the platform default",
+          );
+        } finally {
+          if (state.db === failing) state.db = client;
+          await (state.db as PrismaClient).project.update({
+            where: { id: A },
+            data: { codeExploration: "fast" },
           });
         }
       });

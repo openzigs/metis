@@ -50,7 +50,7 @@ import {
   updateProject,
   updateProjectAutopilot,
   updateProjectBudget,
-  codeExplorationStateOf,
+  withCodeExploration,
   updateProjectCodeExploration,
   updateProjectDatabaseAwareAnalysis,
   updateProjectSafetyMode,
@@ -212,16 +212,7 @@ export function projectsRouter(): Router {
     const project = await getProject(String(req.params.id));
     if (!project) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
     // #2566 — the code exploration setting, raw and resolved against the platform key.
-    const codeExploration = codeExplorationStateOf(
-      (project as { codeExploration?: string }).codeExploration,
-    );
-    res.json(
-      ok({
-        ...project,
-        codeExploration: codeExploration.setting,
-        codeExplorationResolved: codeExploration.resolved,
-      }),
-    );
+    res.json(ok(withCodeExploration(project)));
   });
 
   // ── Create ──────────────────────────────────────────────────────────────
@@ -709,14 +700,7 @@ export function projectsRouter(): Router {
           parsed.data.codeExploration,
           actor,
         );
-        const state = codeExplorationStateOf(project.codeExploration);
-        res.json(
-          ok({
-            ...project,
-            codeExploration: state.setting,
-            codeExplorationResolved: state.resolved,
-          }),
-        );
+        res.json(ok(withCodeExploration(project)));
       } catch (err) {
         rethrow(err);
       }
