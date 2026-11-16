@@ -169,12 +169,20 @@ export function extractedRequirementCount(
  * Issue #2596 — the statements read are not the requirements listed: in the
  * 2026-11-16 walkthrough the panel said 12 and the summary 8. Say how one
  * became the other, when they differ.
+ *
+ * Only when the statements can account for the requirements: says nothing
+ * when there are more requirements than statements, or when a document went
+ * unread (`everyDocumentRead` false), because then some requirements came from
+ * text these statements do not count (an unread document, the request text),
+ * and "combined N statements into M" would be false.
  */
 export function describeStatementsToRequirements(
   statements: number,
   extracted: number | undefined,
+  everyDocumentRead = true,
 ): string | null {
-  if (extracted === undefined || extracted === statements || statements === 0) return null;
+  if (extracted === undefined || statements === 0 || !everyDocumentRead) return null;
+  if (extracted >= statements) return null;
   return (
     `The analysis combined these ${plural(statements, "statement", "statements")} into ` +
     `${plural(extracted, "requirement", "requirements")}: one requirement can rest on several ` +
@@ -195,7 +203,11 @@ export function DocumentCoveragePanel({
     (n, d) => n + (d.status === "unread" ? 0 : d.requirements),
     0,
   );
-  const reconciled = describeStatementsToRequirements(statements, extractedRequirements);
+  const reconciled = describeStatementsToRequirements(
+    statements,
+    extractedRequirements,
+    documents.every((d) => d.status !== "unread"),
+  );
   return (
     <div data-testid="document-coverage-panel" className="space-y-2">
       <h4 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">

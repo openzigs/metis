@@ -183,15 +183,20 @@ describe("#2280 — a reused reading", () => {
  * NFRs the analysis found).
  */
 describe("#2596 — statements read against the requirements extracted", () => {
+  /** READ less its unread document, so the statements account for every requirement. */
+  const ALL_READ: DocumentReadingCoverage = {
+    documents: READ.documents.filter((d) => d.status !== "unread"),
+  };
+
   it("says how the statements became fewer requirements", () => {
-    render(<DocumentCoveragePanel capability={capability(READ)} extractedRequirements={2} />);
+    render(<DocumentCoveragePanel capability={capability(ALL_READ)} extractedRequirements={2} />);
     expect(screen.getByTestId("document-coverage-reconciled")).toHaveTextContent(
       "The analysis combined these 3 statements into 2 requirements: one requirement can rest on several statements.",
     );
   });
 
   it("says nothing when the counts agree or the extraction count is unknown", () => {
-    render(<DocumentCoveragePanel capability={capability(READ)} extractedRequirements={3} />);
+    render(<DocumentCoveragePanel capability={capability(ALL_READ)} extractedRequirements={3} />);
     expect(screen.queryByTestId("document-coverage-reconciled")).toBeNull();
     expect(describeStatementsToRequirements(3, undefined)).toBeNull();
     expect(describeStatementsToRequirements(0, 4)).toBeNull();
@@ -199,6 +204,16 @@ describe("#2596 — statements read against the requirements extracted", () => {
     expect(describeStatementsToRequirements(12, 1)).toBe(
       "The analysis combined these 12 statements into 1 requirement: one requirement can rest on several statements.",
     );
+  });
+
+  it("says nothing when the statements cannot account for the requirements", () => {
+    // More requirements than statements: some came from text not counted here.
+    expect(describeStatementsToRequirements(4, 9)).toBeNull();
+    // A document went unread: its requirements are not among the statements.
+    expect(describeStatementsToRequirements(12, 8, false)).toBeNull();
+    // READ holds an unread document (old.docx), so even 3 statements to 2 says nothing.
+    render(<DocumentCoveragePanel capability={capability(READ)} extractedRequirements={2} />);
+    expect(screen.queryByTestId("document-coverage-reconciled")).toBeNull();
   });
 
   it("counts the reviewed list less what the analysis added to it", () => {

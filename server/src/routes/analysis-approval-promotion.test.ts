@@ -202,7 +202,9 @@ vi.mock("../lib/analysis/index.js", () => ({
 const hiddenCheckpoints = vi.hoisted(() => ({ ids: [] as string[] }));
 vi.mock("../lib/analysis/checkpoint-access.js", () => ({
   checkpointRows: async () => [],
-  hiddenCheckpointIds: async () => new Set<string>(hiddenCheckpoints.ids),
+  // Hides only among the rows it is asked about, as the real one does.
+  hiddenCheckpointIds: async (_reader: unknown, _analysisId: string, rows: Array<{ id: string }>) =>
+    new Set<string>(rows.map((r) => r.id).filter((id) => hiddenCheckpoints.ids.includes(id))),
 }));
 vi.mock("../lib/rag/acl.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../lib/rag/acl.js")>();
@@ -824,6 +826,45 @@ describe("#1568 — requirement approvals that would be promoted with no code li
         ["REQ-2", false, undefined],
         ["NFR-2", true, undefined],
       ]);
+    } finally {
+      hiddenCheckpoints.ids = [];
+    }
+  });
+
+  it("#2596 — names no restricted requirement filtered off a ?status= page", async () => {
+    reviewedRun();
+    getStructuredRequirements.mockResolvedValue({
+      requirements: [
+        { id: "REQ-1", title: "Expired keys are refused like unknown keys", description: "" },
+        {
+          id: "NFR-1",
+          title: "Expired API keys refused identically to unknown keys",
+          description: "",
+          elicitedNfr: { nfrCategory: "security", evidenceFindingIds: [] },
+        },
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+    // REQ-1 is decided already, so ?status=pending leaves it off the page.
+    const every = [
+      { ...rows[0], id: "ap_r1", itemId: "REQ-1", status: "approved" },
+      { ...rows[0], id: "ap_n1", itemId: "NFR-1", status: "pending" },
+    ];
+    listApprovalRequests.mockImplementation(async (_id: string, status?: string) =>
+      every.filter((r) => status === undefined || r.status === status),
+    );
+    // REQ-1 rests on a document the caller cannot read.
+    hiddenCheckpoints.ids = ["ap_r1"];
+    try {
+      const res = await request(createApp()).get(
+        "/api/projects/proj-1/analyses/analysis-1/approvals?status=pending",
+      );
+      expect(res.status).toBe(200);
+      type Item = { itemId: string; resembles?: string; restricted?: true };
+      expect(
+        res.body.data.items.map((i: Item) => [i.itemId, i.restricted ?? false, i.resembles]),
+      ).toEqual([["NFR-1", false, undefined]]);
     } finally {
       hiddenCheckpoints.ids = [];
     }

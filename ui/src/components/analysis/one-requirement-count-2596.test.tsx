@@ -171,6 +171,36 @@ describe("#2596 — a requirement the analysis added sits beside the one it rese
     expect(groupResembling(list).map((g) => g.approval.id)).toEqual(["a1", "a3", "a1b"]);
   });
 
+  it("marks, without moving, one whose match is in the ticked list (#1129 split)", () => {
+    const added = [approval("a3", "N-1", { resembles: "R-1" }), approval("a4", "N-2")];
+    expect(
+      groupResembling(added, new Set(["R-1"])).map((g) => [g.approval.id, g.resembles, g.apart]),
+    ).toEqual([
+      ["a3", "R-1", true],
+      ["a4", undefined, undefined],
+    ]);
+  });
+
+  it("on an import-scoped run, notes the ticked match from the added list", async () => {
+    analysisApi.listApprovals.mockResolvedValue({
+      items: [
+        approval("a1", "R-1", { origin: "ticked" }),
+        approval("a2", "R-2", { origin: "ticked" }),
+        approval("a3", "N-1", { resembles: "R-1", origin: "added" }),
+      ],
+      ticketStatus: { allowed: false, pendingCount: 3, rejectedCount: 0 },
+    });
+
+    withClient(<ApprovalsPanel projectId="proj-1" analysisId="ana-1" metadata={METADATA} />);
+
+    const added = await screen.findByTestId("approvals-added");
+    expect(within(added).getByTestId("approval-resembles")).toHaveTextContent(
+      "Close to “Expired keys are refused like unknown keys”, listed under your ticked items above. If the two say the same thing, approve one and reject the other.",
+    );
+    expect(within(screen.getByTestId("approvals-ticked")).queryByTestId("approval-a3")).toBeNull();
+    expect(screen.getByTestId("approval-a3")).not.toHaveClass("ml-6");
+  });
+
   it("renders the pair together on the Checkpoints tab, saying how to decide them", async () => {
     analysisApi.listApprovals.mockResolvedValue({
       items: [

@@ -480,6 +480,7 @@ function ApprovalCard({
   onDraftChange,
   heldForReviewIfApproved = false,
   resemblesTitle,
+  resemblesApart = false,
 }: {
   approval: ApprovalRequestPayload;
   /** #922 — matched structured requirement for `requirement` approvals. */
@@ -502,6 +503,11 @@ function ApprovalCard({
   heldForReviewIfApproved?: boolean;
   /** #2596 — listed straight after the requirement it resembles ({@link groupResembling}). */
   resemblesTitle?: string;
+  /**
+   * #2596 — the requirement it resembles is in the ticked list above, so this
+   * one keeps its place in the added list and the note points there instead.
+   */
+  resemblesApart?: boolean;
 }): React.ReactElement {
   const qc = useQueryClient();
   const [note, setNote] = useState("");
@@ -562,14 +568,15 @@ function ApprovalCard({
 
   return (
     <Card
-      className={`space-y-3 p-4 ${resemblesTitle ? "ml-6 border-l-4" : ""}`}
+      className={`space-y-3 p-4 ${resemblesTitle && !resemblesApart ? "ml-6 border-l-4" : ""}`}
       data-testid={`approval-${approval.id}`}
     >
       {/* #2596 — read with the requirement just above it, which it may restate. */}
       {resemblesTitle && (
         <p data-testid="approval-resembles" className="text-xs text-muted-foreground">
-          Close to &ldquo;{resemblesTitle}&rdquo;, listed just above. If the two say the same thing,
-          approve one and reject the other.
+          Close to &ldquo;{resemblesTitle}&rdquo;,{" "}
+          {resemblesApart ? "listed under your ticked items above" : "listed just above"}. If the
+          two say the same thing, approve one and reject the other.
         </p>
       )}
       <div className="flex items-center justify-between gap-2">
@@ -761,11 +768,6 @@ function ApprovalCard({
 }
 
 /**
- * Issue #939 — approve every pending approval at once. Reviewing 37 requirements
- * one card at a time needed a scripted loop. Asks first: an approval cannot be
- * reopened (only a rejection can), so one stray click must not approve them all.
- */
-/**
  * #2462 — a requirement the viewer edited here is promoted awaiting review
  * when they approve it, unless the project allows self-approval (#2436). The
  * gate is read only when there is such a requirement; a viewer without
@@ -796,7 +798,12 @@ export function useHeldIfApproved({
     editedByViewer.has(approval.itemId);
 }
 
-/** #2596 — exported for the Requirements tab, which offers the same action. */
+/**
+ * Issue #939 — approve every pending approval at once. Reviewing 37 requirements
+ * one card at a time needed a scripted loop. Asks first: an approval cannot be
+ * reopened (only a rejection can), so one stray click must not approve them all.
+ * #2596 — exported for the Requirements tab, which offers the same action.
+ */
 export function ApproveAllPending({
   projectId,
   analysisId,
@@ -914,21 +921,35 @@ export function splitPendingByOrigin<T extends Pick<ApprovalRequestPayload, "ori
  * the documents (the server's `resembles`) is listed straight after it, so the
  * two are read together: "Expired API keys refused identically to unknown
  * keys" beside "Expired keys are refused like unknown keys", not eight cards
- * further down. Only within `list`: one whose requirement is elsewhere (decided
- * already, or in another group) keeps its place and is not marked. Nothing is
- * left out or merged; each is still approved or rejected on its own.
+ * further down. Moved only within `list`. On an import-scoped run (#1129) the
+ * extracted requirement is usually ticked and the NFR added: pass the ticked
+ * list's item ids as `elsewhere`, and one whose match is there keeps its place
+ * but is still marked, with `apart`. One whose match is in neither (decided
+ * already) is not marked. Nothing is left out or merged; each is still
+ * approved or rejected on its own.
  */
 export function groupResembling<
   T extends Pick<ApprovalRequestPayload, "type" | "itemId" | "resembles">,
->(list: readonly T[]): Array<{ approval: T; resembles?: string }> {
+>(
+  list: readonly T[],
+  elsewhere: ReadonlySet<string> = new Set(),
+): Array<{ approval: T; resembles?: string; apart?: boolean }> {
   const listed = new Set(list.filter((a) => a.type === "requirement").map((a) => a.itemId));
   const placed = (a: T): boolean =>
     a.type === "requirement" && a.resembles !== undefined && listed.has(a.resembles);
-  const out: Array<{ approval: T; resembles?: string }> = [];
+  const out: Array<{ approval: T; resembles?: string; apart?: boolean }> = [];
   const grouped = new Set<string>();
   for (const approval of list) {
     if (placed(approval)) continue;
-    out.push({ approval });
+    if (
+      approval.type === "requirement" &&
+      approval.resembles !== undefined &&
+      elsewhere.has(approval.resembles)
+    ) {
+      out.push({ approval, resembles: approval.resembles, apart: true });
+    } else {
+      out.push({ approval });
+    }
     if (approval.type !== "requirement" || grouped.has(approval.itemId)) continue;
     grouped.add(approval.itemId);
     for (const other of list) {
@@ -1144,7 +1165,11 @@ export function ApprovalsPanel({
   // #2554 — a set decided at once is refused while any of it is restricted.
   const restrictedPending = pending.filter((a) => a.restricted).length;
   const renderPending = (
-    { approval, resembles }: { approval: ApprovalRequestPayload; resembles?: string },
+    {
+      approval,
+      resembles,
+      apart,
+    }: { approval: ApprovalRequestPayload; resembles?: string; apart?: boolean },
     i: number,
   ): React.ReactElement => (
     <ApprovalCard
@@ -1162,11 +1187,18 @@ export function ApprovalsPanel({
       resemblesTitle={
         resembles !== undefined ? (requirementsById.get(resembles)?.title ?? resembles) : undefined
       }
+      resemblesApart={apart}
     />
   );
   // #2596 — each list with a resembling requirement placed after its match.
-  const renderList = (list: readonly ApprovalRequestPayload[]): React.ReactElement[] =>
-    groupResembling(list).map(renderPending);
+  const renderList = (
+    list: readonly ApprovalRequestPayload[],
+    elsewhere?: readonly ApprovalRequestPayload[],
+  ): React.ReactElement[] =>
+    groupResembling(
+      list,
+      new Set((elsewhere ?? []).filter((a) => a.type === "requirement").map((a) => a.itemId)),
+    ).map(renderPending);
 
   return (
     // #1104 — a stable anchor so the gated REQUIREMENTS notice can link straight
@@ -1293,7 +1325,8 @@ export function ApprovalsPanel({
                     None of the ticked items asked for these. They are offered, not promoted: each
                     is promoted only if you approve it.
                   </p>
-                  {renderList(split.added)}
+                  {/* #2596 — an NFR's match is usually ticked: still marked, not moved. */}
+                  {renderList(split.added, split.ticked)}
                 </div>
               )}
               {split.other.length > 0 && (
