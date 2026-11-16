@@ -123,6 +123,8 @@ export const REPO_VERDICT_SYSTEM_PROMPT = [
   "  because the search missed the code you would expect.",
   "- If the excerpts touch what the criterion is about but do not settle it, answer",
   '  "could-not-verify". Absence of evidence is not evidence of absence.',
+  "- Otherwise, if the excerpts do not bear on a criterion and do not make the",
+  '  repository\'s purpose plain, answer "could-not-verify".',
   "- Answer with ONE JSON object and nothing else.",
 ].join("\n");
 

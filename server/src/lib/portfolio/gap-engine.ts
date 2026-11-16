@@ -650,6 +650,17 @@ async function evaluateRepo(
   }
   if (!claims) return notVerified(productId, repo, group.criteria.length, "model-error", cost);
 
+  // The gate folds `unrelated` into `gap-confirmed`, so the result cannot tell it from a
+  // real absence: log how often the model said it, to measure the next prompt change.
+  const unrelated = claims.filter((c) => c?.verdict === "unrelated").length;
+  if (unrelated > 0) {
+    log.debug("Repo verdict claims unrelated", {
+      productId,
+      repoConnectionId: repo.repoConnectionId,
+      unrelated,
+      criteria: claims.length,
+    });
+  }
   const citations = new Map<string, CodeCitation>();
   const criteria = claims.map((claim, i): FindingVerdict => {
     if (!claim) return "could-not-verify";

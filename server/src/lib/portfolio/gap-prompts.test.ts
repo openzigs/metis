@@ -143,6 +143,22 @@ describe("#2562 — a repository the requirement does not belong to", () => {
     expect(REPO_VERDICT_SYSTEM_PROMPT).toContain('"could-not-verify". Absence of evidence');
   });
 
+  // Review of #2575: `gap-confirmed` needs "where it would live", `unrelated` a plain
+  // purpose and the touch rule an excerpt on the subject. Excerpts that meet none of the
+  // three (generic utils, config) must still land on the safe answer, as before #2562.
+  it("keeps the catch-all: excerpts that do not bear on a criterion are could-not-verify", () => {
+    const rules = REPO_VERDICT_SYSTEM_PROMPT.split("\n- ");
+    const catchAll = rules.find((r) => r.startsWith("Otherwise"));
+    expect(catchAll?.replace(/\s+/g, " ")).toBe(
+      "Otherwise, if the excerpts do not bear on a criterion and do not make the " +
+        'repository\'s purpose plain, answer "could-not-verify".',
+    );
+    // It comes after the rules it is the fallback for, and before the reply format.
+    const at = (s: string) => rules.findIndex((r) => r.startsWith(s));
+    expect(at("Otherwise")).toBe(at('"unrelated"') + 2);
+    expect(at("Otherwise")).toBe(at("Answer with ONE JSON") - 1);
+  });
+
   it("asks the gate for a gap on `unrelated`, and passes every finding verdict through", () => {
     expect(claimedFindingVerdict("unrelated")).toBe("gap-confirmed");
     for (const v of FINDING_VERDICTS) expect(claimedFindingVerdict(v)).toBe(v);
