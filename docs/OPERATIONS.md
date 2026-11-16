@@ -1114,6 +1114,131 @@ in `docs/ARCHITECTURE.md` §10.3.
   five bars still fail, so the Preview mark stays. The misses are mostly password rules on a
   request that creates or forces a password change.
 
+### 6.10 Impact analysis: code and document settings
+
+These settings decide how impact analysis reads a client's code and documents, and how much
+one analysis may spend doing it. Each is a **tunable** (`tier: "tunable"` in
+`server/src/lib/config/key-registry.ts`). Change it on **Settings → Configuration**, under
+**Runtime tunables**, and it applies to the next analysis, with no restart and no redeploy:
+the code reads each value each time it runs a pass, from the database first and the environment
+second (`server/src/lib/config/config-service.ts`). A value set only in the server's
+environment takes effect when the server next starts. The commented entries in
+`.env.example` show each default.
+
+The code pass these limits bound is the **Requirements Analysis** code agent ("Evaluate new
+requirements"). Impact Analysis makes no code pass of its own: it puts the files that agent
+cited first among the files to edit (`IMPACT_AGENT_SEEDS`, on by default). The document reader
+serves both. For a whole client set-up, with every analysis setting sorted into recommended,
+leave-as-is and experimental, see [Setup quick start](SETUP_QUICKSTART.md).
+
+Costs and times below were measured on `claude-sonnet-5-5` on Anthropic. Other models were
+not measured.
+
+| Key | Default | What it does | Measured cost and time |
+|---|---|---|---|
+| `ANALYSIS_CODE_EXPLORATION` | `explore` | `explore` reads the repository's files before answering (text search, file listing, whole-file reads, then the code index). `fast` answers from the code index only. | Five-requirement analysis: $0.57 and 216 s on `explore`, against $0.37 and 160 s on `fast` (1.55× the cost, 1.35× the time). Per requirement: $0.128 and 38 s, against $0.066 and 20 s. |
+| `ANALYSIS_DOCUMENT_READER` | off | On: the model reads the whole document, section by section if it is long, and labels each statement (requirement, constraint, business rule and so on) with its source. Impact analysis then makes one change per requirement, constraint or business rule, not one per paragraph. | $0.66 to $1.12 and 3.5 to 7 minutes a document, against $0.10 to $0.19 and 1 to 1.5 minutes with it off. |
+| `ANALYSIS_AGENTIC_MAX_TURNS` | `10` | The fewest steps a code pass gets, however few requirements it has. One step is one model call. | A limit, not a cost. |
+| `ANALYSIS_AGENTIC_TURNS_PER_REQUIREMENT` | `2` | Extra steps per requirement (one search and one read each). `0` turns the scaling off and leaves the flat floor. | A limit, not a cost. |
+| `ANALYSIS_AGENTIC_MAX_TURNS_CAP` | `60` | The most steps a code pass can get, however many requirements it has. | A limit, not a cost. |
+| `ANALYSIS_AGENT_TOKEN_BUDGET` | `100000` | The tokens one code pass may spend. A project with several repositories splits it between them. | A limit. On one requirement, a pass used about 6% of it (5,557 of 98,383 tokens). |
+| `ANALYSIS_CODE_PASS_MAX_USD` | `1.00` | The dollar limit of a code pass, **per requirement** it investigates. `0` turns it off. | A limit. A pass averaged $0.128 a requirement (at most $0.29). |
+| `MODEL_PRICES` | unset | Prices, in USD per million tokens, for a model METIS has no built-in price for, or to replace a built-in price. | None. |
+
+Sources: the defaults are in `server/src/lib/analysis/code-exploration-setting.ts`
+(`DEFAULT_CODE_PASS_MODE`), `server/src/lib/document-reader/flag.ts`
+(`DOCUMENT_READER_DEFAULT`), `server/src/lib/analysis/agentic-pass-context.ts` (the three turn
+defaults), `server/src/lib/analysis/agent-token-budget.ts` (`DEFAULT_AGENT_TOKEN_BUDGET`) and
+`server/src/lib/analysis/code-pass-cost-ceiling.ts` (`DEFAULT_CODE_PASS_MAX_USD`). The code
+exploration figures are run A21 in `eval-data/README.md` ("Production explore (A21)"). The
+document reader figures are from `docs/DOCUMENT_UNDERSTANDING_BASELINE.md` (#2255).
+
+#### When to change each setting
+
+- **`ANALYSIS_CODE_EXPLORATION`.** Leave it on `explore` (the default since #2588). On a real
+  product (Miniflux) it raised Recall@5, the share of the files a change touches that are
+  among the five files METIS names first, from 0.66 to 0.84 (+0.18), with no loss of edit
+  precision. On a set of small fixture repositories it made no difference. Set it to `fast`
+  to make every analysis cheaper and quicker at the cost of missing more files, or as a kill
+  switch if explore misbehaves on your model. A value that is neither `explore` nor `fast` (a
+  typo, `off`, `0`) runs `fast` and logs one warning. A repository with no copy of its files
+  on the server always runs `fast`. On a model other than Sonnet 5.5, check the first
+  analysis: its capability record should read `codePassMode: explore`, and its
+  `codePassOutcomes` should show no pass stopped at the step limit. Explore's working memory
+  is capped at half the model's context window, and a model the catalog does not list
+  (`server/src/lib/ai/model-catalog.ts`, for example a Sonnet 5.5 id on `bedrock-gateway`) is
+  assumed to have 32,768 tokens; give its real window in `AI_MODEL_CATALOG_OVERRIDES` (see
+  [Setup quick start](SETUP_QUICKSTART.md)).
+- **The project's Analysis depth card.** A project's **⚙ Settings → AI & cost → Analysis
+  depth** overrides the platform value for that project: **Thorough** is `explore`, **Fast**
+  is `fast`, and **Use the platform default** follows this key
+  (`server/src/lib/analysis/code-pass-variant.ts`, `resolveCodePassMode`). Use it to keep one
+  cost-sensitive project on Fast without changing every other project. Changing it needs the
+  project's update permission.
+- **`ANALYSIS_DOCUMENT_READER`.** Turn it on for work that starts from long FRDs or BRDs. On
+  the measured documents the whole-document read found 0.86 to 0.94 of the requirements and
+  the reader 0.97 to 1.00, and the reader also read a 60 KB document the default could not.
+  It costs about six times as much and takes three to five times as long per document, which is
+  why it is off by default. Leave it off where analysts mostly paste short change requests.
+- **The three step settings, and the 40-requirement example.** A code pass gets
+  `requirements × ANALYSIS_AGENTIC_TURNS_PER_REQUIREMENT` steps, never fewer than
+  `ANALYSIS_AGENTIC_MAX_TURNS` and never more than `ANALYSIS_AGENTIC_MAX_TURNS_CAP`
+  (`resolveAgenticMaxTurns` in `server/src/lib/analysis/agentic-pass-context.ts`). One step is
+  kept for the final answer, so a pass can make one fewer search or read than it has steps.
+  - 3 requirements: 3 × 2 = 6, raised to the floor of 10 steps.
+  - 20 requirements: 20 × 2 = 40 steps, two per requirement.
+  - **40 requirements: 40 × 2 = 80, cut to the cap of 60 steps, which is 1.5 steps per
+    requirement.** That still pays for one search per requirement (59 searches or reads for
+    40 requirements), but not for a search and a read for each. Raise
+    `ANALYSIS_AGENTIC_MAX_TURNS_CAP` to `100` for clients whose documents run to 40
+    requirements: the pass then gets 80 steps (two per requirement; the cap is a ceiling,
+    not a grant), and the cap leaves room for documents of up to 50 requirements.
+  - Lowering the cap below the requirement count has a cost: the requirements a pass never
+    searched for come back **could not verify**, never as gaps, and the server logs
+    "Agentic turn cap cannot fund one search per requirement".
+
+  More steps do not raise the spend limit. `ANALYSIS_AGENT_TOKEN_BUDGET` and
+  `ANALYSIS_CODE_PASS_MAX_USD` still bound the pass.
+- **`ANALYSIS_AGENT_TOKEN_BUDGET`.** Raise it when an analysis reports that the code pass
+  stopped on its token budget, typically a large requirement set over a large codebase, or a
+  project with several repositories, which share it. An analyst can also click **Continue
+  with a larger budget** on that run, which doubles the budget for the rerun.
+- **`ANALYSIS_CODE_PASS_MAX_USD`.** The limit is per requirement, so a 40-requirement pass may
+  spend up to $40 by default; the repositories of one run share it, and **Continue with a
+  larger budget** doubles it with the token budget. It is checked before each model call, so
+  a pass can go over by at most one call. A pass it stops keeps what it found, marks the
+  requirements it had not settled as could not verify, and shows the reason with Continue.
+  Lower it for a client with a tight budget. Set `0` only if the token budget alone should
+  bound the pass. For a limit on the whole deployment per month, see
+  `ANALYSIS_MONTHLY_TOKEN_CAP`.
+- **`MODEL_PRICES`.** The dollar limit can only count calls it can price. Every Claude model
+  id is priced by family, whatever its spelling: a bare id, a dated one, or a Bedrock id such
+  as `us.anthropic.claude-sonnet-5-5-v1:0`, which bills at Bedrock's Regional rate, 1.1×
+  (`claudeFamilyRate` in `server/src/lib/finops/provider-rates.ts`). Add an entry for any
+  other model: DeepSeek, a local model, an Azure deployment name, or a Bedrock id or ARN that
+  does not name the Claude model. Also add one when `ANTHROPIC_BASE_URL` points anywhere but
+  `api.anthropic.com`: the built-in Anthropic prices are then not applied, unless
+  `ANTHROPIC_BASE_URL_BILLS_AS=anthropic` says that endpoint bills at Anthropic's prices. Without a price,
+  usage is recorded as unpriced (never as $0), the dollar limit falls back to the token
+  budget alone, and the run records `cost-ceiling-unpriced`. Example:
+  `MODEL_PRICES={"deepseek-v4-pro": {"inputPerMTok": 1.32, "outputPerMTok": 3.96}}`.
+
+#### What a capped text search reports
+
+In `explore` mode the code pass searches the repository's files with `grep_files`. Its limits
+are fixed in the code, not settings (`server/src/lib/analysis/tools/grep-files.ts`): at most
+5,000 files and 64 MB read per search, and 50,000 directory entries visited. A file over
+512 KB is skipped. It returns at most 50 matching lines (5,000 characters).
+
+When a search hits the file, byte or entry limit, it never reads as "not found". With no match
+it says `No lines contain: <text> in the first 5000 file(s) searched; more files were not
+searched. Narrow the search with pathContains.` With matches it ends with a line such as
+`[truncated: showing 50 of at least 212 matching line(s) in at least 31 file(s); 5000 file(s)
+searched, more were not searched — narrow the search with pathContains]`. The model is told
+to narrow the search to a folder. On a very large repository, expect explore to spend more
+steps on narrower searches, which is one more reason to raise the step cap for large
+requirement sets.
+
 ## 7. Container Image Sizes
 
 The release pipeline ships four images:
