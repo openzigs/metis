@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import {
   AnalysisOutcomeCard,
+  describeListedForApproval,
   outcomeRequirementCount,
   reconcileRequirementCount,
 } from "./AnalysisOutcomeCard";
@@ -180,5 +181,60 @@ describe("outcomeRequirementCount (#994 review: gated runs)", () => {
       "Ten requirements were derived from the spec.",
     );
     expect(screen.queryByTestId("analysis-outcome-count")).toBeNull();
+  });
+});
+
+/**
+ * Issue #2596 — the summary said "Eight requirements" and the checkpoints
+ * listed 18 (the 8 plus 10 NFRs the analysis found); nothing tied the two.
+ */
+describe("#2596 — what the checkpoints list, against the summary's count", () => {
+  const gated = (over: Record<string, unknown>) => ({
+    promotionBlocked: { blocked: true, pendingCount: 18, rejectedCount: 0, ...over },
+  });
+
+  it("names the NFRs the analysis found when they make up the difference", () => {
+    const metadata = gated({
+      awaitingRequirementCount: 18,
+      reviewedRequirementCount: 18,
+      synthesisRequirementCount: 8,
+      setDifference: { reviewedWithoutItem: 0, itemsWithoutReviewed: 0, elicitedNfrs: 10 },
+    });
+    render(
+      <AnalysisOutcomeCard
+        status="completed"
+        agentResults={agents("Eight requirements were derived from FRD-12.")}
+        listedForApproval={describeListedForApproval(metadata)}
+      />,
+    );
+    expect(screen.getByTestId("analysis-outcome-listed")).toHaveTextContent(
+      "18 requirement(s) are listed for approval on the Checkpoints tab: the 8 the analysis wrote up and 10 non-functional requirement(s) it found.",
+    );
+  });
+
+  it("states the listed count alone when the NFRs do not account for the difference", () => {
+    expect(
+      describeListedForApproval(
+        gated({
+          reviewedRequirementCount: 18,
+          synthesisRequirementCount: 9,
+          setDifference: { elicitedNfrs: 10 },
+        }),
+      ),
+    ).toBe(
+      "18 requirement(s) are listed for approval on the Checkpoints tab; none is saved until it is approved.",
+    );
+    // A run recorded before #2427 has only the awaiting count.
+    expect(describeListedForApproval(gated({ awaitingRequirementCount: 4 }))).toBe(
+      "4 requirement(s) are listed for approval on the Checkpoints tab; none is saved until it is approved.",
+    );
+  });
+
+  it("says nothing once the gate is open, or with no count", () => {
+    expect(describeListedForApproval({ promotionBlocked: { blocked: false } })).toBeUndefined();
+    expect(describeListedForApproval(gated({}))).toBeUndefined();
+    expect(describeListedForApproval(null)).toBeUndefined();
+    render(<AnalysisOutcomeCard status="completed" agentResults={agents(SUMMARY)} />);
+    expect(screen.queryByTestId("analysis-outcome-listed")).toBeNull();
   });
 });

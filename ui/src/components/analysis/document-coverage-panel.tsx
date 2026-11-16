@@ -102,8 +102,8 @@ function DocumentEntry({ doc }: { doc: DocumentReadingDocument }): React.ReactEl
     <li className="space-y-1" data-testid={`document-coverage-${doc.documentId}`}>
       <p className="text-xs text-foreground">
         <span className="font-medium">{doc.filename}</span> —{" "}
-        {plural(doc.requirements, "requirement", "requirements")} (with constraints and business
-        rules) from {plural(doc.sections.length, "section", "sections")}
+        {plural(doc.requirements, "requirement statement", "requirement statements")} (with
+        constraints and business rules) from {plural(doc.sections.length, "section", "sections")}
         {doc.mode === "sectioned" ? ", read section by section (too long to read at once)" : ""}.
         {empty > 0 ? ` ${plural(empty, "section", "sections")} produced nothing.` : ""}
       </p>
@@ -144,9 +144,70 @@ function DocumentEntry({ doc }: { doc: DocumentReadingDocument }): React.ReactEl
   );
 }
 
-export function DocumentCoveragePanel({ capability }: Props): React.ReactElement | null {
+/**
+ * Issue #2596 — how many requirements the analysis extracted from the
+ * documents: the reviewed list less what the analysis added to it (an elicited
+ * NFR, #2449, or an item offered from synthesis, #1569). `undefined` with no
+ * reviewed list.
+ */
+export function extractedRequirementCount(
+  metadata: Record<string, unknown> | null | undefined,
+): number | undefined {
+  // Inline, as `outcomeRequirementCount`: page tests mock `@/lib/analysis-api`.
+  const list = (
+    (metadata ?? {}) as {
+      structuredRequirements?: {
+        requirements?: Array<{ elicitedNfr?: unknown; synthesisItemKey?: unknown }>;
+      } | null;
+    }
+  ).structuredRequirements?.requirements;
+  if (!Array.isArray(list) || list.length === 0) return undefined;
+  return list.filter((r) => r.elicitedNfr === undefined && r.synthesisItemKey === undefined).length;
+}
+
+/**
+ * Issue #2596 — the statements read are not the requirements listed: in the
+ * 2026-11-16 walkthrough the panel said 12 and the summary 8. Say how one
+ * became the other, when they differ.
+ *
+ * Only when the statements can account for the requirements: says nothing
+ * when there are more requirements than statements, or when a document went
+ * unread (`everyDocumentRead` false), because then some requirements came from
+ * text these statements do not count (an unread document, the request text),
+ * and "combined N statements into M" would be false.
+ */
+export function describeStatementsToRequirements(
+  statements: number,
+  extracted: number | undefined,
+  everyDocumentRead = true,
+): string | null {
+  if (extracted === undefined || statements === 0 || !everyDocumentRead) return null;
+  if (extracted >= statements) return null;
+  return (
+    `The analysis combined these ${plural(statements, "statement", "statements")} into ` +
+    `${plural(extracted, "requirement", "requirements")}: one requirement can rest on several ` +
+    `statements.`
+  );
+}
+
+export function DocumentCoveragePanel({
+  capability,
+  extractedRequirements,
+}: Props & {
+  /** #2596 — {@link extractedRequirementCount}, to reconcile with the statements read. */
+  extractedRequirements?: number;
+}): React.ReactElement | null {
   const documents = capability?.documentReading?.documents;
   if (!documents || documents.length === 0) return null;
+  const statements = documents.reduce(
+    (n, d) => n + (d.status === "unread" ? 0 : d.requirements),
+    0,
+  );
+  const reconciled = describeStatementsToRequirements(
+    statements,
+    extractedRequirements,
+    documents.every((d) => d.status !== "unread"),
+  );
   return (
     <div data-testid="document-coverage-panel" className="space-y-2">
       <h4 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
@@ -157,6 +218,11 @@ export function DocumentCoveragePanel({ capability }: Props): React.ReactElement
           <DocumentEntry key={d.documentId} doc={d} />
         ))}
       </ul>
+      {reconciled ? (
+        <p className="text-xs text-muted-foreground" data-testid="document-coverage-reconciled">
+          {reconciled}
+        </p>
+      ) : null}
     </div>
   );
 }
