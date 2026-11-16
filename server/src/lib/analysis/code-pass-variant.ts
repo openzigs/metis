@@ -17,7 +17,6 @@
  * and says why (`no-working-tree`).
  */
 import {
-  CODE_PASS_MODES,
   resolveCodeExploration,
   type CodePassMode,
   type CodePassModeDecision,
@@ -32,10 +31,13 @@ import { listFilesTool } from "./tools/list-files.js";
 import { createReadFileSliceTool } from "./tools/read-file-slice.js";
 import type { AgentTool } from "./tools/types.js";
 
-/** The platform key that picks the mode (`explore | fast`). */
-export const CODE_EXPLORATION_KEY = "ANALYSIS_CODE_EXPLORATION";
-/** The platform default until #2568 re-measures and flips it. */
-export const DEFAULT_CODE_PASS_MODE: CodePassMode = "fast";
+// The platform key and its reader live in a light module (#2566), so the
+// project service can read the setting without importing the explore tools.
+export {
+  CODE_EXPLORATION_KEY,
+  DEFAULT_CODE_PASS_MODE,
+  readCodeExplorationSetting,
+} from "./code-exploration-setting.js";
 
 /** `read_file_slice`'s line cap per call in `explore` mode (A20's). */
 export const EXPLORE_READ_MAX_LINES_KEY = "ANALYSIS_EXPLORE_READ_MAX_LINES";
@@ -129,14 +131,6 @@ export function explorerTools(
   ];
 }
 
-/** The platform key's mode; an unset or unknown value is the default. */
-export function readCodeExplorationSetting(): CodePassMode {
-  const raw = getConfigService().get(CODE_EXPLORATION_KEY)?.trim().toLowerCase();
-  return (CODE_PASS_MODES as readonly string[]).includes(raw ?? "")
-    ? (raw as CodePassMode)
-    : DEFAULT_CODE_PASS_MODE;
-}
-
 /**
  * The mode a code pass runs in, and why: the project's setting (#2566), else
  * the platform default. A pass with no working tree runs `fast` whatever was
@@ -158,7 +152,7 @@ export function resolveCodePassMode(input: {
  * (the watermark's modest fallback when the catalogue does not know it).
  */
 export function resolveExploreTranscriptTokens(providerKey: string, model: string): number {
-  const configured = getConfigService().getNumber(
+  const configured = positiveSetting(
     EXPLORE_TRANSCRIPT_TOKENS_KEY,
     DEFAULT_EXPLORE_TRANSCRIPT_TOKENS,
   );
@@ -208,16 +202,24 @@ export interface ExploreCodePass {
   ) => NonNullable<AgentLoopOptions["continuation"]>;
 }
 
+/**
+ * A positive integer key, or `fallback`. The key's schema is applied only on a
+ * write through the config service; a value read from the environment is not
+ * validated, so `0`, a negative or a non-number would reach a tool and fail
+ * every explore pass. A typo degrades to the default instead.
+ */
+function positiveSetting(key: string, fallback: number): number {
+  const n = getConfigService().getNumber(key, fallback);
+  return Number.isInteger(n) && n >= 1 ? n : fallback;
+}
+
 /** The explore-mode pass for `providerKey`/`model`, with the given search tools. */
 export function buildExploreCodePass(input: {
   search: ExplorerSearchTools;
   providerKey: string;
   model: string;
 }): ExploreCodePass {
-  const readMaxLines = getConfigService().getNumber(
-    EXPLORE_READ_MAX_LINES_KEY,
-    DEFAULT_EXPLORE_READ_MAX_LINES,
-  );
+  const readMaxLines = positiveSetting(EXPLORE_READ_MAX_LINES_KEY, DEFAULT_EXPLORE_READ_MAX_LINES);
   return {
     systemMessage: (systemMessage) => explorerSystemMessage(systemMessage, readMaxLines),
     tools: explorerTools(input.search, readMaxLines),

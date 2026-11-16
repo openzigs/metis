@@ -169,6 +169,12 @@ export interface GrepCloneOptions {
    * it resolves to (they differ for a symlink). Neither read nor counted.
    */
   isExcluded?: (rel: string, realRel: string) => boolean;
+  /**
+   * #2565 — called once for each file that produced a matching line, before
+   * it is counted: a #2448 starter pass records it as read here, so a search
+   * records what it returned, not every file it walked.
+   */
+  onMatchingFile?: (rel: string, realRel: string) => void;
 }
 
 /** One file the walk found: its path as listed, and the path it resolves to. */
@@ -287,7 +293,7 @@ export async function grepClone(
   const scope = args.pathContains?.toLowerCase();
   const prefix = opts.linePrefix ?? "";
   const files = await listFiles(cloneDir, realRoot, scope, tally, opts);
-  for (const { rel } of files) {
+  for (const { rel, realRel } of files) {
     if (tally.bytesSearched >= MAX_BYTES_SCANNED) {
       tally.cutShort = true;
       break;
@@ -300,6 +306,7 @@ export async function grepClone(
     tally.filesSearched++;
     tally.bytesSearched += stat.size;
     if (!body.toLowerCase().includes(needle)) continue;
+    opts.onMatchingFile?.(rel, realRel);
     tally.matchingFiles++;
     const lines = body.split(/\r?\n/);
     for (let i = 0; i < lines.length; i++) {
@@ -367,13 +374,22 @@ async function execute(
   // #2565 — the analysis code pass's caller may not see every file (#2314,
   // #2448): a hidden one is neither searched nor counted, under its own path or
   // the path a link resolves to, as in chat's `grep_files` and `list_files`.
+  // The walk asks without recording (`wouldHide`); only a file that matched is
+  // checked with `isHidden`, which records it as read in a #2448 starter pass.
   const access = context.codeAccess;
   const repo = context.connectorId ?? null;
   const exclude =
     access && !access.unrestricted
       ? {
-          isExcluded: (rel: string, realRel: string) =>
-            access.isHidden(repo, rel) || access.isHidden(repo, realRel),
+          isExcluded: (rel: string, realRel: string) => {
+            const hides = (p: string) =>
+              access.wouldHide ? access.wouldHide(repo, p) : access.isHidden(repo, p);
+            return hides(rel) || hides(realRel);
+          },
+          onMatchingFile: (rel: string, realRel: string) => {
+            access.isHidden(repo, rel);
+            if (realRel !== rel) access.isHidden(repo, realRel);
+          },
         }
       : {};
   if (!(await grepClone(context.cloneDir, parsed.args, tally, { maxFilesScanned, ...exclude }))) {

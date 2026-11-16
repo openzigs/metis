@@ -3,6 +3,9 @@
 --
 --   sqlite3 <db file> < server/prisma/rollbacks/20261201002566_issue2566_project_code_exploration.sql
 --
+-- Needs SQLite 3.35 or later (`ALTER TABLE ... DROP COLUMN`); check with
+-- `sqlite3 --version`. The server's bundled engine (better-sqlite3) is newer.
+--
 -- Drops the column and forgets the migration, so a later
 -- `prisma migrate deploy` applies it again. What is lost: each project's code
 -- exploration setting; every project then follows the platform key, as `auto`
