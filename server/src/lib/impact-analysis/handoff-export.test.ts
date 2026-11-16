@@ -12,11 +12,13 @@ import type {
 } from "@metis/shared";
 import {
   answeredClarifications,
+  closeOpenFence,
   handoffTitle,
   HANDOFF_MAX_FILES,
   HANDOFF_MAX_LIST,
   serializeHandoffMarkdown,
   type HandoffChangeRequest,
+  type HandoffFormat,
   type HandoffInput,
   type HandoffRequirement,
 } from "./handoff-export.js";
@@ -137,14 +139,17 @@ function changeRequest(overrides: Partial<HandoffChangeRequest> = {}): HandoffCh
   };
 }
 
-function render(overrides: Partial<HandoffInput> = {}): string {
-  return serializeHandoffMarkdown({
-    detail: detail(),
-    projectNames: { "project-001": "Miniflux" },
-    changeRequest: changeRequest(),
-    impactClarifications: [],
-    ...overrides,
-  });
+function render(overrides: Partial<HandoffInput> = {}, format: HandoffFormat = "pdf"): string {
+  return serializeHandoffMarkdown(
+    {
+      detail: detail(),
+      projectNames: { "project-001": "Miniflux" },
+      changeRequest: changeRequest(),
+      impactClarifications: [],
+      ...overrides,
+    },
+    format,
+  );
 }
 
 /** The body of one `## heading` section, up to the next `## ` heading. */
@@ -184,6 +189,27 @@ describe("serializeHandoffMarkdown — #2595", () => {
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(md).toContain("run completed · 2026-11-16");
     expect(md.endsWith("\n")).toBe(true);
+  });
+
+  it("writes the title as an H1 in the PDF only: Word has it on its cover page", () => {
+    expect(render({}, "pdf")).toMatch(/^# Expiring API keys - impact hand-off$/m);
+    const word = render({}, "docx");
+    expect(word).not.toMatch(/^# /m);
+    expect(word.startsWith("*Change request and impact analysis · run completed")).toBe(true);
+  });
+
+  it("says the change request is read now and the impact run is from its own date", () => {
+    const md = render({ readAt: "2026-11-20T08:00:00.000Z" });
+    expect(md).toContain(
+      "*As of: the change request is shown as it reads on 2026-11-20; " +
+        "the impact analysis is the run of 2026-11-16.",
+    );
+    expect(md.indexOf("*As of:")).toBeLessThan(md.indexOf("## Summary"));
+    // No change request, or no read time: nothing to date.
+    expect(render({ readAt: "2026-11-20T08:00:00.000Z", changeRequest: null })).not.toContain(
+      "As of:",
+    );
+    expect(render()).not.toContain("As of:");
   });
 
   it("summarises the run and the change request", () => {
@@ -600,6 +626,32 @@ describe("serializeHandoffMarkdown — #2595", () => {
       expect(fences % 2).toBe(0);
     });
 
+    it("closes a ~~~ fence and a longer backtick fence the clip left open with a matching fence", () => {
+      for (const [open, closer] of [
+        ["~~~", "~~~"],
+        ["````", "````"],
+      ] as const) {
+        const body = `${open}\n${"x".repeat(2000)}\n${open}`;
+        const md = render({
+          changeRequest: changeRequest({ requirements: [requirement({ body })] }),
+        });
+        expect(md).toContain(`… (shortened)\n${closer}\n`);
+      }
+    });
+
+    it("gives Word the analyst's text as written, and the PDF its HTML shown as text", () => {
+      const cr = changeRequest({
+        requirements: [requirement({ title: "Resp < 2s & > 1s", body: "Keep p95 < 2s & > 1s." })],
+      });
+      const word = render({ changeRequest: cr }, "docx");
+      expect(word).toContain("### 1. Resp < 2s & > 1s");
+      expect(word).toContain("Keep p95 < 2s & > 1s.");
+      expect(word).not.toContain("&lt;");
+      const pdf = render({ changeRequest: cr }, "pdf");
+      expect(pdf).toContain("### 1. Resp &lt; 2s & > 1s");
+      expect(pdf).toContain("Keep p95 &lt; 2s & > 1s.");
+    });
+
     it("keeps a path and a symbol inside their code spans", () => {
       const md = render({
         detail: detail({
@@ -612,6 +664,33 @@ describe("serializeHandoffMarkdown — #2595", () => {
       });
       expect(md).toContain("`a b.go:73-101` · `x # y`");
     });
+  });
+});
+
+describe("closeOpenFence", () => {
+  it("closes an open fence with the same character and length", () => {
+    expect(closeOpenFence("```\ncode")).toBe("```\ncode\n```");
+    expect(closeOpenFence("~~~\ncode")).toBe("~~~\ncode\n~~~");
+    expect(closeOpenFence("`````ts\ncode")).toBe("`````ts\ncode\n`````");
+  });
+
+  it("leaves closed fences alone, including a longer closer", () => {
+    expect(closeOpenFence("```\ncode\n```")).toBe("```\ncode\n```");
+    expect(closeOpenFence("```\ncode\n`````")).toBe("```\ncode\n`````");
+    expect(closeOpenFence("text")).toBe("text");
+  });
+
+  it("does not take another kind or a shorter fence for the closer", () => {
+    // A ``` line inside a ~~~ block is content, not a closer.
+    expect(closeOpenFence("~~~\n```\ncode")).toBe("~~~\n```\ncode\n~~~");
+    expect(closeOpenFence("~~~\n```\ncode\n```")).toBe("~~~\n```\ncode\n```\n~~~");
+    // A shorter backtick run, or one with text after it, closes nothing.
+    expect(closeOpenFence("````\n```\ncode")).toBe("````\n```\ncode\n````");
+    expect(closeOpenFence("```\n``` not a closer")).toBe("```\n``` not a closer\n```");
+  });
+
+  it("does not open a fence on a backtick line whose info string holds a backtick", () => {
+    expect(closeOpenFence("``` a`b\ntext")).toBe("``` a`b\ntext");
   });
 });
 

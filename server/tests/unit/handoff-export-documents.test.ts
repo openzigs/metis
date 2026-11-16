@@ -37,7 +37,7 @@ const input = {
     status: "completed",
     documentId: null,
     sourceText: null,
-    summary: "Keys & sessions change.",
+    summary: "Keys & sessions change: p95 < 2s, > 1s.",
     errorMessage: null,
     rerunOfId: null,
     totalImpactedSymbols: 1,
@@ -106,7 +106,8 @@ const input = {
   impactClarifications: [{ subject: "Keys", question: "Date or time?", answer: "Date only" }],
 } as Parameters<typeof serializeHandoffMarkdown>[0];
 
-const markdown = serializeHandoffMarkdown(input);
+const word = serializeHandoffMarkdown(input, "docx");
+const pdf = serializeHandoffMarkdown(input, "pdf");
 const title = handoffTitle(input);
 
 function expectWhole(text: string): void {
@@ -128,29 +129,42 @@ function expectWhole(text: string): void {
 
 describe("the hand-off as Word and PDF — #2595", () => {
   it("Word carries the whole document, with the analyst's text as written", async () => {
-    const out = await exportDocument(markdown, title, "docx");
+    const out = await exportDocument(word, title, "docx");
     expect(out.mimeType).toBe(
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     );
     expect(out.filename).toBe("Expiring API keys - impact hand-off.docx");
     const zip = await JSZip.loadAsync(out.buffer);
     const xml = (await zip.file("word/document.xml")?.async("string")) ?? "";
-    const text = [...xml.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g)].map((m) => m[1]).join("");
+    const raw = [...xml.matchAll(/<w:t(?:\s[^>]*)?>([^<]*)<\/w:t>/g)].map((m) => m[1]).join("");
+    // The XML escapes each of `<`, `>` and `&` exactly once: decode that once.
+    const text = raw
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&amp;/g, "&");
     expectWhole(text);
-    // `&` is the analyst's own character, escaped once by the XML and no more.
-    expect(text).toContain("Keys &amp; sessions change.");
-    expect(text).toContain("Terms &amp; conditions apply.");
-    expect(text).not.toContain("&amp;amp;");
+    // The analyst's own characters, as written: no `&lt;` printed in Word.
+    expect(text).toContain("Keys & sessions change: p95 < 2s, > 1s.");
+    expect(text).toContain("Terms & conditions apply. <script>alert(1)</script>");
+    expect(text).not.toContain("&lt;");
+    expect(text).not.toContain("&amp;");
+    // The cover page names the document; no H1 repeats it below the contents.
+    expect(text.split("Expiring API keys - impact hand-off")).toHaveLength(2);
   });
 
   it("PDF carries the whole document, and renders no HTML from the text", async () => {
     pages.length = 0;
-    const out = await exportDocument(markdown, title, "pdf");
+    const out = await exportDocument(pdf, title, "pdf");
     expect(out.mimeType).toBe("application/pdf");
     const html = pages[0] ?? "";
     expectWhole(html);
     expect(html).not.toContain("<script>alert(1)</script>");
     expect(html).not.toContain("<img src=x");
     expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    // `<`, `>` and `&` reach the page as text, each escaped once.
+    expect(html).toContain("Keys &amp; sessions change: p95 &lt; 2s, &gt; 1s.");
+    expect(html).not.toContain("&amp;lt;");
   });
 });

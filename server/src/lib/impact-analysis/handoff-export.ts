@@ -35,6 +35,7 @@ import {
 import { seesRunAsWhole, type SourceReader } from "../analysis/source-redaction.js";
 import type { ClarificationState, StructuredRequirements } from "../analysis/types/requirements.js";
 import { neutralizeHtml, requirementBodyMarkdown } from "../docs-gen/requirements-scope.js";
+import { pairedInRun } from "../analysis/promotion-pairing.js";
 
 // ── Input ───────────────────────────────────────────────────────────────────
 
@@ -80,7 +81,15 @@ export interface HandoffInput {
   changeRequest: HandoffChangeRequest | null;
   /** Answers given in the impact run's own clarification dialog (#2270). */
   impactClarifications: HandoffClarification[];
+  /**
+   * When the change request was read (ISO). It is read live, while the impact
+   * run is stored, so the document says the two halves may differ in time.
+   */
+  readAt?: string;
 }
+
+/** The two documents the hand-off is exported as. */
+export type HandoffFormat = "docx" | "pdf";
 
 // ── Limits: what keeps the document a readable length ─────────────────────────
 
@@ -104,31 +113,66 @@ function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max).trimEnd()}… (shortened)` : text;
 }
 
-/** One line of text: whitespace collapsed (it cannot open a heading or list), HTML shown as text. */
-function inline(value: string, max = HANDOFF_MAX_TEXT): string {
-  return neutralizeHtml(clip(value.replace(/\s+/g, " ").trim(), max));
+/**
+ * `text` with a code fence it leaves open closed by a matching fence: the same
+ * character and at least the opener's length (CommonMark), so a clip cannot
+ * leave a fence open to swallow every section after it.
+ */
+export function closeOpenFence(text: string): string {
+  let open: { char: string; len: number } | null = null;
+  for (const line of text.split("\n")) {
+    const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (!m) continue;
+    const run = m[1] ?? "";
+    const rest = m[2] ?? "";
+    if (!open) {
+      // A backtick fence's info string cannot hold a backtick: such a line opens nothing.
+      if (run[0] === "`" && rest.includes("`")) continue;
+      open = { char: run.charAt(0), len: run.length };
+    } else if (run[0] === open.char && run.length >= open.len && rest.trim() === "") {
+      open = null;
+    }
+  }
+  return open ? `${text}\n${open.char.repeat(open.len)}` : text;
 }
 
 /**
- * Multi-line text (a requirement body, a summary) as markdown: clipped, its
- * headings nested below the document's own (H4 and down) and raw HTML shown as
- * text (`requirementBodyMarkdown`), and a code fence the clip left open closed,
- * so it cannot swallow the sections after it.
+ * The text helpers of one format. The PDF is rendered from HTML, so raw HTML in
+ * a person's, a document's or a model's text is shown as text there
+ * (`neutralizeHtml`). Word gets the text as written: its builder puts each run
+ * into the XML as text, escaped by the library, so `&lt;` would print as it stands.
  */
-function block(value: string, max = HANDOFF_MAX_TEXT): string {
-  const text = requirementBodyMarkdown(clip(value, max));
-  const fences = text.split("\n").filter((l) => /^ {0,3}(`{3,}|~{3,})/.test(l)).length;
-  return fences % 2 === 1 ? `${text}\n\`\`\`` : text;
+function textHelpers(format: HandoffFormat) {
+  const asText = format === "pdf" ? neutralizeHtml : (md: string) => md;
+
+  /** One line of text: whitespace collapsed (it cannot open a heading or list), HTML shown as text. */
+  function inline(value: string, max = HANDOFF_MAX_TEXT): string {
+    return asText(clip(value.replace(/\s+/g, " ").trim(), max));
+  }
+
+  /**
+   * Multi-line text (a requirement body, a summary) as markdown: clipped, its
+   * headings nested below the document's own (H4 and down) and raw HTML shown
+   * as text (`requirementBodyMarkdown`), and a code fence the clip left open
+   * closed, so it cannot swallow the sections after it.
+   */
+  function block(value: string, max = HANDOFF_MAX_TEXT): string {
+    return closeOpenFence(requirementBodyMarkdown(clip(value, max), asText));
+  }
+
+  /** A quoted passage, on one line, so nothing in it can restructure the document. */
+  function quote(value: string, max = HANDOFF_MAX_QUOTE): string {
+    return `> ${inline(value, max)}`;
+  }
+
+  return { inline, block, quote };
 }
+
+type TextHelpers = ReturnType<typeof textHelpers>;
 
 /** A path or symbol as inline code: no backtick or line break can leave the span. */
 function code(value: string): string {
   return `\`${value.replace(/[`\r\n]+/g, " ").trim()}\``;
-}
-
-/** A quoted passage, on one line, so nothing in it can restructure the document. */
-function quote(value: string, max = HANDOFF_MAX_QUOTE): string {
-  return `> ${inline(value, max)}`;
 }
 
 /**
@@ -177,7 +221,8 @@ function itemLabel(item: ImpactItemView, index: number, total: number): string {
 
 // ── Sections ────────────────────────────────────────────────────────────────
 
-function summarySection(input: HandoffInput): string[] {
+function summarySection(input: HandoffInput, t: TextHelpers): string[] {
+  const { inline, block } = t;
   const { detail, changeRequest } = input;
   const lines = ["## Summary"];
   const summary = detail.summary?.trim();
@@ -203,7 +248,8 @@ function summarySection(input: HandoffInput): string[] {
 }
 
 /** The quote, then where it is: the document and the section it sits under. */
-function passageLines(p: HandoffSourcePassage): string[] {
+function passageLines(p: HandoffSourcePassage, t: TextHelpers): string[] {
+  const { inline, quote } = t;
   const where = [p.filename, p.headingPath.at(-1)].filter((s): s is string => Boolean(s?.trim()));
   return [
     quote(p.quote),
@@ -211,7 +257,8 @@ function passageLines(p: HandoffSourcePassage): string[] {
   ];
 }
 
-function requirementsSection(input: HandoffInput): string[] {
+function requirementsSection(input: HandoffInput, t: TextHelpers): string[] {
+  const { inline, block, quote } = t;
   const { changeRequest, detail } = input;
   if (!changeRequest) {
     // A run started from pasted text or a document: state what was analysed.
@@ -232,7 +279,7 @@ function requirementsSection(input: HandoffInput): string[] {
     if (body.trim()) lines.push(body);
     if (!changeRequest.passagesWithheld) {
       if (r.passages.length === 0) lines.push("*No source passage was recorded.*");
-      for (const p of r.passages.slice(0, HANDOFF_MAX_PASSAGES)) lines.push(...passageLines(p));
+      for (const p of r.passages.slice(0, HANDOFF_MAX_PASSAGES)) lines.push(...passageLines(p, t));
     }
   });
   if (changeRequest.passagesWithheld) {
@@ -243,7 +290,8 @@ function requirementsSection(input: HandoffInput): string[] {
   return lines;
 }
 
-function affectedCodeSection(input: HandoffInput): string[] {
+function affectedCodeSection(input: HandoffInput, t: TextHelpers): string[] {
+  const { inline, block } = t;
   const { detail, projectNames } = input;
   const lines = ["## Affected files and code citations"];
   if (detail.items.length === 0) {
@@ -307,7 +355,8 @@ function affectedCodeSection(input: HandoffInput): string[] {
   return lines;
 }
 
-function clarificationsSection(input: HandoffInput): string[] {
+function clarificationsSection(input: HandoffInput, t: TextHelpers): string[] {
+  const { inline } = t;
   const fromRequirements: HandoffClarification[] = (
     input.changeRequest?.requirements ?? []
   ).flatMap((r) =>
@@ -330,7 +379,8 @@ function clarificationsSection(input: HandoffInput): string[] {
   return lines;
 }
 
-function risksSection(input: HandoffInput): string[] {
+function risksSection(input: HandoffInput, t: TextHelpers): string[] {
+  const { inline } = t;
   const { detail } = input;
   const risks: string[] = [];
   detail.items.forEach((item, i) => {
@@ -366,7 +416,8 @@ function risksSection(input: HandoffInput): string[] {
   return lines;
 }
 
-function openItemsSection(input: HandoffInput): string[] {
+function openItemsSection(input: HandoffInput, t: TextHelpers): string[] {
+  const { inline } = t;
   const { detail, changeRequest, projectNames } = input;
   const open: string[] = [];
   for (const r of changeRequest?.requirements ?? []) {
@@ -435,20 +486,33 @@ export function handoffTitle(input: Pick<HandoffInput, "detail" | "changeRequest
 
 /**
  * The hand-off document as markdown, for `exportDocument(…, "docx" | "pdf")`.
- * Deterministic: the same rows give the same document.
+ * Deterministic: the same rows (and `readAt`) give the same document.
+ *
+ * Word already writes the title on its cover page, above a table of contents,
+ * so the document's own H1 is written for the PDF only.
  */
-export function serializeHandoffMarkdown(input: HandoffInput): string {
-  const { detail } = input;
+export function serializeHandoffMarkdown(input: HandoffInput, format: HandoffFormat): string {
+  const { detail, changeRequest, readAt } = input;
+  const t = textHelpers(format);
   const date = (detail.completedAt ?? detail.startedAt).slice(0, 10);
+  const asOf =
+    changeRequest && readAt
+      ? [
+          `*As of: the change request is shown as it reads on ${readAt.slice(0, 10)}; ` +
+            `the impact analysis is the run of ${date}. A requirement added, edited or ` +
+            "re-checked since that run may differ from what the run analysed.*",
+        ]
+      : [];
   const blocks = [
-    `# ${inline(handoffTitle(input), 240)}`,
-    `*Change request and impact analysis · run ${inline(detail.status, 20)} · ${date}*`,
-    ...summarySection(input),
-    ...requirementsSection(input),
-    ...affectedCodeSection(input),
-    ...clarificationsSection(input),
-    ...risksSection(input),
-    ...openItemsSection(input),
+    ...(format === "pdf" ? [`# ${t.inline(handoffTitle(input), 240)}`] : []),
+    `*Change request and impact analysis · run ${t.inline(detail.status, 20)} · ${date}*`,
+    ...asOf,
+    ...summarySection(input, t),
+    ...requirementsSection(input, t),
+    ...affectedCodeSection(input, t),
+    ...clarificationsSection(input, t),
+    ...risksSection(input, t),
+    ...openItemsSection(input, t),
   ];
   return blocks.join("\n\n") + "\n";
 }
@@ -522,15 +586,11 @@ export async function loadHandoffChangeRequest(
     passagesWithheld: !whole,
     requirements: source.requirements.map((r) => {
       const row = rowById.get(r.id);
-      // #1202 — the pairing promotion recorded; a pairing from another
-      // extraction run names another list's requirement.
-      const sameRun =
-        !row?.promotedStructuredRunId ||
-        !structured?.runId ||
-        row.promotedStructuredRunId === structured.runId;
+      // #1202 — the pairing promotion recorded, and only within the same
+      // extraction run: every run numbers its list from REQ-001.
       const paired =
-        row?.promotedStructuredId && sameRun
-          ? structuredById.get(row.promotedStructuredId)
+        row && pairedInRun(row, structured?.runId)
+          ? structuredById.get(row.promotedStructuredId ?? "")
           : undefined;
       const passages: HandoffSourcePassage[] =
         paired?.sources && paired.sources.length > 0

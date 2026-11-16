@@ -160,6 +160,14 @@ describe("GET /impact-analyses/:id/export — #2595", () => {
     expect(markdown).toContain("> A key may expire.");
     expect(markdown).toContain("Requirement **Keys can expire**: the code could neither confirm");
     expect(markdown).toContain("One requirement change.");
+    // Word's cover page carries the title: no H1 repeats it.
+    expect(markdown).not.toMatch(/^# /m);
+    // The change request is read now; the run is the stored one of its own date.
+    const today = new Date().toISOString().slice(0, 10);
+    expect(markdown).toContain(
+      `*As of: the change request is shown as it reads on ${today}; ` +
+        "the impact analysis is the run of 2026-11-16.",
+    );
   });
 
   it("downloads the hand-off as PDF", async () => {
@@ -167,6 +175,23 @@ describe("GET /impact-analyses/:id/export — #2595", () => {
     expect(res.status).toBe(200);
     expect(res.headers["content-type"]).toBe("application/pdf");
     expect(exported().format).toBe("pdf");
+    expect(exported().markdown).toMatch(/^# Expiring API keys - impact hand-off$/m);
+  });
+
+  it("caps PDF exports per user, and leaves the Word export uncounted", async () => {
+    process.env.HANDOFF_PDF_LIMIT_MAX = "1";
+    try {
+      await request(app).get("/impact-analyses/ia-1/export?format=pdf");
+      m.exportDocument.mockClear();
+      const limited = await request(app).get("/impact-analyses/ia-1/export?format=pdf");
+      expect(limited.status).toBe(429);
+      expect(limited.body.error.code).toBe("HANDOFF_EXPORT_RATE_LIMITED");
+      expect(m.exportDocument).not.toHaveBeenCalled();
+      const word = await request(app).get("/impact-analyses/ia-1/export?format=docx");
+      expect(word.status).toBe(200);
+    } finally {
+      delete process.env.HANDOFF_PDF_LIMIT_MAX;
+    }
   });
 
   it("loads the change request for the caller, from the run they may read", async () => {

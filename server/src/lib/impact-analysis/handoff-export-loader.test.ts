@@ -69,7 +69,7 @@ beforeEach(() => {
       id: "r-2",
       verdict: "could-not-verify",
       promotedStructuredId: "REQ-002",
-      promotedStructuredRunId: null,
+      promotedStructuredRunId: "run-2",
     },
     { id: "r-3", verdict: null, promotedStructuredId: "REQ-001", promotedStructuredRunId: "run-1" },
   ]);
@@ -156,6 +156,30 @@ describe("loadHandoffChangeRequest — #2595", () => {
     expect(otherRun!.verdict).toBeNull();
     expect(unpaired!.passages).toEqual([]);
     expect(unpaired!.verdict).toBeNull();
+  });
+
+  it("#1202 — pairs only within one extraction run, a missing run id on either side included", async () => {
+    // A row promoted before #909 (no run id) against a list that has one.
+    m.findMany.mockResolvedValue([
+      { id: "r-1", verdict: null, promotedStructuredId: "REQ-001", promotedStructuredRunId: null },
+      {
+        id: "r-2",
+        verdict: null,
+        promotedStructuredId: "REQ-002",
+        promotedStructuredRunId: "run-2",
+      },
+    ]);
+    let out = await loadHandoffChangeRequest(detail, reader);
+    expect(out!.requirements[0]!.passages).toEqual([]);
+    expect(out!.requirements[1]!.passages).toHaveLength(1);
+
+    // A row with a run id against a list written before #909 (none).
+    const { runId: _runId, ...noRunId } = await m.getStructuredRequirements();
+    m.getStructuredRequirements.mockResolvedValue(noRunId);
+    out = await loadHandoffChangeRequest(detail, reader);
+    expect(out!.requirements[1]!.passages).toEqual([]);
+    // Neither side has a run id: the two compare equal, and the pairing holds.
+    expect(out!.requirements[0]!.passages).toHaveLength(2);
   });
 
   it("shows no passage, and reads no extraction, for a reader who cannot see the run whole", async () => {

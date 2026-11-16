@@ -136,6 +136,8 @@ function ImpactAnalysisDetailView({
     onSuccess: ({ blob, filename }) => triggerDownload(blob, filename),
   });
   // #2595 — the BA hand-off: the change request plus this analysis, as Word or PDF.
+  // Any completed run, including one that found no code impact: the document says so.
+  const canHandOff = data.status === "completed";
   const handoffMutation = useMutation({
     mutationFn: (format: "docx" | "pdf") => impactAnalysisApi.exportHandoff(data.id, format),
     onSuccess: ({ blob, filename }) => triggerDownload(blob, filename),
@@ -227,7 +229,7 @@ function ImpactAnalysisDetailView({
                 size="sm"
                 data-testid={`impact-export-${format}`}
                 title="The change request and this impact analysis, as one document to hand off"
-                disabled={!canExport || handoffMutation.isPending}
+                disabled={!canHandOff || handoffMutation.isPending}
                 onClick={() => handoffMutation.mutate(format)}
               >
                 {busy ? "Exporting…" : format === "docx" ? "Export Word" : "Export PDF"}

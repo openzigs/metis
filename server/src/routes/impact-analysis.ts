@@ -100,6 +100,7 @@ import {
   type SubjectDialog,
 } from "../lib/clarifications/subject-clarifications.js";
 import { subjectClarifyUserRateLimiter } from "../middleware/subject-clarify-rate-limit.js";
+import { handoffPdfUserRateLimiter } from "../middleware/handoff-export-rate-limit.js";
 import {
   handleSubjectClarifyPost,
   noDialog,
@@ -1591,47 +1592,57 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
   // call). Authorized as GET /:id; the change request is read only within the
   // run's projects, as this reader may see it (#2447), and the run's own
   // clarification answers only when its document is readable to them (#2270).
-  r.get("/:id/export", requirePermission("analysis.read"), async (req, res, next) => {
-    try {
-      const format = z.enum(["docx", "pdf"]).safeParse(req.query.format);
-      if (!format.success) {
-        throw new AppError(400, "INVALID_FORMAT", "format must be docx or pdf");
+  // A PDF launches Chromium, so it is capped per user (handoffPdfUserRateLimiter).
+  r.get(
+    "/:id/export",
+    requirePermission("analysis.read"),
+    handoffPdfUserRateLimiter,
+    async (req, res, next) => {
+      try {
+        const format = z.enum(["docx", "pdf"]).safeParse(req.query.format);
+        if (!format.success) {
+          throw new AppError(400, "INVALID_FORMAT", "format must be docx or pdf");
+        }
+        const actor = actorOf(req);
+        const id = String(req.params.id);
+        const detail = await loadAccessibleImpactDetail(actor, id);
+
+        const projects = await prisma.project.findMany({
+          where: { id: { in: detail.projectIds } },
+          select: { id: true, name: true },
+        });
+        const projectNames: Record<string, string> = {};
+        for (const p of projects) projectNames[p.id] = p.name;
+
+        const changeRequest = await loadHandoffChangeRequest(detail, userSourceReader(actor.id));
+        const dialog = await readableImpactDialog(actor, id);
+        const markdown = serializeHandoffMarkdown(
+          {
+            detail,
+            projectNames,
+            changeRequest,
+            impactClarifications: answeredClarifications(dialog?.state, dialog?.requirements),
+            readAt: new Date().toISOString(),
+          },
+          format.data,
+        );
+
+        const { exportDocument } = await import("../lib/docs-gen/exporters.js");
+        const result = await exportDocument(
+          markdown,
+          handoffTitle({ detail, changeRequest }),
+          format.data,
+        );
+        res.setHeader("Content-Type", result.mimeType);
+        res.setHeader("Content-Disposition", `attachment; filename="${result.filename}"`);
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write -- `result.buffer` is a generated binary document (PDF/DOCX), not HTML; the explicit binary Content-Type, attachment disposition, and nosniff header prevent any HTML interpretation.
+        res.send(result.buffer);
+      } catch (err) {
+        next(asAppError(err));
       }
-      const actor = actorOf(req);
-      const id = String(req.params.id);
-      const detail = await loadAccessibleImpactDetail(actor, id);
-
-      const projects = await prisma.project.findMany({
-        where: { id: { in: detail.projectIds } },
-        select: { id: true, name: true },
-      });
-      const projectNames: Record<string, string> = {};
-      for (const p of projects) projectNames[p.id] = p.name;
-
-      const changeRequest = await loadHandoffChangeRequest(detail, userSourceReader(actor.id));
-      const dialog = await readableImpactDialog(actor, id);
-      const markdown = serializeHandoffMarkdown({
-        detail,
-        projectNames,
-        changeRequest,
-        impactClarifications: answeredClarifications(dialog?.state, dialog?.requirements),
-      });
-
-      const { exportDocument } = await import("../lib/docs-gen/exporters.js");
-      const result = await exportDocument(
-        markdown,
-        handoffTitle({ detail, changeRequest }),
-        format.data,
-      );
-      res.setHeader("Content-Type", result.mimeType);
-      res.setHeader("Content-Disposition", `attachment; filename="${result.filename}"`);
-      res.setHeader("X-Content-Type-Options", "nosniff");
-      // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write -- `result.buffer` is a generated binary document (PDF/DOCX), not HTML; the explicit binary Content-Type, attachment disposition, and nosniff header prevent any HTML interpretation.
-      res.send(result.buffer);
-    } catch (err) {
-      next(asAppError(err));
-    }
-  });
+    },
+  );
 
   // POST /:id/publish/jira — Issue #963 (Epic #960). Publish the run to Jira as
   // ONE issue, mirroring the finding-publisher pattern (marker dedup + idempotent

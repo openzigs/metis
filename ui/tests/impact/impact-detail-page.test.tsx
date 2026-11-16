@@ -715,6 +715,15 @@ describe("ImpactAnalysisDetailPage", () => {
       expect(screen.getByTestId("impact-export-pdf")).toBeDisabled();
     });
 
+    it("#2595 — hands off a completed run that found no code impact", () => {
+      mockUse.mockReturnValue(state({ data: { ...detail, status: "completed", items: [] } }));
+      render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      expect(screen.getByTestId("impact-export-docx")).not.toBeDisabled();
+      expect(screen.getByTestId("impact-export-pdf")).not.toBeDisabled();
+      // The markdown export of the full record still needs code impact.
+      expect(screen.getByText("Export markdown").closest("button")).toBeDisabled();
+    });
+
     it.each([
       ["docx", "Export Word"],
       ["pdf", "Export PDF"],
