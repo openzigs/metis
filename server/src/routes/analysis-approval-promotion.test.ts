@@ -199,7 +199,7 @@ vi.mock("../lib/analysis/index.js", () => ({
 // #2554 — which checkpoints the caller may decide is pinned over a real
 // database in tests/restricted-checkpoints-2554.sqlite.test.ts; here every one.
 // #2596 — a test can hide some, as from a caller who is not an admin.
-const hiddenCheckpoints = vi.hoisted(() => ({ ids: [] as string[] }));
+const hiddenCheckpoints = vi.hoisted(() => ({ ids: [] as string[], role: "member" }));
 vi.mock("../lib/analysis/checkpoint-access.js", () => ({
   checkpointRows: async () => [],
   // Hides only among the rows it is asked about, as the real one does.
@@ -212,7 +212,7 @@ vi.mock("../lib/rag/acl.js", async (importOriginal) => {
     ...actual,
     resolveAclActor: (async (...args: Parameters<typeof actual.resolveAclActor>) =>
       hiddenCheckpoints.ids.length > 0
-        ? { role: "member" }
+        ? { role: hiddenCheckpoints.role }
         : actual.resolveAclActor(...args)) as typeof actual.resolveAclActor,
   };
 });
@@ -867,6 +867,46 @@ describe("#1568 — requirement approvals that would be promoted with no code li
       ).toEqual([["NFR-1", false, undefined]]);
     } finally {
       hiddenCheckpoints.ids = [];
+    }
+  });
+
+  it("#2596 — shows an admin the resemblance a restricted entry would hide", async () => {
+    reviewedRun();
+    getStructuredRequirements.mockResolvedValue({
+      requirements: [
+        { id: "REQ-1", title: "Expired keys are refused like unknown keys", description: "" },
+        {
+          id: "NFR-1",
+          title: "Expired API keys refused identically to unknown keys",
+          description: "",
+          elicitedNfr: { nfrCategory: "security", evidenceFindingIds: [] },
+        },
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+    listApprovalRequests.mockResolvedValue([
+      { ...rows[0], id: "ap_r1", itemId: "REQ-1" },
+      { ...rows[0], id: "ap_n1", itemId: "NFR-1" },
+    ]);
+    // REQ-1 would be restricted, but an admin is shown every checkpoint (#2554).
+    hiddenCheckpoints.ids = ["ap_r1"];
+    hiddenCheckpoints.role = "admin";
+    try {
+      const res = await request(createApp()).get(
+        "/api/projects/proj-1/analyses/analysis-1/approvals",
+      );
+      expect(res.status).toBe(200);
+      type Item = { itemId: string; resembles?: string; restricted?: true };
+      expect(
+        res.body.data.items.map((i: Item) => [i.itemId, i.restricted ?? false, i.resembles]),
+      ).toEqual([
+        ["REQ-1", false, undefined],
+        ["NFR-1", false, "REQ-1"],
+      ]);
+    } finally {
+      hiddenCheckpoints.ids = [];
+      hiddenCheckpoints.role = "member";
     }
   });
 
