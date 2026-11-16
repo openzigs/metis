@@ -334,7 +334,16 @@ describe("#1027 — plan context through the pipeline", () => {
 
     expect(withContext.affectedCode?.candidates.map((c) => c.id)).toEqual(["NR-1", "NR-2"]);
     expect(withContext.affectedCode).toEqual(without.affectedCode);
-    expect(withContext.capability).toEqual(without.capability);
+    // #2565 — the plan-context block is carved out of the pass's token budget,
+    // so the recorded outcome's budget is the one field that may differ.
+    const sansBudget = (c: AnalysisCapability) => ({
+      ...c,
+      codePassOutcomes: c.codePassOutcomes?.map(({ tokenBudget: _budget, ...o }) => o),
+    });
+    expect(sansBudget(withContext.capability)).toEqual(sansBudget(without.capability));
+    expect(withContext.capability.codePassOutcomes?.[0]?.tokenBudget).toBeLessThan(
+      without.capability.codePassOutcomes?.[0]?.tokenBudget ?? 0,
+    );
     expect(holding(withContext.calls, "NR-3")).toEqual([]);
     // The calls that do not carry the context are the calls of the run without it.
     const untouched = withContext.calls.filter((c) => !c.includes(MARK));

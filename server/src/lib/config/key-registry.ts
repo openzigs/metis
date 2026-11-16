@@ -728,6 +728,31 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "Token budget for one agentic code-agent run, split across repos on multi-repo projects (#769). Default 100000. The bounded #769 final-answer retry may spend a small amount beyond this to serialize work already done.",
     sensitive: false,
   },
+  // ── Issue #2565 — the explore-first code pass ───────────────────────────
+  ANALYSIS_CODE_EXPLORATION: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z.enum(["explore", "fast"]),
+    description:
+      "#2565 — how the agentic code pass investigates the code. explore: it explores the working tree first (grep_files, list_files, whole-file reads with read_file_slice, then search_code_graph and search_code_symbols with filters) and is sent back once if it answers before reading any code. Measured as A20 on Miniflux (#2560, 24 items, claude-sonnet-5-5): Recall@5 0.66 → 0.85, edit precision unchanged, cost $0.082 → $0.120 per item (+46%) and 28 s → 35 s. It keeps production's bounds (ANALYSIS_AGENTIC_MAX_TURNS and ANALYSIS_AGENT_TOKEN_BUDGET). A repository with no clone on this machine always runs fast. fast (default until #2568 re-measures): the code pass as before #2565. fast is the kill switch. The run records the mode and why on its capability record (codePassMode, codePassModeReason).",
+    sensitive: false,
+  },
+  ANALYSIS_EXPLORE_READ_MAX_LINES: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().positive(),
+    description:
+      "#2565 — read_file_slice's line cap per call when ANALYSIS_CODE_EXPLORATION is explore. Default 1000 (A20's: a whole source file). Each read is also cut at 80,000 characters, and a cut read names the next range. fast keeps 200 lines.",
+    sensitive: false,
+  },
+  ANALYSIS_EXPLORE_TRANSCRIPT_TOKENS: {
+    tier: "tunable",
+    valueType: "int",
+    schema: z.coerce.number().int().positive(),
+    description:
+      "#2565 — the transcript compaction ceiling when ANALYSIS_CODE_EXPLORATION is explore. Default 64000 (A20's), and never more than half the model's catalogued context window (#1384), so whole-file reads cannot overflow a small local model. fast keeps 16000.",
+    sensitive: false,
+  },
   // ── Issue #1063 — reasoning on the degraded pass's two recovery calls ──
   ANALYSIS_RECOVERY_REASONING: {
     tier: "tunable",

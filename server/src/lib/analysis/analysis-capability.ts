@@ -22,6 +22,8 @@ import {
   type AnalysisDroppedCitations,
   type AnalysisSkippedRepo,
   type CodeInvestigationGap,
+  type CodePassModeDecision,
+  type CodePassOutcome,
   type FindingsLeftOutNotice,
   type DocumentReadingCoverage,
   type RequirementInputAccount,
@@ -198,6 +200,37 @@ export interface CapabilityTracker {
    * persisted.
    */
   restrictedDocumentChunkIds?: Set<string>;
+  /**
+   * #2565 — the mode the run's agentic code passes ran in, and why: `explore`
+   * only while every pass explored, else the first `fast` pass's decision.
+   * Absent until a pass resolves its mode.
+   */
+  codePassMode?: CodePassModeDecision;
+  /** #2565 — each agentic code pass's spend and ending, in run order. */
+  codePassOutcomes?: CodePassOutcome[];
+}
+
+/**
+ * #2565 — record a code pass's mode decision. The first decision is kept,
+ * unless a later pass ran `fast` while the record says `explore`: a run is
+ * `explore` only when every pass explored.
+ */
+export function recordCodePassMode(
+  tracker: Pick<CapabilityTracker, "codePassMode">,
+  decision: CodePassModeDecision,
+): void {
+  const current = tracker.codePassMode;
+  if (!current || (current.mode === "explore" && decision.mode === "fast")) {
+    tracker.codePassMode = { ...decision };
+  }
+}
+
+/** #2565 — record one code pass's outcome. */
+export function recordCodePassOutcome(
+  tracker: Pick<CapabilityTracker, "codePassOutcomes">,
+  outcome: CodePassOutcome,
+): void {
+  (tracker.codePassOutcomes ??= []).push({ ...outcome });
 }
 
 /**
@@ -409,6 +442,16 @@ export function finalizeCapability(tracker: CapabilityTracker): AnalysisCapabili
       : {}),
     // #2437 — omitted when the run left no restricted source out.
     ...(restrictedLeftOut ? { restrictedLeftOut } : {}),
+    // #2565 — omitted until an agentic code pass resolved its mode.
+    ...(tracker.codePassMode
+      ? {
+          codePassMode: tracker.codePassMode.mode,
+          codePassModeReason: tracker.codePassMode.reason,
+        }
+      : {}),
+    ...(tracker.codePassOutcomes && tracker.codePassOutcomes.length > 0
+      ? { codePassOutcomes: tracker.codePassOutcomes.map((o) => ({ ...o })) }
+      : {}),
     reasons: deriveCapabilityReasons({
       codeAnalysisRequested: tracker.codeAnalysisRequested,
       databaseAnalysisRequested: tracker.databaseAnalysisRequested,

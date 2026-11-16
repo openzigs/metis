@@ -65,6 +65,14 @@ export interface CodeAccessFilter {
    */
   isHidden(repoConnectionId: string | null, filePath: string): boolean;
   /**
+   * #2565 — `isHidden` without its side effect: a filter that records each
+   * readable restricted file it admits (a #2448 starter pass) answers here
+   * without recording, so a search can skip hidden files while it walks and
+   * call `isHidden` only for the files it returns. Absent: `isHidden` records
+   * nothing, so it is the same check.
+   */
+  wouldHide?(repoConnectionId: string | null, filePath: string): boolean;
+  /**
    * #2437 — how many files are hidden, over every repository: a path hidden in
    * two repositories is two files. Counted, never listed, on what a run left out.
    */

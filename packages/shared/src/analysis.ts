@@ -41,6 +41,7 @@ import type { CrossDocFindings } from "./cross-doc.js";
 import type { ImpactAffectedRelation } from "./impact.js";
 import type { TestLinkRelation } from "./traceability.js";
 import type { RequirementApprovalReopened } from "./requirement-approval.js";
+import type { CodePassMode, CodePassModeReason, CodePassOutcome } from "./code-exploration.js";
 // Type-only, and the dependency runs the other way at runtime: the presentation
 // seam imports this module's types. Erased at build, so no import cycle exists.
 import type { RequirementSupportConfidence } from "./support-panel-view.js";
@@ -3465,6 +3466,17 @@ export interface AnalysisCapability {
    * passes read with that access too, so documents are counted as well.
    */
   restrictedRead?: number;
+  /**
+   * Issue #2565 — the mode the agentic code pass ran in (`explore` or `fast`).
+   * With several repositories, `explore` only when every pass explored; else
+   * `fast`, with the first fast pass's reason. Absent when no agentic code pass
+   * ran (and on every run persisted before #2565).
+   */
+  codePassMode?: CodePassMode;
+  /** Issue #2565 — why the code pass ran in {@link codePassMode}. */
+  codePassModeReason?: CodePassModeReason;
+  /** Issue #2565 — each agentic code pass's spend and ending, in run order. */
+  codePassOutcomes?: CodePassOutcome[];
   /** Derived, enumerated degradation reasons. Empty ⇒ fully capable run. */
   reasons: AnalysisCapabilityReason[];
 }
