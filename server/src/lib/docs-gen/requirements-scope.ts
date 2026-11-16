@@ -473,12 +473,16 @@ function nestBodyHeadings(body: string): string {
  * A requirement body as BRD content: METIS's internal markers removed first
  * (#1170 — escaped by {@link neutralizeHtml} they became visible
  * `<!-- metis:clarifications:start -->` text), its headings nested under the
- * requirement, then any other raw HTML neutralised.
+ * requirement, then any other raw HTML neutralised. `asText` replaces that
+ * last step for a target not rendered as HTML (#2595: the Word hand-off).
  */
-export function requirementBodyMarkdown(body: string): string {
+export function requirementBodyMarkdown(
+  body: string,
+  asText: (markdown: string) => string = neutralizeHtml,
+): string {
   // Leading blank lines only, not `trim()`: the first line's indent is Markdown
   // (a tab-indented line is code), and dropping it can turn code into a heading.
-  return neutralizeHtml(
+  return asText(
     nestBodyHeadings(stripMetisMarkers(body))
       .replace(/^(?:[ \t]*\n)+/, "")
       .trimEnd(),

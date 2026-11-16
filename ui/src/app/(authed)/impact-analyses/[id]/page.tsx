@@ -136,6 +136,13 @@ function ImpactAnalysisDetailView({
     mutationFn: () => impactAnalysisApi.exportReport(data.id),
     onSuccess: ({ blob, filename }) => triggerDownload(blob, filename),
   });
+  // #2595 — the BA hand-off: the change request plus this analysis, as Word or PDF.
+  // Any completed run, including one that found no code impact: the document says so.
+  const canHandOff = data.status === "completed";
+  const handoffMutation = useMutation({
+    mutationFn: (format: "docx" | "pdf") => impactAnalysisApi.exportHandoff(data.id, format),
+    onSuccess: ({ blob, filename }) => triggerDownload(blob, filename),
+  });
   // #2594 — "Publish to Jira" opens a confirmation first; the preview it shows
   // is read fresh on every open and sends nothing. The publish sends the
   // project the preview named, so the issue goes where the analyst confirmed.
@@ -227,6 +234,22 @@ function ImpactAnalysisDetailView({
           >
             {exportMutation.isPending ? "Exporting…" : "Export markdown"}
           </Button>
+          {(["docx", "pdf"] as const).map((format) => {
+            const busy = handoffMutation.isPending && handoffMutation.variables === format;
+            return (
+              <Button
+                key={format}
+                variant="outline"
+                size="sm"
+                data-testid={`impact-export-${format}`}
+                title="The change request and this impact analysis, as one document to hand off"
+                disabled={!canHandOff || handoffMutation.isPending}
+                onClick={() => handoffMutation.mutate(format)}
+              >
+                {busy ? "Exporting…" : format === "docx" ? "Export Word" : "Export PDF"}
+              </Button>
+            );
+          })}
           <Button
             variant="outline"
             size="sm"
@@ -304,6 +327,11 @@ function ImpactAnalysisDetailView({
         {exportMutation.isError ? (
           <p className="text-xs text-destructive" data-testid="impact-export-error">
             {(exportMutation.error as Error).message}
+          </p>
+        ) : null}
+        {handoffMutation.isError ? (
+          <p className="text-xs text-destructive" data-testid="impact-export-handoff-error">
+            {(handoffMutation.error as Error).message}
           </p>
         ) : null}
       </PageHeader>

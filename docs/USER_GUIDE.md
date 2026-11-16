@@ -3047,6 +3047,30 @@ citations and is unchanged.
 
 When an impact analysis is published to Jira, the issue carries the umbrella **`metis`** label and the **`metis-impact-analysis`** source label, together with `severity:*` and `category:impact-analysis`. Issues published before this change are not relabelled.
 
+**Handing the result on.** Once a run has finished, the report's header offers
+three downloads [#2595]:
+
+- **Export Word** and **Export PDF** give one document to hand off: the change
+  request the run was started from together with this impact analysis. It holds
+  the summary, each requirement with the passage of the source document it rests
+  on and whether the code covers it, the files to edit with their lines, the
+  tables, the clarifying questions answered, the risks (a high or critical
+  change, a breaking schema change, a write path no test covers) and what could
+  not be verified. It stays a readable length: at most ten files to edit per
+  change, and the blast radius and the covering tests are counted, not listed,
+  because the page lists them in full. A run started from pasted text states that
+  text instead of the requirements. You see only what you could see on the page:
+  a requirement resting on a document you cannot open is left out and counted,
+  and source passages are not shown when the change request rests on one.
+  A finished run that found no code impact can be handed off too; the document
+  says no code is affected. The change request is shown as it reads when you
+  download, and the analysis as it was run, and the document gives both dates.
+  You can download 30 hand-off documents (Word and PDF together) every 15 minutes.
+  Creating the document makes no AI call and costs nothing.
+- **Export markdown** is the full record of the run. Each change lists its first
+  ten blast-radius symbols and covering tests and counts the rest, so a large run
+  is no longer a file of hundreds of kilobytes.
+
 Permission required: `analysis.run` to trigger, `analysis.read` to view results.
 
 > **AI enrichment is ON by default, and it costs money per analysis.** METIS

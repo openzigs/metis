@@ -48,12 +48,14 @@ vi.mock("@/lib/connectors-api", () => ({
 
 // #963 — export + Jira-publish actions.
 const exportReport = vi.fn();
+const exportHandoff = vi.fn();
 const publishToJira = vi.fn();
 // #2594 — the confirmation's preview.
 const previewJiraPublish = vi.fn();
 vi.mock("@/lib/impact-analysis-api", () => ({
   impactAnalysisApi: {
     exportReport: (...a: unknown[]) => exportReport(...a),
+    exportHandoff: (...a: unknown[]) => exportHandoff(...a),
     publishToJira: (...a: unknown[]) => publishToJira(...a),
     previewJiraPublish: (...a: unknown[]) => previewJiraPublish(...a),
   },
@@ -701,6 +703,64 @@ describe("ImpactAnalysisDetailPage", () => {
       fireEvent.click(screen.getByTestId("impact-export-md"));
       await waitFor(() => expect(exportReport).toHaveBeenCalledWith("ia-0000000001"));
       await waitFor(() => expect(triggerDownload).toHaveBeenCalledTimes(1));
+    });
+
+    it("#2595 — offers the hand-off as Word and PDF once the run is done", () => {
+      mockUse.mockReturnValue(state({ data: detail }));
+      const { unmount } = render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      expect(screen.getByTestId("impact-export-docx")).toHaveTextContent("Export Word");
+      expect(screen.getByTestId("impact-export-pdf")).toHaveTextContent("Export PDF");
+      expect(screen.getByTestId("impact-export-docx")).not.toBeDisabled();
+      unmount();
+      mockUse.mockReturnValue(state({ data: { ...detail, status: "running", items: [] } }));
+      render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      expect(screen.getByTestId("impact-export-docx")).toBeDisabled();
+      expect(screen.getByTestId("impact-export-pdf")).toBeDisabled();
+    });
+
+    it("#2595 — hands off a completed run that found no code impact", () => {
+      mockUse.mockReturnValue(state({ data: { ...detail, status: "completed", items: [] } }));
+      render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      expect(screen.getByTestId("impact-export-docx")).not.toBeDisabled();
+      expect(screen.getByTestId("impact-export-pdf")).not.toBeDisabled();
+      // The markdown export of the full record still needs code impact.
+      expect(screen.getByText("Export markdown").closest("button")).toBeDisabled();
+    });
+
+    it.each([
+      ["docx", "Export Word"],
+      ["pdf", "Export PDF"],
+    ] as const)("#2595 — downloads the hand-off as %s", async (format, label) => {
+      let finish: (v: { blob: Blob; filename: string }) => void = () => {};
+      exportHandoff.mockReturnValue(new Promise((r) => (finish = r)));
+      mockUse.mockReturnValue(state({ data: detail }));
+      render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      const other = format === "docx" ? "impact-export-pdf" : "impact-export-docx";
+      fireEvent.click(screen.getByText(label));
+      await waitFor(() => expect(exportHandoff).toHaveBeenCalledWith("ia-0000000001", format));
+      // Only the button pressed says it is exporting; both wait for it.
+      await waitFor(() =>
+        expect(screen.getByTestId(`impact-export-${format}`)).toHaveTextContent("Exporting…"),
+      );
+      expect(screen.getByTestId(other)).not.toHaveTextContent("Exporting…");
+      expect(screen.getByTestId(other)).toBeDisabled();
+      finish({ blob: new Blob(["doc"]), filename: `handoff.${format}` });
+      await waitFor(() =>
+        expect(triggerDownload).toHaveBeenCalledWith(expect.any(Blob), `handoff.${format}`),
+      );
+    });
+
+    it("#2595 — surfaces a hand-off export error inline", async () => {
+      exportHandoff.mockRejectedValue(new Error("Export failed"));
+      mockUse.mockReturnValue(state({ data: detail }));
+      render(<ImpactAnalysisDetailPage />, { wrapper: makeWrapper() });
+      fireEvent.click(screen.getByTestId("impact-export-pdf"));
+      await waitFor(() =>
+        expect(screen.getByTestId("impact-export-handoff-error")).toHaveTextContent(
+          "Export failed",
+        ),
+      );
+      expect(triggerDownload).not.toHaveBeenCalled();
     });
 
     const preview = {

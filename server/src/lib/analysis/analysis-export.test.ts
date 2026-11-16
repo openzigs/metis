@@ -22,6 +22,7 @@ import type {
 } from "@metis/shared";
 import {
   buildFindingIssueDraft,
+  MAX_EXPORTED_SYMBOL_LIST,
   mdBlock,
   mdInline,
   serializeAnalysisReportMarkdown,
@@ -1026,6 +1027,55 @@ describe("serializeImpactAnalysisMarkdown (#963)", () => {
     expect(md).toContain("`src/types/order.ts:10-42` in metis-fixture-billing ·");
     // The same test path in two repositories is two files.
     expect(md).toContain("#### Tests covering the impacted code (2 across 2 files)");
+  });
+
+  it("#2595 — lists only the first blast-radius symbols and tests, and counts the rest", () => {
+    const many = (prefix: string, depth: number, n: number) =>
+      Array.from({ length: n }, (_, i) =>
+        impactSymbol({ id: `${prefix}-${i}`, qualifiedName: `${prefix}.fn${i}`, depth }),
+      );
+    const extra = 7;
+    const md = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        items: [
+          impactItem({
+            affectedSymbols: [
+              ...many("edit", 0, MAX_EXPORTED_SYMBOL_LIST + extra),
+              ...many("radius", 1, MAX_EXPORTED_SYMBOL_LIST + extra),
+            ],
+            affectedTests: many("test", 0, MAX_EXPORTED_SYMBOL_LIST + extra),
+          }),
+        ],
+      }),
+    );
+    const last = MAX_EXPORTED_SYMBOL_LIST - 1;
+    // The code to edit is listed in full: it is the list a reader acts on.
+    expect(md).toContain(`edit.fn${MAX_EXPORTED_SYMBOL_LIST + extra - 1}`);
+    for (const prefix of ["radius", "test"]) {
+      expect(md).toContain(`${prefix}.fn${last}\``);
+      expect(md).not.toContain(`${prefix}.fn${last + 1}\``);
+    }
+    expect(countOccurrences(md, `…and ${extra} more, listed on the impact analysis page.`)).toBe(2);
+    // The tests' heading still counts every one.
+    expect(md).toContain(
+      `#### Tests covering the impacted code (${MAX_EXPORTED_SYMBOL_LIST + extra} across`,
+    );
+  });
+
+  it("#2595 — a list at the cap gets no 'more' line", () => {
+    const md = serializeImpactAnalysisMarkdown(
+      impactDetail({
+        items: [
+          impactItem({
+            affectedSymbols: Array.from({ length: MAX_EXPORTED_SYMBOL_LIST }, (_, i) =>
+              impactSymbol({ id: `r-${i}`, depth: 1 }),
+            ),
+          }),
+        ],
+      }),
+    );
+    expect(md).toContain("#### Blast radius (for review)");
+    expect(md).not.toContain("more, listed on the impact analysis page");
   });
 
   it("#1965 — a single-repository item names no repository", () => {

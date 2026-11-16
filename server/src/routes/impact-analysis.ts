@@ -100,6 +100,7 @@ import {
   type SubjectDialog,
 } from "../lib/clarifications/subject-clarifications.js";
 import { subjectClarifyUserRateLimiter } from "../middleware/subject-clarify-rate-limit.js";
+import { handoffExportUserRateLimiter } from "../middleware/handoff-export-rate-limit.js";
 import {
   handleSubjectClarifyPost,
   noDialog,
@@ -132,6 +133,12 @@ import { canSeeDocument } from "../lib/documents/document-visibility.js";
 import { diffImpactRuns } from "../lib/impact-analysis/impact-drift.js";
 import type { ImpactDriftReport } from "@metis/shared";
 import { serializeImpactAnalysisMarkdown } from "../lib/analysis/analysis-export.js";
+import {
+  answeredClarifications,
+  handoffTitle,
+  loadHandoffChangeRequest,
+  serializeHandoffMarkdown,
+} from "../lib/impact-analysis/handoff-export.js";
 import {
   findImpactAnalysisJiraLink,
   publishImpactAnalysisToJira,
@@ -1660,6 +1667,65 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
       next(asAppError(err));
     }
   });
+
+  // GET /:id/export?format=docx|pdf — Issue #2595. The BA's hand-off: the change
+  // request the run was started from plus this impact analysis, as ONE readable
+  // Word or PDF document through the generated-docs export pipeline (no LLM
+  // call). Authorized as GET /:id; the change request is read only within the
+  // run's projects, as this reader may see it (#2447), and the run's own
+  // clarification answers only when its document is readable to them (#2270).
+  // A PDF, or a Word export holding a Mermaid diagram, launches Chromium, so
+  // both formats are capped per user (handoffExportUserRateLimiter).
+  r.get(
+    "/:id/export",
+    requirePermission("analysis.read"),
+    handoffExportUserRateLimiter,
+    async (req, res, next) => {
+      try {
+        const format = z.enum(["docx", "pdf"]).safeParse(req.query.format);
+        if (!format.success) {
+          throw new AppError(400, "INVALID_FORMAT", "format must be docx or pdf");
+        }
+        const actor = actorOf(req);
+        const id = String(req.params.id);
+        const detail = await loadAccessibleImpactDetail(actor, id);
+
+        const projects = await prisma.project.findMany({
+          where: { id: { in: detail.projectIds } },
+          select: { id: true, name: true },
+        });
+        const projectNames: Record<string, string> = {};
+        for (const p of projects) projectNames[p.id] = p.name;
+
+        const changeRequest = await loadHandoffChangeRequest(detail, userSourceReader(actor.id));
+        const dialog = await readableImpactDialog(actor, id);
+        const markdown = serializeHandoffMarkdown(
+          {
+            detail,
+            projectNames,
+            changeRequest,
+            impactClarifications: answeredClarifications(dialog?.state, dialog?.requirements),
+            readAt: new Date().toISOString(),
+          },
+          format.data,
+        );
+
+        const { exportDocument } = await import("../lib/docs-gen/exporters.js");
+        const result = await exportDocument(
+          markdown,
+          handoffTitle({ detail, changeRequest }),
+          format.data,
+        );
+        res.setHeader("Content-Type", result.mimeType);
+        res.setHeader("Content-Disposition", `attachment; filename="${result.filename}"`);
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write -- `result.buffer` is a generated binary document (PDF/DOCX), not HTML; the explicit binary Content-Type, attachment disposition, and nosniff header prevent any HTML interpretation.
+        res.send(result.buffer);
+      } catch (err) {
+        next(asAppError(err));
+      }
+    },
+  );
 
   // GET /:id/publish/jira/preview — #2594. What "Publish to Jira" would do,
   // without sending anything: the Jira project (key + site) and METIS project
