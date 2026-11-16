@@ -118,6 +118,7 @@ import {
 } from "../lib/analysis/checkpoint-access.js";
 import { documentVisibilityFor } from "../lib/documents/document-visibility.js";
 import { InactiveAclActorError, resolveAclActor } from "../lib/rag/acl.js";
+import { BudgetExceededError } from "../lib/finops/budget-enforcer.js";
 import { AppError } from "../middleware/error-handler.js";
 import { documentFile } from "../middleware/document-file-upload.js";
 import {
@@ -906,6 +907,13 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
       } catch (err) {
         if (err instanceof CostCapExceededError) {
           throw new AppError(429, err.code, err.message, { cap: err.cap, used: err.used });
+        }
+        // #2569 — the project's own monthly budget is spent: the 402 chat gives.
+        if (err instanceof BudgetExceededError) {
+          throw new AppError(402, err.code, err.message, {
+            usedTokens: err.usedTokens,
+            budget: err.budget,
+          });
         }
         // #978 — a forced Claude tier the provider cannot run: refused, not remapped.
         if (err instanceof ModelNotServedError) {

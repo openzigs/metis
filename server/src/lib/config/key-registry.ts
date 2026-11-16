@@ -753,6 +753,15 @@ export const CONFIG_KEYS: Readonly<Record<string, ConfigKeyDef>> = Object.freeze
       "#2565 — the transcript compaction ceiling when ANALYSIS_CODE_EXPLORATION is explore. Default 64000 (A20's), and never more than half the model's catalogued context window (#1384), so whole-file reads cannot overflow a small local model. fast keeps 16000.",
     sensitive: false,
   },
+  // ── Issue #2569 — the code pass's dollar ceiling ────────────────────────
+  ANALYSIS_CODE_PASS_MAX_USD: {
+    tier: "tunable",
+    valueType: "string",
+    schema: z.coerce.number().min(0).max(1000),
+    description:
+      "#2569 — the agentic code pass's dollar ceiling, in USD per requirement the pass investigates (A20's $1 cap was per requirement, #2560). Default 1.00; 0 turns it off. Applied in both ANALYSIS_CODE_EXPLORATION modes, shared across a multi-repository run's passes, and doubled with the token budget on Continue with a larger budget. Every model call of the pass counts — each turn (the explorer nudge and the continuation nudges are turns), the final-answer retry, the salvage and repair calls, both escalation passes — priced from the ledger rates (MODEL_PRICES and the built-in rates) as the usage page prices them. Checked BEFORE each call, so a pass can overshoot by at most one call's cost ($0.10 calls under a $0.25 ceiling: three calls, $0.30). A pass stopped by it keeps what it found, its unsettled requirements are could-not-verify (never gaps), and the run shows the code-pass-cost-ceiling reason with Continue. A model with no ledger price is never treated as $0: the pass is bounded by ANALYSIS_AGENT_TOKEN_BUDGET alone and the run records cost-ceiling-unpriced.",
+    sensitive: false,
+  },
   // ── Issue #1063 — reasoning on the degraded pass's two recovery calls ──
   ANALYSIS_RECOVERY_REASONING: {
     tier: "tunable",
