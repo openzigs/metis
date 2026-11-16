@@ -28,6 +28,8 @@ import {
   readDialogStateRevision,
   replaceDialogState,
   writeDialogState,
+  type DialogKey,
+  type DialogSubjectKind,
 } from "./clarification-dialog-store.js";
 import type { GoverningQuestionSource } from "../governing/applicability-questions.js";
 import { QUESTION_IMPACTS, UNCERTAINTY_KINDS, addressedAmbiguities } from "./types/requirements.js";
@@ -161,20 +163,17 @@ Do not include markdown fences or commentary.`;
 // module-level Map, so in-flight clarification survives a server restart. The
 // public helpers keep their names but are now async (DB-backed).
 
-export async function getDialogState(analysisId: string): Promise<ClarificationState | undefined> {
-  return readDialogState(analysisId);
+export async function getDialogState(key: DialogKey): Promise<ClarificationState | undefined> {
+  return readDialogState(key);
 }
 
-export async function clearDialogState(analysisId: string): Promise<void> {
-  await deleteDialogState(analysisId);
+export async function clearDialogState(key: DialogKey): Promise<void> {
+  await deleteDialogState(key);
 }
 
 /** @internal — exposed for testing; persists state to the durable store. */
-export async function _setDialogState(
-  analysisId: string,
-  state: ClarificationState,
-): Promise<void> {
-  await writeDialogState(analysisId, state);
+export async function _setDialogState(key: DialogKey, state: ClarificationState): Promise<void> {
+  await writeDialogState(key, state);
 }
 
 // ── Pure prompt builders (shared with the e2e fixture builder, #235) ─────
@@ -320,6 +319,13 @@ export interface ClarificationDialogDeps {
    * mode by adding or leaving out `sources`.
    */
   modeFrom?: readonly StructuredRequirement[];
+  /**
+   * #2270 — the dialog is an Impact Analysis run's or a portfolio check's, not
+   * a requirements analysis's: the id each method takes is that run's or
+   * check's, and its state lives in `SubjectClarificationDialog`. Absent: an
+   * analysis's dialog, as before.
+   */
+  subject?: DialogSubjectKind;
 }
 
 /**
@@ -373,6 +379,7 @@ export class ClarificationDialog {
   private readonly priorAnswers: PriorAnswerSource | undefined;
   private readonly sourceQuestions: boolean | undefined;
   private readonly modeFrom: readonly StructuredRequirement[] | undefined;
+  private readonly subject: DialogSubjectKind | undefined;
 
   constructor(deps: ClarificationDialogDeps) {
     this.provider = deps.provider;
@@ -384,6 +391,12 @@ export class ClarificationDialog {
     this.priorAnswers = deps.priorAnswers;
     this.sourceQuestions = deps.sourceQuestions;
     this.modeFrom = deps.modeFrom;
+    this.subject = deps.subject;
+  }
+
+  /** #2270 — the store key of the dialog with id `id`: an analysis's, or the subject's. */
+  private keyOf(id: string): DialogKey {
+    return this.subject ? { kind: this.subject, id } : id;
   }
 
   /**
@@ -549,13 +562,14 @@ export class ClarificationDialog {
     requirements: StructuredRequirements,
     signal?: AbortSignal,
   ): Promise<ClarificationState> {
-    const read = await readDialogStateRevision(analysisId);
+    const read = await readDialogStateRevision(this.keyOf(analysisId));
     const existing = read?.state;
     // Issue #937 — a remounted Questions tab POSTed a second start while the
     // first was still generating, and that second round replaced the first
     // one's questions (and billed question generation twice). A start that
     // arrives while one for the same analysis + round is in flight joins it.
-    const key = `${analysisId}:${existing?.currentRound ?? 1}`;
+    // #2270 — a subject's dialog is keyed apart from an analysis's of the same id.
+    const key = `${this.subject ? `${this.subject}:` : ""}${analysisId}:${existing?.currentRound ?? 1}`;
     const inFlight = startsInFlight.get(key);
     if (inFlight) return inFlight;
     const started = this.runStart(analysisId, requirements, read, signal).finally(() => {
@@ -577,8 +591,9 @@ export class ClarificationDialog {
     revision: string | undefined,
     state: ClarificationState,
   ): Promise<ClarificationState> {
-    if ((await replaceDialogState(analysisId, revision, state)) !== null) return state;
-    const current = await readDialogState(analysisId);
+    const key = this.keyOf(analysisId);
+    if ((await replaceDialogState(key, revision, state)) !== null) return state;
+    const current = await readDialogState(key);
     log.warn("A clarification start was not written: the dialog changed while it ran", {
       analysisId,
       round: state.currentRound,
@@ -826,7 +841,7 @@ export class ClarificationDialog {
     ) => Promise<void>,
   ): Promise<{ state: ClarificationState; updatedRequirements: StructuredRequirements }> {
     requirements = withAmbiguityDefaults(requirements);
-    const read = await readDialogStateRevision(analysisId);
+    const read = await readDialogStateRevision(this.keyOf(analysisId));
     if (!read) {
       throw new Error(`No clarification dialog found for analysis ${analysisId}`);
     }
@@ -914,9 +929,14 @@ export class ClarificationDialog {
 
     // #2101 — only if no other write landed since this submit read the state.
     // #2142 — and with `beforeCommit`'s writes, in one transaction.
-    const committed = await commitDialogState(analysisId, revision, state, async (tx) => {
-      await beforeCommit?.({ state, updatedRequirements }, tx);
-    });
+    const committed = await commitDialogState(
+      this.keyOf(analysisId),
+      revision,
+      state,
+      async (tx) => {
+        await beforeCommit?.({ state, updatedRequirements }, tx);
+      },
+    );
     if (committed === null) {
       throw new AppError(
         409,

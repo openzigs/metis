@@ -26,7 +26,14 @@ import {
 
 const log = createChildLogger("clarification-records");
 
-export type ClarificationOrigin = "analysis" | "spec-kit";
+/**
+ * Where an answer was given. #2270 — `impact` and `portfolio`: an Impact
+ * Analysis run's or a portfolio check's dialog, whose id is kept as the
+ * record's `analysisId` (the run the answer was given in).
+ */
+export type ClarificationOrigin = "analysis" | "spec-kit" | "impact" | "portfolio";
+
+const ORIGINS: readonly ClarificationOrigin[] = ["analysis", "spec-kit", "impact", "portfolio"];
 
 /** The paragraph of a document a question was asked about. */
 export interface ClarificationSource {
@@ -155,7 +162,7 @@ function toStored(row: Row): StoredClarification {
   return {
     id: row.id,
     projectId: row.projectId,
-    origin: row.origin === "spec-kit" ? "spec-kit" : "analysis",
+    origin: ORIGINS.find((o) => o === row.origin) ?? "analysis",
     questionKey: row.questionKey,
     analysisId: row.analysisId,
     specKitFeature: row.specKitFeature,

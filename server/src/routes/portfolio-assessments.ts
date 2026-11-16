@@ -115,6 +115,19 @@ import {
   type PortfolioDocumentReader,
 } from "../lib/portfolio/document-requirements.js";
 import {
+  clarifiableRequirements,
+  readSubjectDialog,
+  saveSubjectClarifiable,
+  type SubjectDialog,
+} from "../lib/clarifications/subject-clarifications.js";
+import { subjectClarifyUserRateLimiter } from "../middleware/subject-clarify-rate-limit.js";
+import {
+  handleSubjectClarifyPost,
+  noDialog,
+  subjectClarifyRead,
+  type SubjectClarifyDeps,
+} from "./subject-clarify.js";
+import {
   changeRequestStatement,
   renderPortfolioAssessmentMarkdown,
   resolveReaderAccess,
@@ -156,6 +169,8 @@ export interface PortfolioAssessmentsRouterDeps {
   heartbeatMs?: number;
   /** Report collaborators (#1624); the model defaults to the gap engine's. */
   report?: Omit<PortfolioReportDeps, "signal">;
+  /** #2270 — the clarification dialog's model and search (tests inject them). */
+  clarify?: SubjectClarifyDeps;
   /** #2272 — how a check started from a document reads it; tests inject these. */
   document?: {
     storage?: ReadStoredFile;
@@ -396,7 +411,7 @@ export async function gapInputFor(
 async function resolveDocumentSource(
   source: RunSource,
   deps: PortfolioAssessmentsRouterDeps,
-): Promise<RunSource & { costUsd: number }> {
+): Promise<RunSource & { costUsd: number; documentReading?: DocumentReadingOf }> {
   if (!source.documentId) return { ...source, costUsd: 0 };
   const enabled = (deps.document?.readerEnabled ?? isDocumentReaderEnabled)();
   const reader = !enabled
@@ -421,7 +436,59 @@ async function resolveDocumentSource(
     }),
     notChecked: [...source.notChecked, ...read.notChecked],
     costUsd: read.costUsd,
+    ...(read.documentReading ? { documentReading: read.documentReading } : {}),
   };
+}
+
+type DocumentReadingOf = NonNullable<
+  Awaited<ReturnType<typeof requirementsFromDocument>>["documentReading"]
+>;
+
+/**
+ * #2270 — what the check's document reading holds that is worth asking about,
+ * stored as the check's clarification dialog. Nothing when no requirement it
+ * read has a GtWR flag. A failure is logged: the check runs on.
+ */
+async function saveCheckClarifiable(id: string, read: DocumentReadingOf): Promise<void> {
+  try {
+    const requirements = clarifiableRequirements(read.reading, {
+      documentId: read.document.documentId,
+      title: read.title,
+    });
+    if (!requirements) return;
+    await saveSubjectClarifiable(
+      { kind: "portfolio", id },
+      { projectId: read.document.projectId, documentId: read.document.documentId, requirements },
+    );
+  } catch (err) {
+    log.warn("Portfolio check's clarifying questions could not be prepared", {
+      id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
+ * #2270 — the check's clarification dialog for `user`, or null when it has
+ * none, or its document is deleted or one `user` may not read now (its
+ * project, then its access list, as `loadReadableSourceDocument`). The
+ * caller has checked the check itself (`viewPortfolioAssessment`).
+ */
+async function readableCheckDialog(user: AuthPayload, id: string): Promise<SubjectDialog | null> {
+  const dialog = await readSubjectDialog({ kind: "portfolio", id });
+  if (!dialog) return null;
+  const doc = await prisma.document.findFirst({
+    where: { id: dialog.documentId, deletedAt: null },
+    select: { projectId: true, aclSubjects: true },
+  });
+  if (
+    !doc ||
+    !(await canAccessProjectDiscussions({ id: user.userId, role: user.role }, doc.projectId)) ||
+    !(await canSeeDocument(user.userId, doc))
+  ) {
+    return null;
+  }
+  return dialog;
 }
 
 /**
@@ -483,7 +550,13 @@ async function runAssessment(
     if (!(await setPortfolioAssessmentStatus(id, "running"))) return;
     jobEvents.started(KIND, id, null, "Portfolio assessment started");
     // #2272 — a document's requirements, read by the model (or split) first.
-    const { input, notChecked, costUsd: readCostUsd } = await resolveDocumentSource(source, deps);
+    const {
+      input,
+      notChecked,
+      costUsd: readCostUsd,
+      documentReading,
+    } = await resolveDocumentSource(source, deps);
+    if (documentReading) await saveCheckClarifiable(id, documentReading);
     const gap = await evaluatePortfolioGap(user, input, {
       ...deps.gap,
       // #2354 — the reading's cost counts against the run's cap, and is in the gap's cost.
@@ -697,6 +770,55 @@ export function portfolioAssessmentsRouter(deps: PortfolioAssessmentsRouterDeps 
           userSourceReader(req.user!.userId),
         );
         res.json(ok({ ...view, changeRequest }));
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  // #2270 — the check's clarifying questions about its document, in the same
+  // dialog as a requirements analysis. Read as GET /:id is (the check), and the
+  // caller must still be able to read the document it quotes.
+  r.get(
+    "/:id/clarify",
+    portfolioAssessmentPreAuthRateLimiter,
+    requireAuth,
+    portfolioAssessmentReadRateLimiter,
+    requirePermission("analysis.read"),
+    async (req, res, next) => {
+      try {
+        const user = req.user!;
+        const access = await resolveReaderAccess(user);
+        const view = await viewPortfolioAssessment(access, String(req.params.id));
+        if (!view) throw notFound();
+        res.json(ok(subjectClarifyRead(await readableCheckDialog(user, view.id))));
+      } catch (err) {
+        next(err);
+      }
+    },
+  );
+
+  r.post(
+    "/:id/clarify",
+    portfolioAssessmentPreAuthRateLimiter,
+    requireAuth,
+    requirePermission("analysis.run"),
+    subjectClarifyUserRateLimiter,
+    async (req, res, next) => {
+      try {
+        const user = req.user!;
+        const access = await resolveReaderAccess(user);
+        const view = await viewPortfolioAssessment(access, String(req.params.id));
+        if (!view) throw notFound();
+        const dialog = await readableCheckDialog(user, view.id);
+        if (!dialog) throw noDialog();
+        await handleSubjectClarifyPost(
+          req,
+          res,
+          { kind: "portfolio", id: view.id },
+          dialog,
+          deps.clarify,
+        );
       } catch (err) {
         next(err);
       }

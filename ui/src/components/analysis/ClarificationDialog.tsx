@@ -18,6 +18,7 @@ import {
   type ClarifyingQuestion,
   type ClarifyingQuestionCitation,
   type ClarifyImportResult,
+  type ClarifySubmitResult,
   type SetAsideClarifyingQuestion,
   type StructuredRequirement,
 } from "@/lib/analysis-api";
@@ -358,9 +359,32 @@ export interface NextRoundStatus {
   onRetry: () => void;
 }
 
-interface ClarificationDialogProps {
-  projectId: string;
-  analysisId: string;
+/**
+ * #2270 — where the panel sends its answers. A requirements analysis's dialog
+ * also round-trips its questions as CSV; an Impact Analysis run's or a
+ * portfolio check's has no CSV, and the panel then offers none.
+ */
+export interface ClarificationPanelApi {
+  submit: (answers: Array<{ questionId: string; answer: string }>) => Promise<ClarifySubmitResult>;
+  exportCsv?: () => Promise<{ blob: Blob; filename: string }>;
+  importCsv?: (file: File) => Promise<ClarifyImportResult>;
+}
+
+/** A requirements analysis's dialog, as the panel has always sent it. */
+function analysisPanelApi(projectId: string, analysisId: string): ClarificationPanelApi {
+  return {
+    submit: (answers) => analysisApi.submitClarifyAnswers(projectId, analysisId, answers),
+    exportCsv: () => analysisApi.exportClarifyCsv(projectId, analysisId),
+    importCsv: (file) => analysisApi.importClarifyAnswers(projectId, analysisId, file),
+  };
+}
+
+/** #2270 — an analysis's dialog, by its ids; or any other dialog, by its {@link ClarificationPanelApi}. */
+type ClarificationDialogTarget =
+  | { projectId: string; analysisId: string; api?: undefined }
+  | { api: ClarificationPanelApi; projectId?: undefined; analysisId?: undefined };
+
+type ClarificationDialogProps = ClarificationDialogTarget & {
   state: ClarificationStatePayload;
   /** #2085 — set while the current round is due and not yet generated. */
   nextRound?: NextRoundStatus;
@@ -377,7 +401,7 @@ interface ClarificationDialogProps {
    * questions: the two disagreed (13 here, 12 there).
    */
   requirements?: StructuredRequirement[];
-}
+};
 
 /**
  * #2085 — shown in place of the questions and Submit while the next round is
@@ -424,14 +448,9 @@ function roundNotOpen(error: unknown): boolean {
 /** #2142 — what a submit and an import both say when their round had closed. */
 const ROUND_CLOSED_MESSAGE = "This round was already answered. Showing the current questions.";
 
-export function ClarificationDialogPanel({
-  projectId,
-  analysisId,
-  state,
-  nextRound,
-  onComplete,
-  requirements,
-}: ClarificationDialogProps): React.ReactElement {
+export function ClarificationDialogPanel(props: ClarificationDialogProps): React.ReactElement {
+  const { state, nextRound, onComplete, requirements } = props;
+  const api = props.api ?? analysisPanelApi(props.projectId, props.analysisId);
   const currentRound = state.rounds[state.rounds.length - 1];
   const questions = currentRound?.questions ?? [];
 
@@ -517,9 +536,7 @@ export function ClarificationDialogPanel({
   // the answers had gone nowhere. Refresh on every successful submit.
   const submitMutation = useAppMutation({
     mutationFn: () =>
-      analysisApi.submitClarifyAnswers(
-        projectId,
-        analysisId,
+      api.submit(
         // #2122 — only the boxes the user filled: a blank box is no answer.
         Object.entries(answers)
           .filter(([, answer]) => answer.trim().length > 0)
@@ -556,7 +573,10 @@ export function ClarificationDialogPanel({
   const [importSummary, setImportSummary] = useState<ClarifyImportResult | null>(null);
 
   const exportMutation = useAppMutation({
-    mutationFn: () => analysisApi.exportClarifyCsv(projectId, analysisId),
+    mutationFn: () => {
+      if (!api.exportCsv) throw new Error("This dialog has no CSV export");
+      return api.exportCsv();
+    },
     successMessage: "Questions exported",
     errorMessage: "Failed to export questions",
     onSuccess: ({ blob, filename }) => {
@@ -565,7 +585,10 @@ export function ClarificationDialogPanel({
   });
 
   const importMutation = useAppMutation({
-    mutationFn: (file: File) => analysisApi.importClarifyAnswers(projectId, analysisId, file),
+    mutationFn: (file: File) => {
+      if (!api.importCsv) throw new Error("This dialog has no CSV import");
+      return api.importCsv(file);
+    },
     successMessage: (result) =>
       `Imported ${result.applied} answer(s)` +
       (result.unmatched.length > 0 ? ` — ${result.unmatched.length} unmatched` : ""),
@@ -595,7 +618,9 @@ export function ClarificationDialogPanel({
     }
   };
 
-  const csvActions = (
+  // #2270 — only a dialog that round-trips CSV offers it.
+  const hasCsv = api.exportCsv !== undefined && api.importCsv !== undefined;
+  const csvActions = !hasCsv ? null : (
     <div className="flex items-center gap-2">
       <Button
         variant="outline"
@@ -691,8 +716,8 @@ export function ClarificationDialogPanel({
         </div>
       </div>
       <p className="text-sm text-muted-foreground">
-        Please answer these questions to resolve requirement ambiguities. You can also export them
-        to CSV, answer offline, and re-import the file.
+        Please answer these questions to resolve requirement ambiguities.
+        {hasCsv && " You can also export them to CSV, answer offline, and re-import the file."}
       </p>
 
       {importSummary && (
