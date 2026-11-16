@@ -210,6 +210,8 @@ async function execute(
   // more than one tool result should carry (a result is re-sent every turn
   // until compaction elides it). The first line is always kept, cut to the cap.
   let charCapped = false;
+  /** The full length of a first line cut at `maxChars`, else 0. */
+  let lineCut = 0;
   if (maxChars !== undefined && slice.length > 0) {
     let used = 0;
     let kept = 0;
@@ -224,7 +226,12 @@ async function execute(
       slice = slice.slice(0, kept);
       clampedEnd = startLine + kept - 1;
     }
-    if (slice[0]!.length > maxChars) slice = [slice[0]!.slice(0, maxChars)];
+    // A line longer than the cap (a minified bundle) is cut too, and says so:
+    // silently cutting it reported a partial line as a complete read.
+    if (slice[0]!.length > maxChars) {
+      lineCut = slice[0]!.length;
+      slice = [slice[0]!.slice(0, maxChars)];
+    }
   }
   // #726 — truncated means "you did not get what you asked for": the per-call
   // cap cut an explicit range, or an open-ended read stopped before the end of
@@ -233,9 +240,10 @@ async function execute(
   // every symbol-sized read, and the agent reported fully-read functions as
   // cut off. The header still says "lines X-Y of N" either way.
   const truncated =
-    validated.endLine === undefined
+    lineCut > 0 ||
+    (validated.endLine === undefined
       ? clampedEnd < lines.length
-      : (capped || charCapped) && clampedEnd < lines.length;
+      : (capped || charCapped) && clampedEnd < lines.length);
 
   // #773 — an OUT-OF-RANGE read is a BAD CALL, not a fact about the codebase. If it
   // returned `resultCount: 0` it would be indistinguishable from a well-formed empty
@@ -254,9 +262,13 @@ async function execute(
   // lines: chat caps the model's copy of a result by keeping its start
   // (`capForModel`, #138), and a 200-line read is routinely longer than that
   // cap, so a hint after the lines would be cut away with them.
-  const next = truncated
-    ? { startLine: clampedEnd + 1, endLine: Math.min(clampedEnd + maxLines, lines.length) }
-    : undefined;
+  const next =
+    truncated && clampedEnd < lines.length
+      ? { startLine: clampedEnd + 1, endLine: Math.min(clampedEnd + maxLines, lines.length) }
+      : undefined;
+  const lineNote = lineCut
+    ? `\n[Line ${startLine} cut at ${maxChars} of its ${lineCut} characters; the rest of that line cannot be read through this tool.]`
+    : "";
   const paging = next
     ? charCapped
       ? `\n[Cut at ${maxChars} characters per call: request lines ${next.startLine}-${next.endLine} next.]`
@@ -264,7 +276,7 @@ async function execute(
     : "";
 
   return {
-    content: `${header}${paging}\n${numbered.join("\n")}`,
+    content: `${header}${lineNote}${paging}\n${numbered.join("\n")}`,
     truncated,
     resultCount: slice.length,
     // #2325 — the citation contract. The version is the caller's to state: this

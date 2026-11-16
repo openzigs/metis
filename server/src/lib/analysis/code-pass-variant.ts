@@ -158,7 +158,7 @@ export function resolveCodePassMode(input: {
  * (the watermark's modest fallback when the catalogue does not know it).
  */
 export function resolveExploreTranscriptTokens(providerKey: string, model: string): number {
-  const configured = getConfigService().getNumber(
+  const configured = positiveSetting(
     EXPLORE_TRANSCRIPT_TOKENS_KEY,
     DEFAULT_EXPLORE_TRANSCRIPT_TOKENS,
   );
@@ -208,16 +208,24 @@ export interface ExploreCodePass {
   ) => NonNullable<AgentLoopOptions["continuation"]>;
 }
 
+/**
+ * A positive integer key, or `fallback`. The key's schema is applied only on a
+ * write through the config service; a value read from the environment is not
+ * validated, so `0`, a negative or a non-number would reach a tool and fail
+ * every explore pass. A typo degrades to the default instead.
+ */
+function positiveSetting(key: string, fallback: number): number {
+  const n = getConfigService().getNumber(key, fallback);
+  return Number.isInteger(n) && n >= 1 ? n : fallback;
+}
+
 /** The explore-mode pass for `providerKey`/`model`, with the given search tools. */
 export function buildExploreCodePass(input: {
   search: ExplorerSearchTools;
   providerKey: string;
   model: string;
 }): ExploreCodePass {
-  const readMaxLines = getConfigService().getNumber(
-    EXPLORE_READ_MAX_LINES_KEY,
-    DEFAULT_EXPLORE_READ_MAX_LINES,
-  );
+  const readMaxLines = positiveSetting(EXPLORE_READ_MAX_LINES_KEY, DEFAULT_EXPLORE_READ_MAX_LINES);
   return {
     systemMessage: (systemMessage) => explorerSystemMessage(systemMessage, readMaxLines),
     tools: explorerTools(input.search, readMaxLines),
