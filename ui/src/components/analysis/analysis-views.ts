@@ -321,12 +321,21 @@ export function agentDisplayStatus(
   return agent.status;
 }
 
-/** Whole minutes and seconds since `startedAt`, e.g. `4m 12s`; `0s` for a future time. */
-function elapsedLabel(startedAt: string, now: number): string {
-  const seconds = Math.max(0, Math.floor((now - Date.parse(startedAt)) / 1000));
-  if (!Number.isFinite(seconds)) return "";
+/**
+ * Elapsed time since `startedAt`, never negative: `short` is #766's `4m 12s`,
+ * `plain` is #2571's `4 min 12 s`. `null` when `startedAt` is unreadable.
+ */
+export function elapsedLabel(
+  startedAt: string,
+  now: number,
+  format: "short" | "plain" = "short",
+): string | null {
+  const ms = now - Date.parse(startedAt);
+  if (!Number.isFinite(ms)) return null;
+  const seconds = Math.max(0, Math.floor(ms / 1000));
   const minutes = Math.floor(seconds / 60);
-  return minutes > 0 ? `${minutes}m ${seconds % 60}s` : `${seconds}s`;
+  const [min, sec] = format === "plain" ? [" min ", " s"] : ["m ", "s"];
+  return minutes > 0 ? `${minutes}${min}${seconds % 60}${sec}` : `${seconds}${sec}`;
 }
 
 /**
@@ -336,15 +345,73 @@ function elapsedLabel(startedAt: string, now: number): string {
  * `running` (#706 run 8).
  */
 export function liveAgentLine(live: AnalysisLiveAgent, now: number = Date.now()): string {
+  const { status, elapsed } = liveAgentLineParts(live, now);
+  return `${status}${elapsed}`;
+}
+
+/**
+ * Issue #2571 — {@link liveAgentLine} split into what changes on a poll
+ * (`status`) and the time that counts up every second (`elapsed`, `""` when
+ * unreadable), so a live region can hold the one without the other.
+ */
+export function liveAgentLineParts(
+  live: AnalysisLiveAgent,
+  now: number,
+): { status: string; elapsed: string } {
   const parts = [live.rerun ? "Re-running" : "Running"];
   if (live.phase === "synthesizing") {
     parts.push("updating the run summary with the new findings");
   } else if (live.toolCalls > 0) {
     parts.push(`${live.toolCalls} step${live.toolCalls === 1 ? "" : "s"} so far`);
   }
-  const elapsed = elapsedLabel(live.startedAt, now);
-  if (elapsed) parts.push(elapsed);
-  return parts.join(" · ");
+  const time = elapsedLabel(live.startedAt, now);
+  return { status: parts.join(" · "), elapsed: time ? ` · ${time}` : "" };
+}
+
+/**
+ * Issue #2571 — how far the server's clock is ahead of this browser's (ms),
+ * from the snapshot's `liveAgentsReadAt` and the time the browser received it.
+ * The progress line counts elapsed time as `Date.now() + offset - startedAt`,
+ * so a skewed client clock cannot show the wrong time. 0 when the snapshot
+ * carries no readable server time (an older server).
+ */
+export function serverClockOffsetMs(readAt: string | null | undefined, receivedAt: number): number {
+  const server = readAt ? Date.parse(readAt) : Number.NaN;
+  return Number.isFinite(server) && Number.isFinite(receivedAt) ? server - receivedAt : 0;
+}
+
+/** Issue #2571 — what an exploring code pass is doing, for an analyst. Shown in explore mode only. */
+export const EXPLORE_PROGRESS_NOTE =
+  "METIS is reading the code the way a developer would. This takes a little longer and finds more of what the change touches.";
+
+/**
+ * Issue #2571 — the plain-language progress line while METIS reads the code,
+ * from #2570's counts: "Reading the code: 14 files read, 9 searches, 1 min 10 s
+ * so far." `counts` is the part a poll changes and `elapsed` the part that
+ * counts up every second (", 1 min 10 s so far."), so a live region can hold
+ * the one without the other; `line` is both. `note` is
+ * {@link EXPLORE_PROGRESS_NOTE} in `explore` mode, else `null`. `null` for any
+ * other agent, once the run is re-summarising, and for an entry without the
+ * counts (a server from before #2570), which keep {@link liveAgentLine}.
+ */
+export function codeReadingProgress(
+  live: AnalysisLiveAgent,
+  now: number,
+): { line: string; counts: string; elapsed: string; note: string | null } | null {
+  if (live.agentKey !== "code" || live.phase !== "investigating") return null;
+  const { filesRead, searches } = live as Partial<AnalysisLiveAgent>;
+  if (typeof filesRead !== "number" || typeof searches !== "number") return null;
+  const files = `${filesRead} file${filesRead === 1 ? "" : "s"} read`;
+  const searched = `${searches} search${searches === 1 ? "" : "es"}`;
+  const time = elapsedLabel(live.startedAt, now, "plain");
+  const counts = `Reading the code: ${files}, ${searched}`;
+  const elapsed = time ? `, ${time} so far.` : ".";
+  return {
+    line: `${counts}${elapsed}`,
+    counts,
+    elapsed,
+    note: live.mode === "explore" ? EXPLORE_PROGRESS_NOTE : null,
+  };
 }
 
 /**

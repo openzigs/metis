@@ -1653,6 +1653,20 @@ export interface AnalysisLiveAgent {
   startedAt: string;
   /** Tool calls the agent's investigation has made so far (the code agent's tool loop). */
   toolCalls: number;
+  /**
+   * #2570 — distinct files the code agent has read so far (`read_file_slice`
+   * calls that returned a file, counted once per file). A count only: never
+   * which files, so a restricted file a `starter` run read (#2448) is not
+   * named to a reader who cannot see it.
+   */
+  filesRead: number;
+  /** #2570 — code searches run so far: `grep_files`, `search_code_graph`, `search_code_symbols`. */
+  searches: number;
+  /**
+   * #2570 — the mode the code pass runs in (#2565), once it has resolved it.
+   * Absent for an agent with no code pass, and before the pass starts.
+   */
+  mode?: CodePassMode;
   /** True for a Regenerate / Continue of a finished run, false inside a normal run. */
   rerun: boolean;
   /** `synthesizing` once a re-run's agent is done and the run is re-synthesised. */
@@ -1764,6 +1778,13 @@ export interface AnalysisSnapshot {
   droppedCitations?: AnalysisDroppedCitations[];
   /** Issue #766 — agents running right now ({@link AnalysisLiveAgent}); empty when none is. */
   liveAgents?: AnalysisLiveAgent[];
+  /**
+   * Issue #2570 — the server's clock (ISO) when it read {@link liveAgents}, so a
+   * page counts a live agent's elapsed time from its `startedAt` against the
+   * server's time, never the browser's (a skewed client clock cannot show the
+   * wrong time).
+   */
+  liveAgentsReadAt?: string;
   /**
    * Issue #1131 — the budget "Continue with a larger budget" would run with,
    * present only while it is offered ({@link codeInvestigationContinueOffered}).

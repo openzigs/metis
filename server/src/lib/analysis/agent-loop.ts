@@ -95,6 +95,8 @@ export interface AgentLoopOptions {
     args: unknown;
     resultPreview: string;
     result?: string;
+    /** #773 — the tool's own outcome, when it reported one. */
+    isError?: boolean;
   }) => void;
   /**
    * P0 #769 — ONE bounded, tool-free "now emit your final answer" call, made

@@ -110,6 +110,8 @@ describe("#1131 a rerun in progress shows on the banner", () => {
     agentKey: "code",
     startedAt: new Date(Date.now() - 64_000).toISOString(),
     toolCalls: 12,
+    filesRead: 0,
+    searches: 0,
     rerun: true,
     phase: "investigating",
     continuation: { requirements: 3, total: 19 },
@@ -125,7 +127,8 @@ describe("#1131 a rerun in progress shows on the banner", () => {
     );
     const progress = screen.getByTestId("continuation-in-progress");
     expect(progress).toHaveTextContent("Rerun in progress: re-investigating 3 of 19 requirements");
-    expect(progress).toHaveTextContent("12 steps so far");
+    // #2571 — while it reads the code, the card's "Reading the code: …" line.
+    expect(progress).toHaveTextContent("Reading the code: 0 files read, 0 searches");
     expect(screen.queryByRole("button", { name: /Continue with a larger budget/ })).toBeNull();
   });
 

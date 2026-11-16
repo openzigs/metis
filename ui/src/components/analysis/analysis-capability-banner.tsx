@@ -82,6 +82,8 @@ interface Props {
   ledgerUsage?: AnalysisLedgerUsage | null;
   /** Issue #1131 — a continuation running right now, shown in place of the action. */
   liveContinuation?: AnalysisLiveAgent | null;
+  /** Issue #2571 — the server's clock minus this browser's, in ms (`serverClockOffsetMs`). */
+  clockOffsetMs?: number;
 }
 
 const ACTION_BUTTON =
@@ -96,6 +98,7 @@ export function AnalysisCapabilityBanner({
   continuationQuote,
   ledgerUsage,
   liveContinuation,
+  clockOffsetMs = 0,
 }: Props): React.ReactElement | null {
   const [confirming, setConfirming] = useState(false);
   if (!isAnalysisDegraded(capability) || !capability) return null;
@@ -203,7 +206,7 @@ export function AnalysisCapabilityBanner({
                   aria-live="polite"
                   data-testid="continuation-in-progress"
                 >
-                  {continuationProgressLine(liveContinuation, Date.now())}
+                  {continuationProgressLine(liveContinuation, Date.now() + clockOffsetMs)}
                 </p>
               ) : null}
               {/* Issue #1001 — continue a code pass that ran out of budget;
