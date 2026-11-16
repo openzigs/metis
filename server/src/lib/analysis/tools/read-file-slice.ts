@@ -16,8 +16,12 @@ import { redactSecrets } from "../../safety/secret-patterns.js";
 /** Lines per call: production's cap for every caller of {@link readFileSliceTool}. */
 export const MAX_LINES = 200;
 
-/** A repository-relative path as the index stores it: `/`-separated, no `./` or leading `/`. */
-function repoRelative(filePath: string): string {
+/**
+ * A repository-relative path as the index stores it: `/`-separated, no `./` or
+ * leading `/`. Also keys #2570's live `filesRead` count, so that counts files
+ * the way this tool resolves them.
+ */
+export function repoRelative(filePath: string): string {
   return path.posix
     .normalize(filePath.replace(/\\/g, "/"))
     .replace(/^(?:\.\/)+/, "")

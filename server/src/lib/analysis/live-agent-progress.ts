@@ -28,6 +28,7 @@
  * the pre-#766 behaviour, never a wrong one. See `deploy/helm/metis/README.md`.
  */
 import type { AnalysisLiveAgent, CodePassMode } from "@metis/shared";
+import { repoRelative } from "./tools/read-file-slice.js";
 
 type Entry = AnalysisLiveAgent;
 
@@ -123,16 +124,17 @@ export function recordLiveToolCall(
   entry.filesRead = files.size;
 }
 
-/** The file a `read_file_slice` call names, normalised so `./a.ts` and `a.ts` are one file. */
+/**
+ * The file a `read_file_slice` call names, normalised by the tool's own
+ * `repoRelative`, so `./a.ts`, `/a.ts`, `src//a.ts` and `src/x/../a.ts` count as
+ * the one file the tool reads.
+ */
 function readFilePath(args: unknown): string | null {
   const raw =
     args && typeof args === "object" ? (args as Record<string, unknown>).filePath : undefined;
   if (typeof raw !== "string") return null;
-  const file = raw
-    .trim()
-    .replace(/\\/g, "/")
-    .replace(/^(\.\/)+/, "");
-  return file === "" ? null : file;
+  const file = repoRelative(raw.trim());
+  return file === "" || file === "." ? null : file;
 }
 
 /**
