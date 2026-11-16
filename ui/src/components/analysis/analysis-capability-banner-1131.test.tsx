@@ -110,6 +110,8 @@ describe("#1131 a rerun in progress shows on the banner", () => {
     agentKey: "code",
     startedAt: new Date(Date.now() - 64_000).toISOString(),
     toolCalls: 12,
+    filesRead: 0,
+    searches: 0,
     rerun: true,
     phase: "investigating",
     continuation: { requirements: 3, total: 19 },

@@ -2577,6 +2577,8 @@ export async function getAnalysisSnapshot(
     ledgerUsage: await readAnalysisLedgerUsage(row.projectId, id),
     // #766 — a Regenerate in progress, shown on the agent's card.
     liveAgents: readLiveAgents(id),
+    // #2570 — the server's clock at that read, for the live elapsed time.
+    liveAgentsReadAt: new Date().toISOString(),
     // #1131 — the budget Continue would run with, quoted before it starts.
     codeContinuation: codeInvestigationContinueOffered(snapshot.capability)
       ? {

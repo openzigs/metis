@@ -516,6 +516,8 @@ describe("agentDisplayStatus", () => {
       agentKey: "code",
       startedAt: "2026-10-21T10:00:00.000Z",
       toolCalls: 3,
+      filesRead: 0,
+      searches: 0,
       rerun: true,
       phase: "investigating" as const,
     };
@@ -535,6 +537,8 @@ describe("liveAgentLine", () => {
     agentKey: "code",
     startedAt: started,
     toolCalls: 0,
+    filesRead: 0,
+    searches: 0,
     rerun: true,
     phase: "investigating" as const,
     ...over,
@@ -572,6 +576,8 @@ describe("stickyLiveAgents", () => {
     agentKey: "code",
     startedAt: "2026-10-21T09:58:00.000Z",
     toolCalls,
+    filesRead: 0,
+    searches: 0,
     rerun: true,
     phase: "investigating" as const,
   });
@@ -654,6 +660,8 @@ describe("agentCards", () => {
     agentKey,
     startedAt: "2026-10-21T10:00:00.000Z",
     toolCalls: 0,
+    filesRead: 0,
+    searches: 0,
     rerun: false,
     phase: "investigating" as const,
   });

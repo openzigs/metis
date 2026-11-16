@@ -32,7 +32,7 @@ vi.mock("../prisma.js", () => ({
 const { getAnalysisSnapshot } = await import("./analysis-service.js");
 const { prisma } = await import("../prisma.js");
 const { __resetConfigSingleton } = await import("../config/config-service.js");
-const { beginLiveAgent, recordLiveToolCall, resetLiveAgentsForTests } =
+const { beginLiveAgent, recordLiveToolCall, resetLiveAgentsForTests, setLiveAgentMode } =
   await import("./live-agent-progress.js");
 
 afterEach(() => resetLiveAgentsForTests());
@@ -49,10 +49,34 @@ describe("analysis snapshot live agents (#766)", () => {
         agentKey: "code",
         startedAt: "2026-10-21T00:06:00.000Z",
         toolCalls: 1,
+        filesRead: 0,
+        searches: 0,
         rerun: true,
         phase: "investigating",
       },
     ]);
+  });
+
+  it("#2570 — carries the counts and mode, and the server's clock at the read", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-21T00:07:10Z"));
+    try {
+      beginLiveAgent("an-1", "code", { rerun: false, now: new Date("2026-10-21T00:06:00Z") });
+      setLiveAgentMode("an-1", "code", "explore");
+      recordLiveToolCall("an-1", "code", { tool: "grep_files", args: { text: "zz-term" } });
+      recordLiveToolCall("an-1", "code", {
+        tool: "read_file_slice",
+        args: { filePath: "src/zz-file.ts" },
+      });
+      const snap = await getAnalysisSnapshot("an-1");
+      expect(snap?.liveAgents).toEqual([
+        expect.objectContaining({ filesRead: 1, searches: 1, mode: "explore", toolCalls: 2 }),
+      ]);
+      expect(snap?.liveAgentsReadAt).toBe("2026-10-21T00:07:10.000Z");
+      expect(JSON.stringify(snap?.liveAgents)).not.toContain("zz-");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("is empty when nothing runs, and never another analysis's agents", async () => {
