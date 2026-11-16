@@ -5808,6 +5808,10 @@ export class AnalysisOrchestrator {
                     offeredFromSynthesis: reviewedList.filter(
                       (r) => r.synthesisItemKey !== undefined,
                     ).length,
+                    // #2596 — and how many are NFRs the analysis found, so the
+                    // checkpoint can say what the reviewed list adds to the
+                    // count the summary gives.
+                    elicitedNfrs: reviewedList.filter((r) => r.elicitedNfr !== undefined).length,
                   },
                 }
               : {}),

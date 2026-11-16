@@ -9,7 +9,12 @@ import {
   type AnalysisCapability,
   type DocumentReadingCoverage,
 } from "@metis/shared";
-import { DocumentCoveragePanel, describeKinds } from "./document-coverage-panel";
+import {
+  DocumentCoveragePanel,
+  describeKinds,
+  describeStatementsToRequirements,
+  extractedRequirementCount,
+} from "./document-coverage-panel";
 
 function capability(documentReading?: DocumentReadingCoverage): AnalysisCapability {
   const base = {
@@ -74,7 +79,7 @@ describe("DocumentCoveragePanel", () => {
     render(<DocumentCoveragePanel capability={capability(READ)} />);
     const doc = screen.getByTestId("document-coverage-d1");
     expect(doc).toHaveTextContent(
-      "booking.docx — 3 requirements (with constraints and business rules) from 3 sections.",
+      "booking.docx — 3 requirement statements (with constraints and business rules) from 3 sections.",
     );
     expect(doc).toHaveTextContent("1 section produced nothing.");
     const sections = within(doc).getAllByTestId("document-coverage-section");
@@ -169,6 +174,49 @@ describe("#2280 — a reused reading", () => {
   it("says nothing about a reuse for a document read now", () => {
     render(<DocumentCoveragePanel capability={capability(READ)} />);
     expect(screen.queryByTestId("document-coverage-reused")).toBeNull();
+  });
+});
+
+/**
+ * Issue #2596 — the panel said 12 (statements read) where the summary said 8
+ * (requirements extracted from them) and the checkpoints 18 (the 8 plus 10
+ * NFRs the analysis found).
+ */
+describe("#2596 — statements read against the requirements extracted", () => {
+  it("says how the statements became fewer requirements", () => {
+    render(<DocumentCoveragePanel capability={capability(READ)} extractedRequirements={2} />);
+    expect(screen.getByTestId("document-coverage-reconciled")).toHaveTextContent(
+      "The analysis combined these 3 statements into 2 requirements: one requirement can rest on several statements.",
+    );
+  });
+
+  it("says nothing when the counts agree or the extraction count is unknown", () => {
+    render(<DocumentCoveragePanel capability={capability(READ)} extractedRequirements={3} />);
+    expect(screen.queryByTestId("document-coverage-reconciled")).toBeNull();
+    expect(describeStatementsToRequirements(3, undefined)).toBeNull();
+    expect(describeStatementsToRequirements(0, 4)).toBeNull();
+    expect(describeStatementsToRequirements(1, 1)).toBeNull();
+    expect(describeStatementsToRequirements(12, 1)).toBe(
+      "The analysis combined these 12 statements into 1 requirement: one requirement can rest on several statements.",
+    );
+  });
+
+  it("counts the reviewed list less what the analysis added to it", () => {
+    const metadata = {
+      structuredRequirements: {
+        requirements: [
+          { id: "a" },
+          { id: "b" },
+          { id: "NFR-1", elicitedNfr: { nfrCategory: "security", evidenceFindingIds: [] } },
+          { id: "SYN-1", synthesisItemKey: "k" },
+        ],
+      },
+    };
+    expect(extractedRequirementCount(metadata)).toBe(2);
+    expect(extractedRequirementCount({ structuredRequirements: { requirements: [] } })).toBe(
+      undefined,
+    );
+    expect(extractedRequirementCount(null)).toBe(undefined);
   });
 });
 

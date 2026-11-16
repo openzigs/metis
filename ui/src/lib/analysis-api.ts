@@ -1346,6 +1346,8 @@ export interface EnhancementMetadata {
       itemsWithoutReviewed: number;
       /** Issue #1569 — how many of the reviewed list were offered from the synthesis. */
       offeredFromSynthesis?: number;
+      /** Issue #2596 — how many of the reviewed list are NFRs the analysis found. */
+      elicitedNfrs?: number;
     };
     reason?: string;
   };
@@ -1471,6 +1473,12 @@ export interface ApprovalRequestPayload {
    * approving promotes it without one. Absent otherwise, and before synthesis.
    */
   noCodeEvidence?: boolean;
+  /**
+   * Issue #2596 — on a requirement the analysis added (an elicited NFR, or an
+   * item offered from synthesis), the id of the requirement read from the
+   * documents it resembles, so the panel lists the two together.
+   */
+  resembles?: string;
   /**
    * #2554 — the viewer cannot see the entry this checkpoint decides (it rests
    * on a document they cannot read): the server refuses their decision on it,

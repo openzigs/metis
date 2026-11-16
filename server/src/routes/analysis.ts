@@ -80,6 +80,7 @@ import {
   withGoverningStaleness,
 } from "../lib/governing/requirement-staleness.js";
 import { requirementsWithoutCodeEvidence } from "../lib/analysis/code-evidence.js";
+import { resembledRequirements } from "../lib/analysis/resembling-requirements.js";
 import { inSynthesisOrder } from "../lib/analysis/synthesis-finding-order.js";
 import { createChildLogger } from "../lib/logger.js";
 import {
@@ -626,6 +627,30 @@ async function requirementsWithoutCodeEvidenceFor(
       error: (err as Error).message,
     });
     return new Set();
+  }
+}
+
+/**
+ * Issue #2596 — of the reviewed list, each requirement the analysis added (an
+ * elicited NFR, or an item offered from synthesis) mapped to the requirement
+ * read from the documents that it resembles (`resembledRequirements`). Empty
+ * for an analysis with no requirement approvals or no reviewed list.
+ */
+async function resembledRequirementsFor(
+  analysisId: string,
+  listed: ReadonlyArray<{ type: string }>,
+): Promise<Map<string, string>> {
+  if (!listed.some((a) => a.type === "requirement")) return new Map();
+  // Best-effort, as the #1568 mark: grouping is advisory.
+  try {
+    const structured = await getStructuredRequirements(analysisId);
+    return resembledRequirements(structured?.requirements ?? []);
+  } catch (err) {
+    log.warn("Could not work out which added requirements resemble an extracted one", {
+      analysisId,
+      error: (err as Error).message,
+    });
+    return new Map();
   }
 }
 
@@ -2158,6 +2183,9 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
         rows,
         statusFilter !== undefined,
       );
+      // Issue #2596 — and which requirement the analysis added restates one
+      // read from the documents, so the panel shows the two side by side.
+      const resembles = await resembledRequirementsFor(analysisId, rows);
       // #2554 — a checkpoint whose entry the caller cannot see is marked, so
       // the panel offers no decision on it (the review routes refuse one; an
       // admin, whom they never refuse, is shown none marked).
@@ -2170,10 +2198,12 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           : row;
         if (row.type !== "requirement") return marked;
         const origin = origins.get(row.itemId);
+        const resembled = resembles.get(row.itemId);
         return {
           ...marked,
           ...(origin ? { origin } : {}),
           ...(withoutCode.has(row.itemId) ? { noCodeEvidence: true } : {}),
+          ...(resembled ? { resembles: resembled } : {}),
         };
       });
       const ticketStatus = await canCreateTickets(analysisId);

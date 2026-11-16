@@ -853,6 +853,44 @@ describe("#216 — promotion is gated on resolved approvals", () => {
       expect(persisted.requirements).toHaveLength(0);
     });
 
+    it("#2596 — records how many of the reviewed list are elicited NFRs", async () => {
+      const analysisId = "ana-offer-nfr";
+      structuredStore.list = {
+        requirements: [
+          reviewedReq,
+          {
+            ...reviewedReq,
+            id: "NFR-1",
+            title: "Feed URLs are validated",
+            type: "non-functional" as const,
+            elicitedNfr: { nfrCategory: "security" as const, evidenceFindingIds: [] },
+          },
+        ],
+        totalAmbiguities: 0,
+        totalEvidenceNeeds: 0,
+      };
+      runSynthesisMock.mockResolvedValueOnce({
+        output: { requirements: [items[0]] },
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      });
+      await approvalSvc.createApprovalRequests(analysisId, [
+        { type: "requirement", itemId: "r1" },
+        { type: "requirement", itemId: "NFR-1" },
+      ]);
+      const { orch } = makeOrchestrator();
+      await (orch as unknown as PrivateOrchestrator).runSynthesisAndPersist({
+        analysisId,
+        ...synthInput,
+      });
+
+      const blocked = persisted.enhancement.find((e) => "promotionBlocked" in e);
+      expect(blocked!.promotionBlocked).toMatchObject({
+        reviewedRequirementCount: 2,
+        synthesisRequirementCount: 1,
+        setDifference: { reviewedWithoutItem: 0, itemsWithoutReviewed: 0, elicitedNfrs: 1 },
+      });
+    });
+
     it("offers nothing from a degraded synthesis, whose items are findings", async () => {
       await runBlocked("ana-offer-degraded", { reason: "schema-invalid" });
 

@@ -94,7 +94,10 @@ import {
 import { AnalysisCapabilityBanner } from "@/components/analysis/analysis-capability-banner";
 import { RequirementInputAccountPanel } from "@/components/analysis/requirement-input-account-panel";
 import { AnalysisLimitsPanel } from "@/components/analysis/analysis-limits-panel";
-import { DocumentCoveragePanel } from "@/components/analysis/document-coverage-panel";
+import {
+  DocumentCoveragePanel,
+  extractedRequirementCount,
+} from "@/components/analysis/document-coverage-panel";
 import { AnalysisCapabilityHint } from "@/components/analysis/analysis-capability-hint";
 import { AffectedCodePanel } from "@/components/analysis/affected-code-panel";
 import { AnalysisDepthPanel } from "@/components/analysis/analysis-depth-panel";
@@ -122,6 +125,7 @@ import { VerificationBadge } from "@/components/analysis/VerificationBadge";
 // Issue #1232 — the run's outcome first, then a scannable finding body.
 import {
   AnalysisOutcomeCard,
+  describeListedForApproval,
   outcomeRequirementCount,
 } from "@/components/analysis/AnalysisOutcomeCard";
 import { SpecKitHandoffNotice } from "@/components/analysis/spec-kit-handoff-notice";
@@ -1315,6 +1319,7 @@ export default function AnalysisPage(): React.ReactElement {
                       detail.data.metadata,
                       detail.data.requirements.length,
                     )}
+                    listedForApproval={describeListedForApproval(detail.data.metadata)}
                     narrativeHidden={detail.data.restrictedView?.narrative === true}
                   />
 
@@ -1360,7 +1365,10 @@ export default function AnalysisPage(): React.ReactElement {
 
                   {/* Issue #2230 — what the document reader read from every selected
                   document and section. Renders nothing when the reader did not run. */}
-                  <DocumentCoveragePanel capability={detail.data.capability} />
+                  <DocumentCoveragePanel
+                    capability={detail.data.capability}
+                    extractedRequirements={extractedRequirementCount(detail.data.metadata)}
+                  />
 
                   {/* Issue #735 — deterministic requirement→code mapping for new requirements. */}
                   <AffectedCodePanel affectedCode={detail.data.affectedCode} />
@@ -1478,6 +1486,18 @@ export default function AnalysisPage(): React.ReactElement {
                         <RequirementsEmptyState
                           metadata={detail.data.metadata}
                           ticketStatus={approvals.data?.ticketStatus}
+                          // #2596 — list the pending requirements here, with Approve all.
+                          checkpoint={
+                            approvals.data
+                              ? {
+                                  projectId,
+                                  analysisId: detail.data.id,
+                                  approvals: approvals.data.items,
+                                  approvesAsDraft: !canApproveRequirements,
+                                  viewerId: user?.id,
+                                }
+                              : undefined
+                          }
                         />
                       ) : null}
                       {/* #1617 — start a Spec Kit feature from the ticked,

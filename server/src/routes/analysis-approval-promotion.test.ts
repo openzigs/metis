@@ -724,6 +724,62 @@ describe("#1568 — requirement approvals that would be promoted with no code li
       false,
     );
   });
+
+  it("#2596 — marks an elicited NFR with the extracted requirement it restates", async () => {
+    reviewedRun();
+    getStructuredRequirements.mockResolvedValue({
+      requirements: [
+        { id: "REQ-1", title: "Expired keys are refused like unknown keys", description: "" },
+        {
+          id: "NFR-1",
+          title: "Expired API keys refused identically to unknown keys",
+          description: "",
+          elicitedNfr: { nfrCategory: "security", evidenceFindingIds: ["f-1"] },
+        },
+      ],
+      totalAmbiguities: 0,
+      totalEvidenceNeeds: 0,
+    });
+    readFlattenedFindings.mockResolvedValue([
+      {
+        findingId: "f-1",
+        citations: [{ filePath: "internal/api/middleware.go", startLine: 1, endLine: 9 }],
+      },
+    ]);
+    listApprovalRequests.mockResolvedValue([
+      { ...rows[0], itemId: "REQ-1" },
+      { ...rows[1], itemId: "NFR-1" },
+      { ...rows[2], itemId: "NFR-1" },
+    ]);
+
+    const res = await request(createApp()).get(
+      "/api/projects/proj-1/analyses/analysis-1/approvals",
+    );
+
+    expect(res.status).toBe(200);
+    type Item = { itemId: string; resembles?: string; noCodeEvidence?: boolean };
+    expect(res.body.data.items.map((i: Item) => [i.itemId, i.resembles])).toEqual([
+      ["REQ-1", undefined],
+      ["NFR-1", "REQ-1"],
+      // Not a requirement approval: never marked.
+      ["NFR-1", undefined],
+    ]);
+    // The NFR's own finding cites code, so it is not marked "No code link".
+    expect(res.body.data.items[1].noCodeEvidence).toBeUndefined();
+  });
+
+  it("#2596 — still answers, unmarked, when the reviewed list cannot be read", async () => {
+    reviewedRun();
+    getStructuredRequirements.mockRejectedValue(new Error("db down"));
+    listApprovalRequests.mockResolvedValue(rows);
+
+    const res = await request(createApp()).get(
+      "/api/projects/proj-1/analyses/analysis-1/approvals",
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.items.some((i: { resembles?: string }) => i.resembles)).toBe(false);
+  });
 });
 
 describe("ticked vs added requirement approvals — #1129", () => {

@@ -266,16 +266,43 @@ export function describeSetDifference(
     reviewedWithoutItem: number;
     itemsWithoutReviewed: number;
     offeredFromSynthesis?: number;
+    elicitedNfrs?: number;
   },
 ): string | null {
+  // Issue #2596 — "Approving promotes the 18 reviewed below, not the 8 the
+  // synthesis produced" read as a contradiction of the Outcome's "Eight
+  // requirements" when the other 10 were NFRs the analysis found. Say so.
+  const nfrs = identity?.elicitedNfrs ?? 0;
+  if (
+    nfrs > 0 &&
+    reviewedCount !== undefined &&
+    reviewedCount - nfrs === synthesisCount &&
+    identity!.reviewedWithoutItem === 0 &&
+    identity!.itemsWithoutReviewed === 0 &&
+    (identity!.offeredFromSynthesis ?? 0) === 0
+  ) {
+    return (
+      `The ${reviewedCount} requirement(s) below are the ${synthesisCount} the analysis wrote up ` +
+      `(the number its summary gives) and ${nfrs} non-functional requirement(s) it found, marked ` +
+      `"Found by the analysis". Approving promotes the ones you approve.`
+    );
+  }
   const base = describeCountsAndIdentity(reviewedCount, synthesisCount, identity);
   // Issue #1569 — the analysis's own additions are on the list now, not dropped.
   const offered = identity?.offeredFromSynthesis ?? 0;
-  if (offered === 0) return base;
-  const note =
-    `${offered} requirement(s) below were written up by the analysis and match none it ` +
-    `extracted, so they are listed for review with their own acceptance criteria and evidence.`;
-  return base ? `${base} ${note}` : note;
+  const notes = [
+    base,
+    offered > 0
+      ? `${offered} requirement(s) below were written up by the analysis and match none it ` +
+        `extracted, so they are listed for review with their own acceptance criteria and evidence.`
+      : null,
+    // #2596 — part of the difference, whenever the counts above leave it unsaid.
+    nfrs > 0
+      ? `${nfrs} of the requirements below are non-functional requirements the analysis found, ` +
+        `marked "Found by the analysis".`
+      : null,
+  ].filter((s): s is string => s !== null);
+  return notes.length > 0 ? notes.join(" ") : null;
 }
 
 function describeCountsAndIdentity(
@@ -452,6 +479,7 @@ function ApprovalCard({
   draft,
   onDraftChange,
   heldForReviewIfApproved = false,
+  resemblesTitle,
 }: {
   approval: ApprovalRequestPayload;
   /** #922 — matched structured requirement for `requirement` approvals. */
@@ -472,6 +500,8 @@ function ApprovalCard({
   onDraftChange: DraftUpdate;
   /** #2462 — the viewer edited it here and the project forbids self-approval. */
   heldForReviewIfApproved?: boolean;
+  /** #2596 — listed straight after the requirement it resembles ({@link groupResembling}). */
+  resemblesTitle?: string;
 }): React.ReactElement {
   const qc = useQueryClient();
   const [note, setNote] = useState("");
@@ -531,7 +561,17 @@ function ApprovalCard({
     reviewMutation.error.code === "APPROVAL_ALREADY_REVIEWED";
 
   return (
-    <Card className="space-y-3 p-4" data-testid={`approval-${approval.id}`}>
+    <Card
+      className={`space-y-3 p-4 ${resemblesTitle ? "ml-6 border-l-4" : ""}`}
+      data-testid={`approval-${approval.id}`}
+    >
+      {/* #2596 — read with the requirement just above it, which it may restate. */}
+      {resemblesTitle && (
+        <p data-testid="approval-resembles" className="text-xs text-muted-foreground">
+          Close to &ldquo;{resemblesTitle}&rdquo;, listed just above. If the two say the same thing,
+          approve one and reject the other.
+        </p>
+      )}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-2">
           <span className="rounded border border-border bg-muted/60 px-2 py-0.5 text-xs text-foreground">
@@ -725,7 +765,39 @@ function ApprovalCard({
  * one card at a time needed a scripted loop. Asks first: an approval cannot be
  * reopened (only a rejection can), so one stray click must not approve them all.
  */
-function ApproveAllPending({
+/**
+ * #2462 — a requirement the viewer edited here is promoted awaiting review
+ * when they approve it, unless the project allows self-approval (#2436). The
+ * gate is read only when there is such a requirement; a viewer without
+ * requirement.approve promotes everything as drafts and is told so already.
+ * #2596 — a hook, so the Requirements tab's Approve all says the same.
+ */
+export function useHeldIfApproved({
+  projectId,
+  metadata,
+  viewerId,
+  approvesAsDraft,
+}: {
+  projectId: string;
+  metadata: Record<string, unknown> | null | undefined;
+  viewerId: string | undefined;
+  approvesAsDraft: boolean;
+}): (approval: ApprovalRequestPayload) => boolean {
+  const editedByViewer = checkpointItemsEditedBy(metadata, viewerId);
+  const gate = useQuery({
+    queryKey: reviewGateKey(projectId),
+    queryFn: () => reviewGateApi.get(projectId),
+    enabled: Boolean(projectId) && !approvesAsDraft && editedByViewer.size > 0,
+  });
+  return (approval) =>
+    !approvesAsDraft &&
+    gate.data?.allowSelfApproval === false &&
+    approval.type === "requirement" &&
+    editedByViewer.has(approval.itemId);
+}
+
+/** #2596 — exported for the Requirements tab, which offers the same action. */
+export function ApproveAllPending({
   projectId,
   analysisId,
   pendingCount,
@@ -835,6 +907,37 @@ export function splitPendingByOrigin<T extends Pick<ApprovalRequestPayload, "ori
     added: pending.filter((a) => a.origin === "added"),
     other: pending.filter((a) => !a.origin),
   };
+}
+
+/**
+ * Issue #2596 — a requirement the analysis added that resembles one read from
+ * the documents (the server's `resembles`) is listed straight after it, so the
+ * two are read together: "Expired API keys refused identically to unknown
+ * keys" beside "Expired keys are refused like unknown keys", not eight cards
+ * further down. Only within `list`: one whose requirement is elsewhere (decided
+ * already, or in another group) keeps its place and is not marked. Nothing is
+ * left out or merged; each is still approved or rejected on its own.
+ */
+export function groupResembling<
+  T extends Pick<ApprovalRequestPayload, "type" | "itemId" | "resembles">,
+>(list: readonly T[]): Array<{ approval: T; resembles?: string }> {
+  const listed = new Set(list.filter((a) => a.type === "requirement").map((a) => a.itemId));
+  const placed = (a: T): boolean =>
+    a.type === "requirement" && a.resembles !== undefined && listed.has(a.resembles);
+  const out: Array<{ approval: T; resembles?: string }> = [];
+  const grouped = new Set<string>();
+  for (const approval of list) {
+    if (placed(approval)) continue;
+    out.push({ approval });
+    if (approval.type !== "requirement" || grouped.has(approval.itemId)) continue;
+    grouped.add(approval.itemId);
+    for (const other of list) {
+      if (placed(other) && other.resembles === approval.itemId) {
+        out.push({ approval: other, resembles: approval.itemId });
+      }
+    }
+  }
+  return out;
 }
 
 /**
@@ -971,21 +1074,7 @@ export function ApprovalsPanel({
     queryKey: queryKeys.approvals.forAnalysis(analysisId),
     queryFn: () => analysisApi.listApprovals(projectId, analysisId),
   });
-  // #2462 — a requirement the viewer edited here is promoted awaiting review
-  // when they approve it, unless the project allows self-approval (#2436). The
-  // gate is read only when there is such a requirement; a viewer without
-  // requirement.approve promotes everything as drafts and is told so already.
-  const editedByViewer = checkpointItemsEditedBy(metadata, viewerId);
-  const gate = useQuery({
-    queryKey: reviewGateKey(projectId),
-    queryFn: () => reviewGateApi.get(projectId),
-    enabled: Boolean(projectId) && !approvesAsDraft && editedByViewer.size > 0,
-  });
-  const heldIfApproved = (approval: ApprovalRequestPayload): boolean =>
-    !approvesAsDraft &&
-    gate.data?.allowSelfApproval === false &&
-    approval.type === "requirement" &&
-    editedByViewer.has(approval.itemId);
+  const heldIfApproved = useHeldIfApproved({ projectId, metadata, viewerId, approvesAsDraft });
   // #2147 — every open checkpoint edit, by approval id (see `ApprovalCard`).
   const [drafts, setDrafts] = useState<Readonly<Record<string, CheckpointDraft>>>({});
   const draftUpdate =
@@ -1054,7 +1143,10 @@ export function ApprovalsPanel({
   const split = splitPendingByOrigin(pending);
   // #2554 — a set decided at once is refused while any of it is restricted.
   const restrictedPending = pending.filter((a) => a.restricted).length;
-  const renderPending = (approval: ApprovalRequestPayload, i: number): React.ReactElement => (
+  const renderPending = (
+    { approval, resembles }: { approval: ApprovalRequestPayload; resembles?: string },
+    i: number,
+  ): React.ReactElement => (
     <ApprovalCard
       key={approval.id}
       approval={approval}
@@ -1067,8 +1159,14 @@ export function ApprovalsPanel({
       draft={drafts[approval.id]}
       onDraftChange={draftUpdate(approval.id)}
       heldForReviewIfApproved={heldIfApproved(approval)}
+      resemblesTitle={
+        resembles !== undefined ? (requirementsById.get(resembles)?.title ?? resembles) : undefined
+      }
     />
   );
+  // #2596 — each list with a resembling requirement placed after its match.
+  const renderList = (list: readonly ApprovalRequestPayload[]): React.ReactElement[] =>
+    groupResembling(list).map(renderPending);
 
   return (
     // #1104 — a stable anchor so the gated REQUIREMENTS notice can link straight
@@ -1165,7 +1263,7 @@ export function ApprovalsPanel({
                 <p className="text-sm font-medium">
                   From your ticked items ({split.ticked.length})
                 </p>
-                {split.ticked.map(renderPending)}
+                {renderList(split.ticked)}
               </div>
               {split.added.length > 0 && (
                 <div className="space-y-2" data-testid="approvals-added">
@@ -1195,18 +1293,18 @@ export function ApprovalsPanel({
                     None of the ticked items asked for these. They are offered, not promoted: each
                     is promoted only if you approve it.
                   </p>
-                  {split.added.map(renderPending)}
+                  {renderList(split.added)}
                 </div>
               )}
               {split.other.length > 0 && (
                 <div className="space-y-2">
                   <p className="text-sm font-medium">Other checkpoints ({split.other.length})</p>
-                  {split.other.map(renderPending)}
+                  {renderList(split.other)}
                 </div>
               )}
             </>
           ) : (
-            pending.map(renderPending)
+            renderList(pending)
           )}
         </div>
       )}

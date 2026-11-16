@@ -16,6 +16,11 @@
  * code graph, so it answers "no code evidence": a requirement it does not list
  * can still end with no link when its cited file is not in the graph, but one
  * it lists cannot get a link from promotion.
+ *
+ * Issue #2596 — an elicited NFR is never joined to an item (#2449): promotion
+ * writes its evidence from the findings it cites by id, so it is judged on
+ * those. Reading it through the join marked every NFR "No code link" (10 of
+ * the 11 marked in the 2026-11-16 walkthrough) when most were promoted with one.
  */
 import type { SynthesizedRequirement } from "@metis/shared";
 import { groundingCitationTargets } from "../traceability/seed-code-links-from-findings.js";
@@ -23,13 +28,15 @@ import { matchSynthesized } from "./approved-requirement-set.js";
 import type { StructuredRequirement } from "./types/requirements.js";
 
 export function requirementsWithoutCodeEvidence(input: {
-  structured: ReadonlyArray<Pick<StructuredRequirement, "id" | "title">>;
+  structured: ReadonlyArray<Pick<StructuredRequirement, "id" | "title" | "elicitedNfr">>;
   synthesized: readonly SynthesizedRequirement[];
   /**
    * The flattened findings, in the order synthesis's evidence indexes refer to.
    * #2509 — a `could-not-verify` one's citations are not code evidence.
+   * #2596 — `findingId` resolves an elicited NFR's evidence ids, as promotion does.
    */
   findings: ReadonlyArray<{
+    findingId?: string;
     citations?: unknown;
     verdict?: unknown;
     downgradedFromImplemented?: unknown;
@@ -41,9 +48,12 @@ export function requirementsWithoutCodeEvidence(input: {
   const considered = input.structured.filter((r) => !rejected.has(r.id));
   const matches = matchSynthesized(considered, input.synthesized, input.structured);
   const citesCode = input.findings.map((f) => groundingCitationTargets(f).length > 0);
+  const indexById = new Map(input.findings.map((f, i) => [f.findingId, i] as const));
   const out = new Set<string>();
   for (const req of considered) {
-    const indexes = matches.get(req.id)?.evidenceFindingIndexes ?? [];
+    const indexes = req.elicitedNfr
+      ? req.elicitedNfr.evidenceFindingIds.flatMap((id) => indexById.get(id) ?? [])
+      : (matches.get(req.id)?.evidenceFindingIndexes ?? []);
     if (!indexes.some((i) => citesCode[i] === true)) out.add(req.id);
   }
   return out;
