@@ -4762,3 +4762,34 @@ CREATE UNIQUE INDEX "clarification_records_projectId_questionKey_key" ON "clarif
 
 -- AddForeignKey
 ALTER TABLE "clarification_records" ADD CONSTRAINT "clarification_records_projectId_fkey" FOREIGN KEY ("projectId") REFERENCES "projects"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- CreateTable
+CREATE TABLE "subject_clarification_dialogs" (
+    "id" TEXT NOT NULL,
+    "impactAnalysisId" TEXT,
+    "portfolioAssessmentId" TEXT,
+    "projectId" TEXT NOT NULL,
+    "documentId" TEXT NOT NULL,
+    "requirements" TEXT NOT NULL,
+    "state" TEXT,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "subject_clarification_dialogs_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateIndex
+CREATE UNIQUE INDEX "subject_clarification_dialogs_impactAnalysisId_key" ON "subject_clarification_dialogs"("impactAnalysisId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "subject_clarification_dialogs_portfolioAssessmentId_key" ON "subject_clarification_dialogs"("portfolioAssessmentId");
+
+-- CreateIndex
+CREATE INDEX "subject_clarification_dialogs_projectId_idx" ON "subject_clarification_dialogs"("projectId");
+
+-- AddForeignKey
+ALTER TABLE "subject_clarification_dialogs" ADD CONSTRAINT "subject_clarification_dialogs_impactAnalysisId_fkey" FOREIGN KEY ("impactAnalysisId") REFERENCES "impact_analyses"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "subject_clarification_dialogs" ADD CONSTRAINT "subject_clarification_dialogs_portfolioAssessmentId_fkey" FOREIGN KEY ("portfolioAssessmentId") REFERENCES "portfolio_assessments"("id") ON DELETE CASCADE ON UPDATE CASCADE;
+

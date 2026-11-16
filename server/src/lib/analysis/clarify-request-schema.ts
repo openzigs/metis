@@ -54,14 +54,15 @@ const structuredRequirementsSchema = z.looseObject({
   totalEvidenceNeeds: z.number().finite().optional(),
 });
 
-const answerSchema = z.object({
+/** #2270 — one answer; also the answers of an impact run's or a portfolio check's dialog. */
+export const clarifyAnswerSchema = z.object({
   questionId: z.string().min(1).max(MAX_ID_CHARS),
   answer: z.string().max(MAX_TEXT_CHARS),
 });
 
 export const clarifyRequestSchema = z.object({
   requirements: structuredRequirementsSchema.optional(),
-  answers: z.array(answerSchema).max(MAX_CLARIFY_ANSWERS).optional(),
+  answers: z.array(clarifyAnswerSchema).max(MAX_CLARIFY_ANSWERS).optional(),
 });
 
 export type ClarifyRequest = z.infer<typeof clarifyRequestSchema>;

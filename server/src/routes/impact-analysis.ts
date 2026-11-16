@@ -94,6 +94,19 @@ import {
 } from "../lib/impact-analysis/table-relevance-judge-recovery.js";
 import { impactLlmTableJudgeEnabled } from "../lib/impact-analysis/table-relevance-judge.js";
 import {
+  clarifiableRequirements,
+  readSubjectDialog,
+  saveSubjectClarifiable,
+  type SubjectDialog,
+} from "../lib/clarifications/subject-clarifications.js";
+import { subjectClarifyUserRateLimiter } from "../middleware/subject-clarify-rate-limit.js";
+import {
+  handleSubjectClarifyPost,
+  noDialog,
+  subjectClarifyRead,
+  type SubjectClarifyDeps,
+} from "./subject-clarify.js";
+import {
   createImpactLlmRuntime,
   type ImpactLlmRuntime,
   type ImpactLlmStage,
@@ -562,7 +575,7 @@ export function impactRunDeps(
     options.rereadDocument ? { reread: true } : {},
   );
   return {
-    ...(documentReader ? { documentReader } : {}),
+    ...(documentReader ? { documentReader, onDocumentReading: saveImpactClarifiable } : {}),
     ...(storedLinkSeeds ? { storedLinkSeeds } : {}),
     ...(agentSeeds ? { agentSeeds } : {}),
     ...(demoteStaleCitations ? { demoteStaleCitations } : {}),
@@ -578,6 +591,49 @@ export function impactRunDeps(
     llmDegradationNotice: () => runtime.degradationNotice(),
     liveIndexIntrospectorFor,
   };
+}
+
+/**
+ * #2270 — what a run's document reading holds that is worth asking about,
+ * stored as the run's clarification dialog (its document's project keeps the
+ * answers). Nothing is stored when no requirement it read has a GtWR flag.
+ */
+export async function saveImpactClarifiable(input: {
+  impactAnalysisId: string;
+  reading: Parameters<typeof clarifiableRequirements>[0];
+  document: { projectId: string; documentId: string };
+  title: string;
+}): Promise<void> {
+  const requirements = clarifiableRequirements(input.reading, {
+    documentId: input.document.documentId,
+    title: input.title,
+  });
+  if (!requirements) return;
+  await saveSubjectClarifiable(
+    { kind: "impact", id: input.impactAnalysisId },
+    { projectId: input.document.projectId, documentId: input.document.documentId, requirements },
+  );
+}
+
+/**
+ * #2270 — the run's clarification dialog for `actor`, or null when it has
+ * none or the actor may not read its document now (refused as for none, and
+ * an ACL refusal audited by `assertDocumentReadable`). The caller has checked
+ * the run itself (`loadAccessibleImpactDetail`).
+ */
+async function readableImpactDialog(
+  actor: SchedulerActor,
+  impactAnalysisId: string,
+): Promise<SubjectDialog | null> {
+  const dialog = await readSubjectDialog({ kind: "impact", id: impactAnalysisId });
+  if (!dialog) return null;
+  try {
+    await assertDocumentReadable(actor, dialog.documentId, "new-source");
+  } catch (err) {
+    if (err instanceof AppError && err.statusCode === 404) return null;
+    throw err;
+  }
+  return dialog;
 }
 
 /**
@@ -867,6 +923,8 @@ export interface UsageClassificationRouterDeps {
   introspectorFor?: (actorId: string) => ProjectSchemaIntrospector;
   /** Override the routines introspector (tests inject deterministic routines). */
   routinesIntrospectorFor?: (actorId: string) => ProjectRoutinesIntrospector;
+  /** #2270 — the clarification dialog's model and search (tests inject them). */
+  clarify?: SubjectClarifyDeps;
 }
 
 export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): Router {
@@ -1231,6 +1289,42 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
       next(asAppError(err));
     }
   });
+
+  // ---- Clarifying questions — Issue #2270 (epic #2227) ----------------------
+  // A run that read a document asks about it in the same dialog as a
+  // requirements analysis. Authorized as GET /:id (every project of the run),
+  // and the caller must still be able to read the document it quotes.
+
+  // GET /:id/clarify — `{ state, requirements }`; both null with no dialog.
+  r.get("/:id/clarify", requirePermission("analysis.read"), async (req, res, next) => {
+    try {
+      const actor = actorOf(req);
+      const id = String(req.params.id);
+      await loadAccessibleImpactDetail(actor, id);
+      res.json(ok(subjectClarifyRead(await readableImpactDialog(actor, id))));
+    } catch (err) {
+      next(asAppError(err));
+    }
+  });
+
+  // POST /:id/clarify — start the dialog (no body) or submit `{ answers }`.
+  r.post(
+    "/:id/clarify",
+    requirePermission("analysis.run"),
+    subjectClarifyUserRateLimiter,
+    async (req, res, next) => {
+      try {
+        const actor = actorOf(req);
+        const id = String(req.params.id);
+        await loadAccessibleImpactDetail(actor, id);
+        const dialog = await readableImpactDialog(actor, id);
+        if (!dialog) throw noDialog();
+        await handleSubjectClarifyPost(req, res, { kind: "impact", id }, dialog, deps.clarify);
+      } catch (err) {
+        next(asAppError(err));
+      }
+    },
+  );
 
   // ---- Re-run + drift — Issue #965 (Epic #960) ----------------------------
   // Re-execute a completed run against the CURRENT code graph and diff the result

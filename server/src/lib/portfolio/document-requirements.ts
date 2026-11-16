@@ -63,6 +63,11 @@ export interface DocumentRequirements {
   notChecked: PortfolioNotChecked[];
   /** What the model reading cost (0 without one). */
   costUsd: number;
+  /**
+   * #2270 — the model's reading of the stored document, for the check's
+   * clarification dialog; absent when the splitter read it.
+   */
+  documentReading?: { reading: DocumentReading; document: SavedDocumentKey; title: string };
 }
 
 /** Entries of one kind listed one by one; past this the rest are counted in one entry. */
@@ -208,6 +213,7 @@ export async function requirementsFromDocument(
     throw new NoDocumentRequirementsError("The document has no text to read.");
   }
   let texts: string[] | null = null;
+  let documentReading: DocumentRequirements["documentReading"];
   let readNotChecked: PortfolioNotChecked[] = [];
   let costUsd = 0;
   let how = "the splitter (one per paragraph or bullet; the document reader is off)";
@@ -220,6 +226,7 @@ export async function requirementsFromDocument(
       });
       costUsd = cost;
       ({ texts, notChecked: readNotChecked } = fromReading(reading));
+      if (doc.saved) documentReading = { reading, document: doc.saved, title: doc.title };
       // #2280 — a saved reading of the same file was reused: say whose.
       how = reading.reused
         ? `the model's saved reading of it (${reading.reused.model}, ${reading.reused.readAt.toISOString().slice(0, 10)})`
@@ -241,5 +248,6 @@ export async function requirementsFromDocument(
     criteria,
     notChecked: [...readNotChecked, ...notChecked],
     costUsd,
+    ...(documentReading ? { documentReading } : {}),
   };
 }

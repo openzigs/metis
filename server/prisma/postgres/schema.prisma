@@ -1611,6 +1611,36 @@ model ClarificationDialogState {
   @@map("clarification_dialog_states")
 }
 
+/// Issue #2270 (epic #2227) — the clarification dialog of an Impact Analysis
+/// run or a portfolio check started on a document. Neither has an `Analysis`,
+/// so `ClarificationDialogState` (keyed on one) cannot hold it: this row is
+/// keyed on its subject instead, exactly one of `impactAnalysisId` and
+/// `portfolioAssessmentId`, and cascades with it. `requirements` is the JSON
+/// `StructuredRequirements` the run read from the document (each requirement
+/// with its verified paragraph and its GtWR flags), written when the run read
+/// it; `state` the JSON `ClarificationState`, null until the analyst asks the
+/// questions. `projectId` is the document's project and `documentId` the
+/// document, scalar soft-links (no FK, like `PortfolioAssessment.sourceProjectId`):
+/// the project's knowledge grounds the questions and its clarification records
+/// keep the answers.
+model SubjectClarificationDialog {
+  id                    String   @id @default(cuid())
+  impactAnalysisId      String?  @unique
+  portfolioAssessmentId String?  @unique
+  projectId             String
+  documentId            String
+  requirements          String
+  state                 String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  impactAnalysis      ImpactAnalysis?      @relation(fields: [impactAnalysisId], references: [id], onDelete: Cascade)
+  portfolioAssessment PortfolioAssessment? @relation(fields: [portfolioAssessmentId], references: [id], onDelete: Cascade)
+
+  @@index([projectId])
+  @@map("subject_clarification_dialogs")
+}
+
 /// Issue #2236 (epic #2227) — one answered clarifying question, kept as
 /// project knowledge rather than only inside one analysis's dialog state: the
 /// question, the answer, who gave it and when, the source paragraph it was
@@ -1624,10 +1654,13 @@ model ClarificationDialogState {
 model ClarificationRecord {
   id                  String    @id @default(cuid())
   projectId           String
-  /// `analysis` (a requirements analysis's clarifying question) or `spec-kit` (`/clarify`).
+  /// `analysis` (a requirements analysis's clarifying question), `spec-kit` (`/clarify`),
+  /// or (#2270) `impact` / `portfolio` (an Impact Analysis run's or a portfolio check's).
   origin              String
   /// What makes two questions the same question across analyses.
   questionKey         String
+  /// The run the answer was given in: the analysis, or (#2270, origin `impact` /
+  /// `portfolio`) the impact run or portfolio check.
   analysisId          String?
   /// The Spec Kit feature slug of a `/clarify` answer; null for the project's `.specify/`.
   specKitFeature      String?
@@ -2013,6 +2046,8 @@ model PortfolioAssessment {
   sourceRequirement Requirement?                 @relation(fields: [sourceRequirementId], references: [id], onDelete: SetNull)
   products          PortfolioAssessmentProduct[]
   repos             PortfolioAssessmentRepo[]
+  /// #2270 — its clarification dialog, when it was started on a document.
+  clarificationDialog SubjectClarificationDialog?
 
   @@index([sourceRequirementId])
   @@index([sourceProjectId])
@@ -2687,6 +2722,9 @@ model ImpactAnalysis {
 
   /// Issue #963 (Epic #960) — external issues published from this run (Jira/GitHub).
   issueLinks IssueLink[]
+
+  /// #2270 — its clarification dialog, when it read a document.
+  clarificationDialog SubjectClarificationDialog?
 
   @@index([documentId])
   @@index([startedById])

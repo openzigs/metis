@@ -306,6 +306,52 @@ describe("impact analysis on a document (#2231)", () => {
   });
 });
 
+describe("#2270 — the run tells its clarification dialog what it read", () => {
+  it("hands over a stored document's reading with the run and the document's key", async () => {
+    const { prisma, analyses } = prismaMock({ sourceText: null, documentId: "doc-1" });
+    const onDocumentReading = vi.fn(async () => undefined);
+    await run(prisma, {
+      documentReader: vi.fn(async () => READING),
+      onDocumentReading,
+      extractor: { extract: vi.fn(async () => []) },
+    });
+    expect(analyses.get("ia")?.status).toBe("completed");
+    expect(onDocumentReading).toHaveBeenCalledTimes(1);
+    expect(onDocumentReading).toHaveBeenCalledWith({
+      impactAnalysisId: "ia",
+      reading: READING,
+      document: { projectId: "proj-docs", documentId: "doc-1", checksum: "sum-frd" },
+      title: "Clinic booking FRD",
+    });
+  });
+
+  it("is not told about pasted text or a failed reading, and its failure never fails the run", async () => {
+    const onDocumentReading = vi.fn(async () => undefined);
+    const prose = `${FRD}\n\n${"Further context on how the clinic works today. ".repeat(50)}`;
+    const pasted = prismaMock({ sourceText: prose, documentId: null });
+    await run(pasted.prisma, { documentReader: vi.fn(async () => READING), onDocumentReading });
+    const failed = prismaMock({ sourceText: null, documentId: "doc-1" });
+    await run(failed.prisma, {
+      documentReader: vi.fn(async () => {
+        throw new Error("provider down");
+      }),
+      onDocumentReading,
+    });
+    expect(onDocumentReading).not.toHaveBeenCalled();
+
+    const broken = prismaMock({ sourceText: null, documentId: "doc-1" });
+    await run(broken.prisma, {
+      documentReader: vi.fn(async () => READING),
+      onDocumentReading: vi.fn(async () => {
+        throw new Error("database down");
+      }),
+      extractor: { extract: vi.fn(async () => []) },
+    });
+    expect(broken.analyses.get("ia")?.status).toBe("completed");
+    expect(broken.items).toHaveLength(2);
+  });
+});
+
 describe("#2276 — the reading waits on what the run will search", () => {
   it("an empty source beside stored requirements reads nothing and splits nothing", async () => {
     const { prisma, items } = prismaMock({ sourceText: "   ", documentId: null });

@@ -1326,6 +1326,19 @@ export interface ImpactServiceDeps {
     text: string;
     document?: SavedDocumentKey;
   }) => Promise<DocumentReading>;
+  /**
+   * #2270 — told what the reader found in a stored document the run read, once
+   * the reading is done, so the run's clarification dialog can ask about it
+   * (the route stores its requirements, `subject-clarifications.ts`). Not
+   * called for pasted text, a failed reading, or the splitter. A failure is
+   * logged and never fails the run.
+   */
+  onDocumentReading?: (input: {
+    impactAnalysisId: string;
+    reading: DocumentReading;
+    document: SavedDocumentKey;
+    title: string;
+  }) => Promise<void>;
   /** #2231 — where a document source's stored file is read from; default the document storage. */
   documentStorage?: ReadStoredFile;
   extractor?: ChangeExtractor;
@@ -1744,7 +1757,12 @@ async function changesFromSource(
   readingProject: () => Promise<string | null>,
   /** #2276 — told when the reading starts, so the run reports progress during it. */
   onReading: () => void,
-): Promise<{ changes: ChangedRequirement[]; notice: string | null }> {
+): Promise<{
+  changes: ChangedRequirement[];
+  notice: string | null;
+  /** #2270 — the reading of a stored document, when the model read one. */
+  documentReading?: { reading: DocumentReading; document: SavedDocumentKey; title: string };
+}> {
   let text = "";
   let title = "Pasted text";
   let fromDocument = false;
@@ -1787,6 +1805,7 @@ async function changesFromSource(
       return {
         changes: changesFromReading(reading),
         notice: documentReadingNotice(reading, fromDocument),
+        ...(fromDocument && saved ? { documentReading: { reading, document: saved, title } } : {}),
       };
     } catch (err) {
       log.warn("impact document reading failed; splitting the source heuristically", {
@@ -2001,6 +2020,17 @@ async function runImpactAnalysis(
         ),
     );
     const changes = [...source.changes, ...(await loadRequirementChanges(prisma, requirementIds))];
+    // #2270 — what the document holds that is worth asking about, for the run's dialog.
+    if (source.documentReading && deps.onDocumentReading) {
+      await deps
+        .onDocumentReading({ impactAnalysisId: id, ...source.documentReading })
+        .catch((err: unknown) => {
+          log.warn("impact run's clarifying questions could not be prepared", {
+            id,
+            error: String(err),
+          });
+        });
+    }
 
     // #1776 — seed every change in every accessible project first, and rank the
     // edit candidates once over all of them; the loop below reads these seeds.
