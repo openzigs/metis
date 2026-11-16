@@ -40,6 +40,8 @@ import {
   CODE_CONTINUE_BUDGET_MULTIPLIER,
   codeInvestigationContinueLimitReached,
   type CodeInvestigationGap,
+  type CodePassModeDecision,
+  type CodePassOutcome,
   deriveCapabilityReasons,
   type FindingsLeftOutNotice,
   readFindingsLeftOut,
@@ -160,6 +162,9 @@ import {
   detectCodeAgentFailed,
   detectStaticCapability,
   finalizeCapability,
+  recordCodePassCostCeiling,
+  recordCodePassMode,
+  recordCodePassOutcome,
   recordDroppedCitations,
   recordFindingsLeftOut,
   recordRequirementsLeftOut,
@@ -168,6 +173,14 @@ import {
   type RestrictedLeftOutCounts,
   type RestrictedLeftOutReport,
 } from "./analysis-capability.js";
+import { type CodePassCostCeiling, createCodePassCostCeiling } from "./code-pass-cost-ceiling.js";
+import {
+  buildExploreCodePass,
+  codePassOutcome,
+  readCodeExplorationSetting,
+  resolveCodePassMode,
+} from "./code-pass-variant.js";
+import { CODE_RETRIEVAL_TOOLS } from "./retrieval-health.js";
 import {
   isSharedVisible,
   sharedDocumentAudience,
@@ -177,6 +190,7 @@ import {
 import { cloneDirPath, resolveExistingCloneDir } from "./clone-availability.js";
 import { prepareAnalysisClone } from "./clone-restore.js";
 import { assertCanStartAnalysis, getProjectMonthlyAnalysisTokens } from "./cost-cap.js";
+import { assertWithinBudget } from "../finops/budget-enforcer.js";
 import { notifyAnalysisComplete } from "../teams/notification-hooks.js";
 import { dispatchJobOutcome } from "../notifications/job-notify.js";
 import {
@@ -231,6 +245,7 @@ import {
   markLiveAgentSynthesizing,
   recordLiveToolCall,
   setLiveAgentContinuation,
+  setLiveAgentMode,
 } from "./live-agent-progress.js";
 import { readSourceRequirements, toSynthesisSourceItems } from "./source-items.js";
 import { assessShallowCodePass, buildCodePassContinuation } from "./code-pass-coverage.js";
@@ -864,9 +879,6 @@ export const REPO_FILE_TOOLS: ReadonlySet<string> = new Set([
   listFilesTool.name,
 ]);
 
-/** No tool was withheld — the run has a working tree. */
-const NO_WITHHELD_TOOLS: ReadonlySet<string> = new Set();
-
 export interface StartAnalysisOptions {
   projectId: string;
   startedById: string;
@@ -1092,6 +1104,10 @@ export class AnalysisOrchestrator {
     if (project.status === "archived") {
       throw new Error(`Project ${opts.projectId} is archived`);
     }
+    // #2569 — the project's own monthly budget, as chat and discussions
+    // enforce it: an over-budget project starts nothing (no row, no spend).
+    // `BudgetExceededError` is a 402 `BUDGET_EXCEEDED`.
+    await assertWithinBudget(opts.projectId);
     const agentKeys =
       opts.agentKeys && opts.agentKeys.length > 0
         ? opts.agentKeys
@@ -1192,6 +1208,9 @@ export class AnalysisOrchestrator {
     if ((analysis as { project: { status: string } }).project.status === "archived") {
       throw new Error("Project is archived");
     }
+    // #2569 — a regenerate, a Continue and a resume spend too: refused (402)
+    // while the project is over its monthly budget.
+    await assertWithinBudget(analysis.projectId);
     if (!REGENERATABLE_STATUSES.has((analysis as { status: string }).status)) {
       throw new AnalysisNotRegeneratableError(analysisId, (analysis as { status: string }).status);
     }
@@ -1923,11 +1942,17 @@ export class AnalysisOrchestrator {
         totalBudget,
       );
       cappedOut = skipped;
+      // #2569 — one dollar ceiling across every repository's pass.
+      const costCeiling = createCodePassCostCeiling({
+        requirementCount: requirements.length,
+        multiplier: opts.turnMultiplier,
+      });
       for (const connector of effectiveConnectors) {
         if (input.signal.aborted) break;
         ranConnectorIds.push(connector.id);
         results.push(
           await this.runAgenticCodeAgent({
+            costCeiling,
             ...shared,
             requirements: scopeFor(connector.id),
             projectName: `${input.projectName} [repo: ${connector.label}]`,
@@ -2013,6 +2038,9 @@ export class AnalysisOrchestrator {
     if ((analysis as { project: { status: string } }).project.status === "archived") {
       throw new Error("Project is archived");
     }
+    // #2569 — a regenerate, a Continue and a resume spend too: refused (402)
+    // while the project is over its monthly budget.
+    await assertWithinBudget(analysis.projectId);
     if (!REGENERATABLE_STATUSES.has((analysis as { status: string }).status)) {
       throw new AnalysisNotRegeneratableError(analysisId, (analysis as { status: string }).status);
     }
@@ -2169,9 +2197,12 @@ export class AnalysisOrchestrator {
           resumeConnectors,
           resolveAgentTokenBudget(),
         );
+        // #2569 — one dollar ceiling across every resumed repository's pass.
+        const costCeiling = createCodePassCostCeiling({ requirementCount: requirements.length });
         for (const connector of effectiveConnectors) {
           if (active.cancelled) break;
           const result = await this.runAgenticCodeAgent({
+            costCeiling,
             analysisId: opts.analysisId,
             projectId: analysis.projectId,
             actorId: opts.actorId,
@@ -2931,9 +2962,14 @@ export class AnalysisOrchestrator {
                 this.emitCapability(analysisId, capability);
               }
               const multiResults: AgentRunResult[] = [];
+              // #2569 — one dollar ceiling across every repository's pass.
+              const costCeiling = createCodePassCostCeiling({
+                requirementCount: codeRequirements.length,
+              });
               for (const connector of effectiveConnectors) {
                 if (run.cancelled) break;
                 const result = await this.runAgenticCodeAgent({
+                  costCeiling,
                   analysisId,
                   projectId: opts.projectId,
                   actorId: opts.startedById,
@@ -3931,6 +3967,12 @@ export class AnalysisOrchestrator {
      * in one transaction, and a failed or cancelled one is appended.
      */
     persistMode?: "replace" | "append" | "supersede";
+    /**
+     * #2569 — the dollar ceiling to spend against. A multi-repository run
+     * passes one ceiling to every repository's pass; absent, the pass gets
+     * its own ({@link createCodePassCostCeiling}).
+     */
+    costCeiling?: CodePassCostCeiling;
   }): Promise<AgentRunResult> {
     const startedAt = new Date();
     const agentKey = "code" as const;
@@ -3979,10 +4021,32 @@ export class AnalysisOrchestrator {
           });
           this.markRepoCloneUnavailable(input.analysisId);
         }
-        // Withheld file tools are excluded from the #773 retrieval-health counters (see
-        // REPO_FILE_TOOLS): an "Unknown tool" error against a capability we chose not
-        // to offer says nothing about whether code retrieval works.
-        const withheldTools = fileToolsAvailable ? NO_WITHHELD_TOOLS : REPO_FILE_TOOLS;
+        // #2565 — explore first, or the pass as before. Explore needs the file
+        // tools, so a pass with no working tree runs fast and says why.
+        // #2566 — the project's own setting first, read for this pass, scoped
+        // to this project; a failed read degrades to `auto` (the platform).
+        let projectSetting: string | null = null;
+        try {
+          const project = await prisma.project.findFirst({
+            where: { id: input.projectId, deletedAt: null },
+            select: { codeExploration: true },
+          });
+          projectSetting = project?.codeExploration ?? null;
+        } catch (err) {
+          log.warn("Project code exploration setting unreadable; using the platform default", {
+            analysisId: input.analysisId,
+            projectId: input.projectId,
+            error: (err as Error).message,
+          });
+        }
+        const codePass = resolveCodePassMode({
+          platformDefault: readCodeExplorationSetting(),
+          projectSetting,
+          fileToolsAvailable,
+        });
+        this.noteCodePassMode(input.analysisId, codePass);
+        // #2570 — and on the live entry, so the page can say which mode runs.
+        setLiveAgentMode(input.analysisId, agentKey, codePass.mode);
 
         // #2314 — an analysis's findings, citations and snippets are persisted
         // and read by every project member. A scheduled run reads code as a
@@ -4027,7 +4091,7 @@ export class AnalysisOrchestrator {
         // tool searches as that person and records what it returns; nothing
         // is left out for the shared audience, so nothing is counted.
         const pass = currentPassReads(input.analysisId);
-        const tools = assembleAgenticCodeTools({
+        const graphTools = assembleAgenticCodeTools({
           knowledgeService: knowledge,
           cloneDir,
           fusedCodeDeps: this.deps.fusedCode,
@@ -4045,6 +4109,30 @@ export class AnalysisOrchestrator {
               }),
           ...(input.actorId ? { triggeredBy: input.actorId } : {}),
         });
+        // #2565 — explore mode: A20's five tools (the file tools, graph search
+        // and the filtered symbol search), whole-file reads, a wider transcript
+        // and the explorer nudge. Production's bounds are unchanged.
+        const explore =
+          codePass.mode === "explore"
+            ? buildExploreCodePass({
+                search: {
+                  searchCodeGraph: searchCodeGraphTool,
+                  searchCodeSymbols: createSearchSymbolsTool(this.deps.fusedCode, {
+                    filters: true,
+                  }),
+                },
+                providerKey: this.deps.provider.key,
+                model: input.model ?? this.deps.provider.model,
+              })
+            : undefined;
+        const tools = explore ? explore.tools : graphTools;
+        // Code-retrieval tools this pass does not offer are excluded from the
+        // #773 retrieval-health counters (see REPO_FILE_TOOLS): an "Unknown
+        // tool" error against a capability we chose not to offer says nothing
+        // about whether code retrieval works.
+        const withheldTools: ReadonlySet<string> = new Set(
+          [...CODE_RETRIEVAL_TOOLS].filter((name) => !tools.some((t) => t.name === name)),
+        );
 
         // #729 (Epic #725) — passively seed the agentic prompt with fused
         // code-graph symbol context BEFORE the tool loop, so the agent is
@@ -4075,6 +4163,23 @@ export class AnalysisOrchestrator {
         this.noteRequirementsLeftOut(input.analysisId, fused.semanticLeftOut);
 
         const agentBudget = input.tokenBudget ?? resolveAgentTokenBudget();
+        // #2569 — the dollar ceiling: every model call this pass makes (each
+        // loop turn, the final-answer retry, the salvage and repair calls, the
+        // support panel and faithfulness calls, in both escalation passes)
+        // goes through `passProvider`, which refuses a call once the ceiling
+        // is reached. A multi-repository run hands every repository's pass
+        // the same ceiling.
+        const costCeiling =
+          input.costCeiling ??
+          createCodePassCostCeiling({
+            requirementCount: input.requirements.length,
+            multiplier: input.turnMultiplier,
+          });
+        const passProvider = costCeiling.guard(this.deps.provider);
+        // The support panel and faithfulness calls spend against the same
+        // ceiling, but a refusal of one only leaves a finding ungraded: it does
+        // not count as the ceiling stopping the pass (`reached`).
+        const gradingProvider = costCeiling.guard(this.deps.provider, { grading: true });
         // #774 — every tool call the loop makes, across every pass, so the run's
         // tool-call error counts can be persisted on the AgentResult. Before
         // #774 the loop's `toolCalls` were returned and DISCARDED here, which is
@@ -4139,13 +4244,17 @@ export class AnalysisOrchestrator {
             affectedSchema,
             ...(planContext ? { planContext } : {}),
           };
-          const { systemMessage, userMessage } = buildAgenticPassPrompt({
+          const prompt = buildAgenticPassPrompt({
             projectName: input.projectName,
             projectDescription: input.projectDescription,
             requirements: passRequirements,
             seeds,
             fileToolsAvailable,
           });
+          const userMessage = prompt.userMessage;
+          const systemMessage = explore
+            ? explore.systemMessage(prompt.systemMessage)
+            : prompt.systemMessage;
           const effectiveBudget = agenticPassEffectiveBudget(passBudget, seeds);
           // #1221 — resolved against the model this pass will actually run on
           // so the cap is clamped to that model's ceiling. `provider.model` is
@@ -4165,24 +4274,43 @@ export class AnalysisOrchestrator {
           // #141 — native tool calls on a tool-capable model when the operator
           // enabled them; the text protocol otherwise (and by default).
           const nativeTools = resolveAnalysisNativeTools(this.deps.provider, input.model, tools);
+          // #1388 — a tool-less reply that is not a usable answer, or an
+          // answer leaving most requirements unverified far under budget,
+          // goes back to the model instead of ending the investigation.
+          const coverageContinuation = buildCodePassContinuation({
+            requirementIds: passRequirements.map((r) => r.id),
+            isValidFinalAnswer: isSchemaValidFinalAnswer,
+          });
+          // #2565 — explore mode counts the pass's tool calls for its nudge.
+          let passToolCalls = 0;
           const loopResult = await runAgentLoop(
-            this.deps.provider,
+            passProvider,
             { systemMessage, userMessage, tools, toolContext },
             {
               ...(nativeTools ? { native: nativeTools } : {}),
               maxTurns,
               maxTokens: effectiveBudget,
-              onToolCall: () => recordLiveToolCall(input.analysisId, agentKey),
+              // #2570 — the live entry classifies each executed call (files
+              // read, searches run) and keeps counts only.
+              onToolCall: (call) => {
+                if (explore) passToolCalls += 1;
+                recordLiveToolCall(input.analysisId, agentKey, {
+                  tool: call.tool,
+                  args: call.args,
+                  ...(typeof call.isError === "boolean" ? { isError: call.isError } : {}),
+                  ...(input.connectorId ? { repo: input.connectorId } : {}),
+                });
+              },
               signal: input.signal,
               model: input.model,
               promptCaching: { system: true, messages: true },
-              // #1388 — a tool-less reply that is not a usable answer, or an
-              // answer leaving most requirements unverified far under budget,
-              // goes back to the model instead of ending the investigation.
-              continuation: buildCodePassContinuation({
-                requirementIds: passRequirements.map((r) => r.id),
-                isValidFinalAnswer: isSchemaValidFinalAnswer,
-              }),
+              // #2565 — explore mode: the explorer nudge first (once, before
+              // any tool call), then #1388's continuation; and a wider
+              // transcript ceiling, bounded by the model's window.
+              continuation: explore
+                ? explore.continuation(coverageContinuation, () => passToolCalls)
+                : coverageContinuation,
+              ...(explore ? { transcriptCompaction: explore.transcriptCompaction } : {}),
               // P0 #769 — when the loop runs out of turns/tokens mid-tool-call,
               // or answers in prose, spend ONE bounded tool-free call asking it
               // to serialize the investigation it has already done.
@@ -4219,15 +4347,17 @@ export class AnalysisOrchestrator {
           let extraUsage: TokenUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
           if (!loopResult.hasFinalAnswer) {
             // The loop (and its one bounded retry) never produced a JSON answer.
-            reason = loopResult.budgetExhausted
-              ? "token-budget"
-              : loopResult.turnsExhausted
-                ? "turn-limit"
-                : // #1314 — `hasFinalAnswer` is schema-aware now, so a response
-                  // that still parses as JSON failed the schema, not the parser.
-                  isJsonFinalAnswer(selectSalvageSource(loopResult))
-                  ? "schema-invalid"
-                  : "non-json-response";
+            reason = loopResult.costCeilingReached
+              ? "cost-ceiling"
+              : loopResult.budgetExhausted
+                ? "token-budget"
+                : loopResult.turnsExhausted
+                  ? "turn-limit"
+                  : // #1314 — `hasFinalAnswer` is schema-aware now, so a response
+                    // that still parses as JSON failed the schema, not the parser.
+                    isJsonFinalAnswer(selectSalvageSource(loopResult))
+                    ? "schema-invalid"
+                    : "non-json-response";
           } else {
             try {
               const parsed = extractJsonObject(loopResult.finalResponse);
@@ -4253,6 +4383,18 @@ export class AnalysisOrchestrator {
               reason = "schema-invalid";
             }
           }
+          // #2565 — what this pass spent against its budget and how it ended,
+          // so #2568 can count how often the budget cuts an explore pass short.
+          this.noteCodePassOutcome(
+            input.analysisId,
+            codePassOutcome({
+              mode: codePass.mode,
+              loop: loopResult,
+              tokenBudget: effectiveBudget,
+              maxTurns,
+              degradation: validated ? null : (reason ?? "non-json-response"),
+            }),
+          );
           if (!validated) {
             // #1217 — salvage from the RAW model text the loop preserved, never
             // from `finalResponse`: on a turn/token stop that has already been
@@ -4260,22 +4402,18 @@ export class AnalysisOrchestrator {
             // a finding under any circumstances. `salvageWithRepair` also spends
             // ONE bounded syntax-repair call when the preserved payload was cut
             // off mid-array by an output cap.
-            const salvage = await salvageWithRepair(
-              this.deps.provider,
-              selectSalvageSource(loopResult),
-              {
-                agentKey,
-                model: input.model,
-                signal: input.signal,
-                // #1218 — repair echoes the payload back, so its own cap must
-                // clear the cap that produced it or it truncates in turn.
-                maxOutputTokens: repairMaxOutputTokens(finalAnswerMaxOutputTokens),
-                // #298 — resolve an over-long citation `documentId` here too
-                // (loaded only when a salvaged finding carries one).
-                loadKnownDocuments,
-                findKnownDocumentIds,
-              },
-            );
+            const salvage = await salvageWithRepair(passProvider, selectSalvageSource(loopResult), {
+              agentKey,
+              model: input.model,
+              signal: input.signal,
+              // #1218 — repair echoes the payload back, so its own cap must
+              // clear the cap that produced it or it truncates in turn.
+              maxOutputTokens: repairMaxOutputTokens(finalAnswerMaxOutputTokens),
+              // #298 — resolve an over-long citation `documentId` here too
+              // (loaded only when a salvaged finding carries one).
+              loadKnownDocuments,
+              findKnownDocumentIds,
+            });
             let salvaged = salvage.findings;
             fieldRepairs = salvage.fieldRepairs;
             let leftOutTitles = salvage.leftOutTitles;
@@ -4286,7 +4424,7 @@ export class AnalysisOrchestrator {
             // last tool-call reply.
             let evidenceSalvage: EvidenceSalvageResult | undefined;
             if (salvaged.length === 0) {
-              evidenceSalvage = await salvageFromEvidence(this.deps.provider, {
+              evidenceSalvage = await salvageFromEvidence(passProvider, {
                 agentKey,
                 systemMessage: buildCachedSystemPrompt(systemMessage, []),
                 userMessage,
@@ -4383,8 +4521,12 @@ export class AnalysisOrchestrator {
             requirementCount: passRequirements.length,
             // #1388 review — a pass METIS's own coverage nudge pushed into the cap
             // had already answered: it was not cut short, and offers no Continue.
+            // #2569 — so is a pass the dollar ceiling stopped: what it never
+            // reached is could-not-verify, never a gap.
             exhausted:
-              (loopResult.turnsExhausted || loopResult.budgetExhausted) &&
+              (loopResult.turnsExhausted ||
+                loopResult.budgetExhausted ||
+                loopResult.costCeilingReached === true) &&
               loopResult.answerSentBack !== true,
             // The #729 passive seed returned real code chunks ⇒ the code index is
             // alive. Same evidence the single-shot path trusts below; it proves
@@ -4627,7 +4769,7 @@ export class AnalysisOrchestrator {
           // calls and the findings array is returned untouched.
           const agenticEvidence = collectPanelEvidence(fused.chunks, loopResult.toolCalls);
           const panelled = await applySupportPanel(
-            this.deps.provider,
+            gradingProvider,
             validated.findings,
             agenticEvidence,
             { ...(input.signal ? { signal: input.signal } : {}) },
@@ -4640,7 +4782,7 @@ export class AnalysisOrchestrator {
           // `supportPanel`, so a flag-off run is byte-identical to a pre-#1318
           // one and nothing downstream can gate on it. Flag off => no call.
           const scored = await applyFindingFaithfulness(
-            this.deps.provider,
+            gradingProvider,
             validated.findings,
             agenticEvidence,
             { ...(input.signal ? { signal: input.signal } : {}) },
@@ -4721,6 +4863,7 @@ export class AnalysisOrchestrator {
           mergedOutput = only.output;
           mergedUsage = only.usage;
         }
+        this.noteCodePassCostCeiling(input.analysisId, costCeiling);
 
         const result: AgentRunResult = {
           agentKey,
@@ -6677,6 +6820,25 @@ export class AnalysisOrchestrator {
     if (!analysisId) return;
     const tracker = this.capabilities.get(analysisId);
     if (tracker) tracker.repoCloneUnavailable = true;
+  }
+
+  /** #2565 — record a code pass's mode decision on the run. No-op without a tracker. */
+  private noteCodePassMode(analysisId: string, decision: CodePassModeDecision): void {
+    const tracker = this.capabilities.get(analysisId);
+    if (tracker) recordCodePassMode(tracker, decision);
+  }
+
+  /** #2569 — record the code pass's dollar ceiling on the run, when it has something to say. */
+  private noteCodePassCostCeiling(analysisId: string, ceiling: CodePassCostCeiling): void {
+    const tracker = this.capabilities.get(analysisId);
+    const outcome = ceiling.outcome();
+    if (tracker && outcome) recordCodePassCostCeiling(tracker, outcome);
+  }
+
+  /** #2565 — record a code pass's spend and ending on the run. No-op without a tracker. */
+  private noteCodePassOutcome(analysisId: string, outcome: CodePassOutcome): void {
+    const tracker = this.capabilities.get(analysisId);
+    if (tracker) recordCodePassOutcome(tracker, outcome);
   }
 
   /**

@@ -142,6 +142,8 @@ export const CODE_RETRIEVAL_TOOLS: ReadonlySet<string> = new Set([
   "search_code_symbols",
   "read_file_slice",
   "list_files",
+  // #2565 — the explore-first code pass's literal search over the working tree.
+  "grep_files",
 ]);
 
 /** Is this tool call CODE retrieval (and therefore evidence about the codebase)? */
@@ -168,9 +170,9 @@ export const MIN_SHARED_TERMS = 2;
  * Args keys, in priority order, that carry the "what did you search for" value.
  * `search_code_symbols`/`search_knowledge` use `query`; `search_code_graph` may
  * filter by `query`/`kind`/`filePath`/`calledBy`/`calls`; `read_file_slice` reads
- * `filePath`; `list_files` globs a `pattern`.
+ * `filePath`; `list_files` globs a `pattern`; `grep_files` (#2565) searches a `text`.
  */
-const QUERY_KEYS = ["query", "filePath", "pattern", "calledBy", "calls", "kind"] as const;
+const QUERY_KEYS = ["query", "filePath", "pattern", "calledBy", "calls", "kind", "text"] as const;
 
 /**
  * Terms carried by essentially every requirement and every query, so matching on

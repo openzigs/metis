@@ -28,6 +28,8 @@ import { PortfolioAssessmentProgress } from "@/components/portfolio/portfolio-as
 import { PortfolioBaSummary } from "@/components/portfolio/portfolio-ba-summary";
 import { PortfolioImpactView } from "@/components/portfolio/portfolio-impact-view";
 import { PortfolioRequirementsChecked } from "@/components/portfolio/portfolio-requirements-checked";
+import { SubjectClarificationSection } from "@/components/clarification/subject-clarification-section";
+import { useAuth } from "@/lib/auth-context";
 
 /**
  * #1627 — the #1624 Markdown export; off until the run has finished.
@@ -68,6 +70,7 @@ export default function PortfolioAssessmentPage() {
   const id = params?.id;
   const { query, job } = usePortfolioAssessment(id);
   const view = query.data;
+  const { user } = useAuth();
 
   const back = (
     <Link href="/portfolio" className="hover:underline">
@@ -190,6 +193,16 @@ export default function PortfolioAssessmentPage() {
 
       {/* #2272 — each requirement checked, and everything not checked. */}
       {view.status === "completed" ? <PortfolioRequirementsChecked view={view} /> : null}
+
+      {/* #2270 — a check of a document asks about its loose wording here, in
+          the same dialog as a requirements analysis. */}
+      {view.status === "completed" && view.sourceDocumentId ? (
+        <SubjectClarificationSection
+          kind="portfolio"
+          id={view.id}
+          canRun={user?.permissions.includes("analysis.run") ?? false}
+        />
+      ) : null}
 
       {impact ? (
         <PortfolioImpactView

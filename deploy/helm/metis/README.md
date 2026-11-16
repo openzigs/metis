@@ -479,7 +479,9 @@ page's 2.5 s polls alternate pods, and only one of them reports the entry. The
 page keeps an agent it has seen running shown as running until its stored
 result changes, the run stops, or 60 s pass without a sighting, so the card does
 not flip back to its old result; the step count it shows is then the last one a
-poll returned, and it moves only when a poll reaches the pod doing the work. No
+poll returned, and it moves only when a poll reaches the pod doing the work. The
+code agent's "files read" and "searches" counts (#2570) behave the same way:
+they are those of the last poll that reached the working pod. No
 results, statuses or costs depend on this state.
 
 ---

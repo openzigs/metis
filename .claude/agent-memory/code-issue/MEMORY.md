@@ -3,41 +3,28 @@
 Entries are capped at 150 bytes and the whole file at 17,500 (`pnpm agents:verify`).
 Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never loaded.
 
-- [Module wiring needs the smoke](project_module-wiring-needs-the-image-smoke.md) — import-order bugs pass unit tests (#55, #60)
 - [vi.mock + double traps](project_whole-module-vi-mock-stubs-500-at-runtime.md) — importOriginal; default params; beforeEach return; honour select
-- [Row matchers drop scope](project_row-matchers-drop-scope-assertions.md) — the columns the matcher omits stop being asserted (#94)
 - [Scratch, stash, worktree hygiene](project_parallel-agents-share-scratch-and-browser.md) — issue-named files; script files for git; no symlinks
 - [Verify the issue premise](project_verify-issue-premise-before-copy.md) — grep write path + tests first; recheck 'blocked on PR' deferrals
 - [TanStack stale data](project_tanstack-stale-data-after-failed-refetch.md) — failed refetch keeps .data; prop-seeded useState ignores refetch
-- [CI guards parse the step](project_ci-guards-must-parse-the-step.md) — reject if:, `||`, continue-on-error (#458)
 - [Parallel PR semantic conflicts](project_parallel-prs-semantic-conflicts.md) — clean merge can bypass a guard; updateMany bumps @updatedAt
 - [Test harness false greens](project_test-harness-false-greens.md) — pipe-to-tail exit codes; helper-only tests; fireEvent file input
 - [Socket handler patterns](project_socket-handler-patterns.md) — payload?.x, onClientEvent; rooms fixed at handshake; guard typo probe
 - [Access rule in fixtures](project_access-rule-in-fixtures.md) — socket/discussion tests encode access in mocks; update together
-- [Compaction truncates evidence](project_compaction-truncates-evidence.md) — 600-char tool-result cut; check before blaming tools
-- [Decline guards: every token](project_decline-guards-need-every-continuation-token.md) — silent-success holes evade throw-fuzz (#1084)
-- [Weak Tested-by: check counts](project_weak-tested-by-relation-check-every-count.md) — aggregates ignore weak vs strict (#1069)
 - [Impact offline replay + pinned shapes](project_impact-offline-replay-and-pinned-shapes.md) — measure with no model; 4 far-away tests
 - [Gate over LLM output: probes](project_deterministic-gate-over-llm-output-probes.md) — adversarial answer, context cue, regex timing
 - [Model-cannot claims: sweep at the engine](project_model-cannot-claims-need-engine-level-sweep.md) — every LLM dep on; no idle-timing bound
-- [Spec Kit plan context: replay + graph gaps](project_speckit-plan-context-replay-and-graph-gaps.md) — misses are rank, not top-k (#1060)
 - [Cap claims: one fixture per MAX_*](project_never-dropped-silently-needs-a-fixture-per-cap.md) — upstream caps cut uncounted (#1094)
 - [Read live ≠ read completely](project_read-live-is-not-read-completely.md) — no completeness proof: mark, never delete (#1093)
 - [0 findings: read token_usages](project_zero-findings-read-token-usages-first.md) — output == cap + empty reply = reasoning (#1063)
 - [Synthesis field must fail soft](project_synthesis-optional-field-must-fail-soft.md) — new field: add a repair rule or .catch (#1099)
 - [Unread answer is not empty](project_unread-answer-is-not-empty.md) — mark parse failures; all-bad list = unread; stub the empty envelope (#1081)
 - [Code-graph extractor version](project_code-graph-extractor-version.md) — bump + EXTRACTOR_UPGRADES; hub for #1071 resolver lessons
-- [Recursion audit: bound work, not depth](project_recursion-audit-must-bound-work-not-depth.md) — lattice + scaling ratio (#1071)
-- [Test helper keys must be unique](project_test-helper-keys-must-be-unique.md) — throw on a duplicate key (#1071)
-- [Spec Kit jobs: test seams](project_speckit-jobs-test-seams-and-runner-choice.md) — mock job-store; park the stub, no sleeps (#1059)
 - [Lock key = resource width](project_lock-key-as-wide-as-the-resource.md) — reserve after cheap failures; idempotency token; req.ip (#1059)
-- [Title rule change: look up old hash](project_draft-title-rule-change-needs-old-title-lookup.md) — else 2nd draft, 2nd issue (#1064)
-- [Language resolver: type-checker oracle](project_language-resolver-needs-a-type-checker-oracle.md) — fixtures did not converge (#1104)
 - [A ceiling must not overwrite](project_a-ceiling-must-not-overwrite-and-must-be-recorded.md) — record it, resume it; force it tiny
 - [`analysis.read`: every role has it](project_analysis-read-is-held-by-every-role.md) — no 403 test; test scoping + ownership
 - [BRD plan (#1070)](project_brd-plan-tests-and-docs-gen-offline-replay.md) — =off tests; replay; floors (#1316); hold, ties (#1327, #1368)
 - [requirementId guard; recording doubles](project_requirement-id-guard-and-recording-doubles.md) — agentic+single-shot unchecked (#1027)
-- [Memory probe: own members × tables/call](project_memory-probe-own-members-times-tables.md) — cap + watchdog; closure/counter notes (#1104)
 - [Embed-retrieval corpus limits](project_embed-retrieval-corpus-limits-and-document-ab.md) — no receivers/tables (#1072)
 - [A/B: rank depth + snippet budget](project_retrieval-ab-rank-depth-and-snippet-budget.md) — print lost ranks; locators first (#1126)
 - [Fake API filters lie](project_fake-api-filters-must-match-github-semantics.md) — since is updatedAt, not closedAt; clone replies (#1148)
@@ -127,3 +114,9 @@ Retire, do not delete: move a superseded pointer to `ARCHIVE.md`, which is never
 - [Repo chores 2026-11-14](project_repo-chores-and-fixtures-2026-11-14.md) — prettier root; gitignored images; findMentions; no npx
 - [Prompt A/B on BA-QA in a worktree](project_prompt-ab-on-ba-qa-in-a-worktree.md) — .env copy; toggle by cp, not git; per-fact verdicts (#2357)
 - [Cosine floors are corpus-scaled](project_cosine-floors-are-corpus-scaled.md) — 2 corpora per embedder; fresh .materialized; main .env (#2417)
+- [could-not-verify: two sources](project_could-not-verify-verdict-has-two-sources.md) — model or gateFindingVerdict downgrade (#2513)
+- [Review semantics: update docs](project_review-semantics-prs-skip-the-docs.md) — ARCHITECTURE table + USER_GUIDE review section (#2518)
+- [New optional field: every caller](project_new-optional-field-check-every-caller.md) — streamAIReply; Teams projectRetriever (#2516)
+- [Whole-doc extraction: cap tokens](project_single-call-extraction-needs-a-token-cap.md) — 16k Anthropic default fails FRDs (#2529, #2530)
+- [Embedding input: reindex project](project_embedding-input-change-needs-project-reindex.md) — reindex --all skips same-model (#2532)
+- [Gap engine: no token_usages](project_portfolio-gap-engine-writes-no-token-usages.md) — meter evals with LedgerCostMeter (#2561)

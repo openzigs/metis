@@ -116,6 +116,15 @@ export const CAPABILITY_REASON_COPY: Record<AnalysisCapabilityReason, Capability
     action:
       "Re-run the code investigation with a larger token and turn budget, or ask an administrator to raise ANALYSIS_AGENT_TOKEN_BUDGET for future runs.",
   },
+  // Issue #2569 — the dollar ceiling stopped the code pass. What it found
+  // stands; what it did not settle is "Could not verify", and the
+  // `code-investigation-cut-short` line beside it offers Continue.
+  "code-pass-cost-ceiling": {
+    title:
+      "Code analysis reached its cost limit for this run and stopped — what it found stands, and the requirements it did not settle are marked “Could not verify”, not as gaps.",
+    action:
+      "Continue with a larger budget to finish them, or ask an administrator to raise ANALYSIS_CODE_PASS_MAX_USD for future runs.",
+  },
   // Issue #1131 — reached, but not settled: no Continue, because more budget
   // would not change them.
   "code-investigation-inconclusive": {

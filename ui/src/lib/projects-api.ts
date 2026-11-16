@@ -8,8 +8,11 @@ import { ApiError, apiFetch } from "@/lib/api-client";
 import { API_BASE } from "@/lib/config";
 import type {
   AnalysisDatabaseAwareReason,
+  CodeExplorationSetting,
+  CodePassModeDecision,
   DatabaseAwareAnalysisSetting,
   DocumentSource,
+  ProjectCodeExplorationState,
   SqlLineageReason,
   SqlLineageSetting,
 } from "@metis/shared";
@@ -43,9 +46,31 @@ export interface Project {
   databaseAwareAnalysis?: DatabaseAwareAnalysisSetting;
   /** Epic #882 — per-project SQL-lineage extraction intent (`auto`/`on`/`off`). */
   sqlLineage?: SqlLineageSetting;
+  /** #2566 — how deeply analysis reads the code (`auto`/`explore`/`fast`). */
+  codeExploration?: CodeExplorationSetting;
+  /** #2566 — what `codeExploration` resolves to against the platform default now. */
+  codeExplorationResolved?: CodePassModeDecision;
   createdById: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * #2567 — a project's analysis depth setting and what it resolves to, read off
+ * `GET /projects/:id` (#2566's `ProjectCodeExplorationState`). `resolved` is
+ * absent when the server sent none (an older server): the client does not
+ * guess the platform default, which #2568 may change.
+ */
+export type CodeExplorationState = Omit<ProjectCodeExplorationState, "resolved"> & {
+  resolved?: ProjectCodeExplorationState["resolved"];
+};
+
+/** #2567 — the analysis depth part of a project (`select` over the project detail query). */
+export function codeExplorationStateOf(project: Project): CodeExplorationState {
+  return {
+    setting: project.codeExploration ?? "auto",
+    ...(project.codeExplorationResolved ? { resolved: project.codeExplorationResolved } : {}),
+  };
 }
 
 /** #1169 — `GET /projects/:id/pr-review-budget`. */
@@ -243,6 +268,8 @@ export const projectsApi = {
     id: string,
     body: { databaseAwareAnalysis: DatabaseAwareAnalysisSetting },
   ) => apiFetch<Project>(`/projects/${id}/database-aware-analysis`, { method: "PATCH", body }),
+  updateCodeExploration: (id: string, body: { codeExploration: CodeExplorationSetting }) =>
+    apiFetch<Project>(`/projects/${id}/code-exploration`, { method: "PATCH", body }),
   // Epic #882 (#894) — per-project SQL-lineage intent + resolved state.
   getSqlLineage: (id: string) => apiFetch<SqlLineageState>(`/projects/${id}/sql-lineage`),
   updateSqlLineage: (id: string, body: { sqlLineage: SqlLineageSetting }) =>

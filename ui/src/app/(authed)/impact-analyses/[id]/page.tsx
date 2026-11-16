@@ -44,6 +44,7 @@ import {
 } from "@/components/impact/impact-symbol-repo-context";
 import { PageHeader } from "@/components/ui/page-header";
 import { ChangeRequestBackLink } from "@/components/analysis/change-request-back-link";
+import { SubjectClarificationSection } from "@/components/clarification/subject-clarification-section";
 
 const STATUS_VARIANT: Record<string, "destructive" | "default" | "secondary" | "outline"> = {
   completed: "default",
@@ -324,6 +325,16 @@ function ImpactAnalysisDetailView({
             {renderInlineCode(data.summary)}
           </p>
         </Card>
+      ) : null}
+
+      {/* #2270 — a run that read a document asks about its loose wording here,
+          in the same dialog as a requirements analysis. */}
+      {data.status === "completed" && data.documentId ? (
+        <SubjectClarificationSection
+          kind="impact"
+          id={data.id}
+          canRun={user?.permissions.includes("analysis.run") ?? false}
+        />
       ) : null}
 
       {/* #965 — drift diff vs the original run (only rendered for re-runs). */}

@@ -17,6 +17,7 @@ import {
   updateBudgetSchema,
   updateProjectSchema,
   updateSafetyModeSchema,
+  updateCodeExplorationSchema,
   updateDatabaseAwareAnalysisSchema,
   updateSqlLineageSchema,
   recordChronicleEntrySchema,
@@ -49,6 +50,8 @@ import {
   updateProject,
   updateProjectAutopilot,
   updateProjectBudget,
+  withCodeExploration,
+  updateProjectCodeExploration,
   updateProjectDatabaseAwareAnalysis,
   updateProjectSafetyMode,
   updateProjectSqlLineage,
@@ -208,7 +211,8 @@ export function projectsRouter(): Router {
     await assertLiveProjectAccess(req.user, String(req.params.id));
     const project = await getProject(String(req.params.id));
     if (!project) throw new AppError(404, "PROJECT_NOT_FOUND", "Project not found");
-    res.json(ok(project));
+    // #2566 — the code exploration setting, raw and resolved against the platform key.
+    res.json(ok(withCodeExploration(project)));
   });
 
   // ── Create ──────────────────────────────────────────────────────────────
@@ -667,6 +671,36 @@ export function projectsRouter(): Router {
           actor,
         );
         res.json(ok(project));
+      } catch (err) {
+        rethrow(err);
+      }
+    },
+  );
+
+  // ── Code exploration setting (#2566, epic #2564) ──────────────────────────
+
+  // PATCH /api/projects/:id/code-exploration  { codeExploration }
+  // Project access (`requireProjectAccess`) is enforced for every `/:id/:sub`
+  // route above: a caller outside the project's workspace gets a 404.
+  r.patch(
+    "/:id/code-exploration",
+    requireAuth,
+    requirePermission("project.update"),
+    async (req: Request, res: Response) => {
+      const parsed = updateCodeExplorationSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        throw new AppError(400, "VALIDATION_ERROR", "Invalid code-exploration payload", {
+          issues: parsed.error.flatten(),
+        });
+      }
+      const actor = actorFromReq(req);
+      try {
+        const project = await updateProjectCodeExploration(
+          String(req.params.id),
+          parsed.data.codeExploration,
+          actor,
+        );
+        res.json(ok(withCodeExploration(project)));
       } catch (err) {
         rethrow(err);
       }

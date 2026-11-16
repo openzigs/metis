@@ -89,9 +89,15 @@ vi.mock("../prisma.js", () => ({
 }));
 
 vi.mock("./cost-cap.js", () => ({ assertCanStartAnalysis: vi.fn(async () => undefined) }));
+// #2569 — the project budget check reads the ledger; these tests' projects have none.
+vi.mock("../finops/budget-enforcer.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../finops/budget-enforcer.js")>()),
+  assertWithinBudget: vi.fn(async () => undefined),
+}));
 vi.mock("../audit/audit-service.js", () => ({ audit: vi.fn() }));
 
 const { AnalysisOrchestrator, AnalysisNotRegeneratableError } = await import("./orchestrator.js");
+const { CodePassCostCeiling } = await import("./code-pass-cost-ceiling.js");
 
 function readCapability(): AnalysisCapability | null {
   if (!state.metadata) return null;
@@ -189,6 +195,12 @@ describe("AnalysisOrchestrator.resumeSkippedRepos (#741)", () => {
       expect(arg.persistMode).toBe("supersede");
       expect(arg.tokenBudget).toBe(50_000);
     }
+    // #2569 — one dollar ceiling across every resumed repository's pass.
+    const ceilings = runAgenticCodeAgent.mock.calls.map(
+      (c) => (c[0] as { costCeiling?: unknown }).costCeiling,
+    );
+    expect(ceilings[0]).toBeInstanceOf(CodePassCostCeiling);
+    expect(ceilings[1]).toBe(ceilings[0]);
     expect(
       runAgenticCodeAgent.mock.calls
         .map((c) => (c[0] as { connectorId: string }).connectorId)

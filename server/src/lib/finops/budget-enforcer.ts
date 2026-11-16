@@ -26,6 +26,12 @@ import { ledgerRowSummedRequests, priceLedgerTokensExact } from "./token-tracker
 export class BudgetExceededError extends Error {
   readonly status = 402;
   readonly code = "BUDGET_EXCEEDED";
+  /**
+   * #2569 / #2377 — not retried by the task queue (`scheduler/permanent-failure.ts`):
+   * a scheduled re-run of an over-budget project is refused the same way on
+   * every attempt until the month turns or the budget is raised.
+   */
+  readonly permanentTaskFailure = true;
   readonly usedTokens: number;
   readonly budget: number;
   constructor(usedTokens: number, budget: number) {

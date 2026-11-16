@@ -367,6 +367,9 @@ export interface ClarificationState {
  * #2236 — a question this dialog did not ask because a clarification record of
  * the project already answers it ({@link ClarificationState.reused}).
  */
+/** #2270 — the kind of run a reused answer was given in. */
+export type ReusedAnswerOrigin = "analysis" | "impact" | "portfolio";
+
 export interface ReusedAnswer {
   requirementId: string;
   ambiguityField: string;
@@ -378,6 +381,12 @@ export interface ReusedAnswer {
   answeredAt: string;
   /** The analysis it was given in; absent for a Spec Kit answer. */
   fromAnalysisId?: string;
+  /**
+   * #2270 — the kind of run `fromAnalysisId` names: a requirements analysis,
+   * an Impact Analysis run or a portfolio check. Absent on a state stored
+   * before it was carried; read as an analysis.
+   */
+  fromOrigin?: ReusedAnswerOrigin;
   /** The round it was reused in. */
   round: number;
   citation?: QuestionCitation;

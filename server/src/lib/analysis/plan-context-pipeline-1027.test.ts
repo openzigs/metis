@@ -80,6 +80,11 @@ vi.mock("./analysis-service.js", () => ({
 }));
 
 vi.mock("./cost-cap.js", () => ({ assertCanStartAnalysis: vi.fn(async () => undefined) }));
+// #2569 — the project budget check reads the ledger; these tests' projects have none.
+vi.mock("../finops/budget-enforcer.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../finops/budget-enforcer.js")>()),
+  assertWithinBudget: vi.fn(async () => undefined),
+}));
 vi.mock("../audit/audit-service.js", () => ({ audit: vi.fn() }));
 const runSynthesis = vi.hoisted(() =>
   vi.fn(async (..._args: unknown[]) => ({
@@ -334,7 +339,16 @@ describe("#1027 — plan context through the pipeline", () => {
 
     expect(withContext.affectedCode?.candidates.map((c) => c.id)).toEqual(["NR-1", "NR-2"]);
     expect(withContext.affectedCode).toEqual(without.affectedCode);
-    expect(withContext.capability).toEqual(without.capability);
+    // #2565 — the plan-context block is carved out of the pass's token budget,
+    // so the recorded outcome's budget is the one field that may differ.
+    const sansBudget = (c: AnalysisCapability) => ({
+      ...c,
+      codePassOutcomes: c.codePassOutcomes?.map(({ tokenBudget: _budget, ...o }) => o),
+    });
+    expect(sansBudget(withContext.capability)).toEqual(sansBudget(without.capability));
+    expect(withContext.capability.codePassOutcomes?.[0]?.tokenBudget).toBeLessThan(
+      without.capability.codePassOutcomes?.[0]?.tokenBudget ?? 0,
+    );
     expect(holding(withContext.calls, "NR-3")).toEqual([]);
     // The calls that do not carry the context are the calls of the run without it.
     const untouched = withContext.calls.filter((c) => !c.includes(MARK));
@@ -579,5 +593,37 @@ describe("#1027 — the plan context is paid for out of the pass budget", () => 
     expect(without.userMessage).not.toContain("PLAN CONTEXT");
     expect(withSeed.userMessage).toContain(`${BEGIN} `);
     expect(withSeed.userMessage).toContain(MARK);
+  });
+});
+
+// #2569 review — the pipeline's multi-repository loop hands every repository's
+// pass ONE dollar ceiling (`code-pass-cost-ceiling-2569.sqlite.test.ts` shows a
+// shared ceiling refuses the second pass once the first has spent it). Without
+// the loop's `costCeiling`, each pass would build its own and the run could
+// spend the ceiling once per repository.
+describe("#2569 — one dollar ceiling across a multi-repo run's passes", () => {
+  it("the pipeline passes every repository's pass the same ceiling, sized for the run", async () => {
+    const { CodePassCostCeiling } = await import("./code-pass-cost-ceiling.js");
+    state.connectors = [
+      { id: "c1", label: "api", isPrimary: false, createdAt: new Date("2026-01-01") },
+      { id: "c2", label: "web", isPrimary: false, createdAt: new Date("2026-01-02") },
+    ];
+    const spy = vi.spyOn(
+      AnalysisOrchestrator.prototype as unknown as {
+        runAgenticCodeAgent: (input: Record<string, unknown>) => Promise<unknown>;
+      },
+      "runAgenticCodeAgent",
+    );
+    try {
+      await runPipeline({ extraInstructions: REQUIREMENTS });
+      const ceilings = spy.mock.calls.map((c) => c[0].costCeiling);
+      expect(ceilings).toHaveLength(2);
+      expect(ceilings[0]).toBeInstanceOf(CodePassCostCeiling);
+      expect(ceilings[1]).toBe(ceilings[0]);
+      // $1 per requirement (the default) over the run's two requirements.
+      expect((ceilings[0] as InstanceType<typeof CodePassCostCeiling>).limitUsd).toBe(2);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
