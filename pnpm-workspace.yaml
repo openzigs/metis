@@ -539,7 +539,16 @@ overrides:
   # on 2026-10-22: 16.4.1 AND 16.4.2 each return zero vulns. METIS sets no
   # `images.dangerouslyAllowSVG` and no remote patterns; next/image renders only
   # the local `/icon.svg`, which Next serves unoptimized while SVG is disallowed.
-  next@<16.4.1: ^16.4.1
+  #
+  # 2026-11-16 (#2606): GHSA-mfr8-8qww-v76h (moderate, information disclosure
+  # across root params when a 'use cache' function is called through
+  # unstable_cache()), `>=16.3.0 <=16.4.4`, fixed in 16.4.5. METIS has no
+  # `unstable_cache` and no 'use cache' in ui/src, but the audit gate lists it
+  # and `next dev` stops on first run to print an upgrade notice. Bound and
+  # floor move to 16.4.5 with `ui/package.json`; the lockfile takes 16.4.5,
+  # published 2026-11-03T18:01Z, clear of minimumReleaseAge. Verified against
+  # api.osv.dev on 2026-11-16: 16.4.5 AND 16.4.6 each return zero vulns.
+  next@<16.4.5: ^16.4.5
   # GHSA-mrv2-3pqr-j5jr (HIGH, CVSS 7.6, published 2026-10-22T16:24Z, #1420):
   # a DOMPurify IN_PLACE hook that removes a parent or sibling leaves the detached
   # subtree's event handlers armed (incomplete fix for GHSA-p98j-92pf-mc4p).
