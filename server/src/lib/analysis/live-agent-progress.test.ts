@@ -117,6 +117,16 @@ describe("live explore progress (#2570)", () => {
     expect(readLiveAgents("an_1")[0]).toMatchObject({ toolCalls: 3, filesRead: 2 });
   });
 
+  it("keys a file the way read_file_slice resolves it: ./, //, .. and a leading / are one file", () => {
+    beginLiveAgent("an_1", "code", { rerun: false });
+    for (const p of ["src/a.ts", "src/./a.ts", "src//a.ts", "src/x/../a.ts", "/src/a.ts"]) {
+      recordLiveToolCall("an_1", "code", read(p));
+    }
+    // "." names no file.
+    recordLiveToolCall("an_1", "code", read("./"));
+    expect(readLiveAgents("an_1")[0]).toMatchObject({ toolCalls: 6, filesRead: 1 });
+  });
+
   it("one path in two repositories is two files", () => {
     beginLiveAgent("an_1", "code", { rerun: false });
     recordLiveToolCall("an_1", "code", { ...read("src/a.ts"), repo: "rc_1" });

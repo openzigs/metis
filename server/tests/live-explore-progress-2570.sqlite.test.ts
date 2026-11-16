@@ -7,6 +7,10 @@
  *   - 2 `grep_files`, 3 `read_file_slice` (3 files) and 1 `search_code_graph`
  *     read back as `{ filesRead: 3, searches: 3, mode: "explore" }`;
  *   - the served entry names no file and no tool argument;
+ *   - an errored call (a missing file; `grep_files`, unknown to `fast`) is a
+ *     step but neither a read nor a search, and one path read in two
+ *     repositories is two files — the orchestrator's `isError` / `repo`
+ *     wiring into `recordLiveToolCall`;
  *   - `fast` reports the same fields, with its own (lower) counts;
  *   - the entry is gone once the pass ends.
  */
@@ -47,17 +51,22 @@ vi.mock("../src/lib/rag/embedder.js", async (original) => ({
 const { AnalysisOrchestrator } = await import("../src/lib/analysis/orchestrator.js");
 const { createCapabilityTracker } = await import("../src/lib/analysis/analysis-capability.js");
 const { getAnalysisSnapshot } = await import("../src/lib/analysis/analysis-service.js");
-const { readLiveAgents } = await import("../src/lib/analysis/live-agent-progress.js");
+const { beginLiveAgent, endLiveAgent, readLiveAgents } =
+  await import("../src/lib/analysis/live-agent-progress.js");
 const { __resetConfigSingleton } = await import("../src/lib/config/config-service.js");
 
 const USER = "u-2570";
 const PROJECT = "p-2570";
 const REPO = "rc-2570";
+/** A second repository holding the same paths, for the one-path-two-repositories case. */
+const REPO_2 = "rc-2570-b";
 const GRAPH = "g-2570";
 const ANSWER = JSON.stringify({ agentKey: "code", summary: "done", findings: [], notes: [] });
 /** Every fixture path and search term carries it, so a leak is one `includes` away. */
 const MARKER = "zzmark2570";
 const FILES = ["a", "b", "c"].map((n) => `src/${MARKER}-${n}.ts`);
+/** Absent from the clone: `read_file_slice` reports it with `isError: true`. */
+const MISSING = `src/${MARKER}-missing.ts`;
 const call = (tool: string, args: Record<string, unknown>) => JSON.stringify({ tool, ...args });
 const grep = (text: string) => call("grep_files", { text });
 const read = (filePath: string) => call("read_file_slice", { filePath });
@@ -86,6 +95,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await db.repoConnection.create({
         data: { id: REPO, projectId: PROJECT, label: "app", isPrimary: true },
       });
+      await db.repoConnection.create({
+        data: { id: REPO_2, projectId: PROJECT, label: "lib", isPrimary: false },
+      });
       await db.codeGraph.create({
         data: {
           id: GRAPH,
@@ -96,9 +108,11 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         },
       });
       cloneRoot = mkdtempSync(path.join(os.tmpdir(), "metis-2570-"));
-      mkdirSync(path.join(cloneRoot, REPO, "src"), { recursive: true });
-      for (const file of FILES) {
-        writeFileSync(path.join(cloneRoot, REPO, file), `export const fee = "${MARKER}";\n`);
+      for (const repo of [REPO, REPO_2]) {
+        mkdirSync(path.join(cloneRoot, repo, "src"), { recursive: true });
+        for (const file of FILES) {
+          writeFileSync(path.join(cloneRoot, repo, file), `export const fee = "${MARKER}";\n`);
+        }
       }
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
@@ -124,6 +138,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       analysisId: string,
       script: string[],
       whilePaused: () => Promise<void>,
+      connectorId: string = REPO,
     ) => {
       process.env.ANALYSIS_CODE_EXPLORATION = mode;
       __resetConfigSingleton();
@@ -182,7 +197,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
         projectDescription: "fees",
         requirements: [{ id: "REQ-1", text: "Compute the fee." }],
         signal: new AbortController().signal,
-        connectorId: REPO,
+        connectorId,
       });
       expect(pausedCheck).toBeDefined();
       await pausedCheck;
@@ -202,8 +217,14 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
           read(FILES[1]!),
           graph(`${MARKER} query`),
           read(FILES[2]!),
+          read(MISSING),
         ],
         async () => {
+          // AC1 names the snapshot GET: `GET /api/analyses/:id`
+          // (`server/src/routes/analysis.ts`) returns this same
+          // `getAnalysisSnapshot` result with `liveAgents` / `liveAgentsReadAt`
+          // untouched (it rewrites only requirement flags), so reading it here
+          // is what the page reads, without mounting auth and access checks.
           const snap = await getAnalysisSnapshot(analysisId);
           live = snap?.liveAgents;
           served = JSON.stringify(snap?.liveAgents);
@@ -213,7 +234,8 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(live).toEqual([
         expect.objectContaining({
           agentKey: "code",
-          toolCalls: 6,
+          // The missing file is a step, not a file read.
+          toolCalls: 7,
           filesRead: 3,
           searches: 3,
           mode: "explore",
@@ -233,15 +255,39 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       await runPaused(
         "fast",
         analysisId,
-        [read(FILES[0]!), read(FILES[0]!), graph("fee")],
+        // `grep_files` is not a fast-pass tool, so the loop answers it with
+        // `isError: true`: a step, not a search. Likewise the missing file.
+        [read(FILES[0]!), read(FILES[0]!), graph("fee"), grep("fee"), read(MISSING)],
         async () => {
           live = (await getAnalysisSnapshot(analysisId))?.liveAgents;
         },
       );
       expect(live).toEqual([
-        expect.objectContaining({ toolCalls: 3, filesRead: 1, searches: 1, mode: "fast" }),
+        expect.objectContaining({ toolCalls: 5, filesRead: 1, searches: 1, mode: "fast" }),
       ]);
       expect(readLiveAgents(analysisId)).toEqual([]);
+    });
+
+    it("one path read in two repositories counts as two files", async () => {
+      const analysisId = "an-2570-two-repos";
+      // The multi-repository run owns the entry, so both passes add to it.
+      beginLiveAgent(analysisId, "code", { rerun: false });
+      try {
+        await runPaused("explore", analysisId, [read(FILES[0]!)], async () => {}, REPO);
+        let live: unknown;
+        await runPaused(
+          "explore",
+          analysisId,
+          [read(FILES[0]!)],
+          async () => {
+            live = (await getAnalysisSnapshot(analysisId))?.liveAgents;
+          },
+          REPO_2,
+        );
+        expect(live).toEqual([expect.objectContaining({ toolCalls: 2, filesRead: 2 })]);
+      } finally {
+        endLiveAgent(analysisId, "code");
+      }
     });
   },
 );
