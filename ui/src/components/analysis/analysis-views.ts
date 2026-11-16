@@ -348,6 +348,55 @@ export function liveAgentLine(live: AnalysisLiveAgent, now: number = Date.now())
 }
 
 /**
+ * Issue #2571 — how far the server's clock is ahead of this browser's (ms),
+ * from the snapshot's `liveAgentsReadAt` and the time the browser received it.
+ * The progress line counts elapsed time as `Date.now() + offset - startedAt`,
+ * so a skewed client clock cannot show the wrong time. 0 when the snapshot
+ * carries no readable server time (an older server).
+ */
+export function serverClockOffsetMs(readAt: string | null | undefined, receivedAt: number): number {
+  const server = readAt ? Date.parse(readAt) : Number.NaN;
+  return Number.isFinite(server) && Number.isFinite(receivedAt) ? server - receivedAt : 0;
+}
+
+/** Issue #2571 — elapsed time in plain words: "45 s", "1 min 10 s"; `null` when unreadable. */
+export function plainElapsed(startedAt: string, now: number): string | null {
+  const ms = now - Date.parse(startedAt);
+  if (!Number.isFinite(ms)) return null;
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(seconds / 60);
+  return minutes > 0 ? `${minutes} min ${seconds % 60} s` : `${seconds} s`;
+}
+
+/** Issue #2571 — what an exploring code pass is doing, for an analyst. Shown in explore mode only. */
+export const EXPLORE_PROGRESS_NOTE =
+  "METIS is reading the code the way a developer would. This takes a little longer and finds more of what the change touches.";
+
+/**
+ * Issue #2571 — the plain-language progress line while METIS reads the code,
+ * from #2570's counts: "Reading the code: 14 files read, 9 searches, 1 min 10 s
+ * so far." `note` is {@link EXPLORE_PROGRESS_NOTE} in `explore` mode, else
+ * `null`. `null` for any other agent, once the run is re-summarising, and for
+ * an entry without the counts (a server from before #2570), which keep
+ * {@link liveAgentLine}.
+ */
+export function codeReadingProgress(
+  live: AnalysisLiveAgent,
+  now: number,
+): { line: string; note: string | null } | null {
+  if (live.agentKey !== "code" || live.phase !== "investigating") return null;
+  const { filesRead, searches } = live as Partial<AnalysisLiveAgent>;
+  if (typeof filesRead !== "number" || typeof searches !== "number") return null;
+  const files = `${filesRead} file${filesRead === 1 ? "" : "s"} read`;
+  const searched = `${searches} search${searches === 1 ? "" : "es"}`;
+  const elapsed = plainElapsed(live.startedAt, now);
+  return {
+    line: `Reading the code: ${files}, ${searched}${elapsed ? `, ${elapsed} so far` : ""}.`,
+    note: live.mode === "explore" ? EXPLORE_PROGRESS_NOTE : null,
+  };
+}
+
+/**
  * Issue #766 review — how long an agent seen running keeps showing as running
  * across polls that do not carry it. Polls run every 2.5 s; with two replicas
  * and no session affinity every other poll can land on the pod that is not
