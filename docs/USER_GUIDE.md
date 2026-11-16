@@ -3043,6 +3043,8 @@ It makes no extra AI call, so it costs nothing and adds no
 time: it reuses what the analysis already found. A pasted request has no
 citations and is unchanged.
 
+**Publish to Jira** on a finished impact analysis asks first. The confirmation names the Jira project (key and site), the METIS project in the run whose Jira connection is used (the first one with Jira set up), how many issues will be created and the issue title; nothing is sent until you confirm. The whole report becomes **one** Jira issue. A run published before says so and links that issue: publishing it again creates no new issue, it returns the existing one. If the run's Jira project has changed since, it also names the project the existing issue is in. When no project in the run has a Jira connection and project key, or that connection was removed or is in an error state, the confirmation says so and cannot be confirmed. Permission required: `issue.publish`. [#2594]
+
 When an impact analysis is published to Jira, the issue carries the umbrella **`metis`** label and the **`metis-impact-analysis`** source label, together with `severity:*` and `category:impact-analysis`. Issues published before this change are not relabelled.
 
 Permission required: `analysis.run` to trigger, `analysis.read` to view results.

@@ -87,6 +87,13 @@ describe("impactAnalysisApi", () => {
     });
   });
 
+  // #2594 — the confirmation's preview is a GET that writes nothing.
+  it("GETs the Jira publish preview", async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ provider: "jira" });
+    await impactAnalysisApi.previewJiraPublish("ia/1");
+    expect(apiFetch).toHaveBeenCalledWith("/impact-analyses/ia%2F1/publish/jira/preview");
+  });
+
   it("defaults the Jira publish body to an empty object", async () => {
     vi.mocked(apiFetch).mockResolvedValue({ provider: "jira", issueKey: "IMP-1", url: "u" });
     await impactAnalysisApi.publishToJira("ia-1");
