@@ -10,6 +10,7 @@
  * - `fast`: the code pass as it was before #2565 (graph and symbol search,
  *   200-line reads). The kill switch.
  */
+import { z } from "zod";
 
 export const CODE_PASS_MODES = ["explore", "fast"] as const;
 export type CodePassMode = (typeof CODE_PASS_MODES)[number];
@@ -34,6 +35,48 @@ export type CodePassModeReason = (typeof CODE_PASS_MODE_REASONS)[number];
 export interface CodePassModeDecision {
   mode: CodePassMode;
   reason: CodePassModeReason;
+}
+
+/**
+ * Issue #2566 — `Project.codeExploration` legal values: `auto` (the column
+ * default) defers to the platform key; `explore` / `fast` override it. Stored
+ * as a `String` column, so ALWAYS validate a write against this whitelist
+ * (OWASP A03), at the route and again in the service.
+ */
+export const CODE_EXPLORATION_SETTINGS = ["auto", "explore", "fast"] as const;
+export type CodeExplorationSetting = (typeof CODE_EXPLORATION_SETTINGS)[number];
+
+/** The `Project.codeExploration` column default (`@default("auto")`). */
+export const DEFAULT_CODE_EXPLORATION_SETTING: CodeExplorationSetting = "auto";
+
+/** Zod validator for a {@link CodeExplorationSetting}. */
+export const codeExplorationSettingSchema = z.enum(CODE_EXPLORATION_SETTINGS);
+
+/** `PATCH /api/projects/:id/code-exploration` request payload. */
+export const updateCodeExplorationSchema = z
+  .object({ codeExploration: codeExplorationSettingSchema })
+  .strict();
+export type UpdateCodeExplorationInput = z.infer<typeof updateCodeExplorationSchema>;
+
+/**
+ * Issue #2566 — the mode a project's code pass runs in, before the working
+ * tree is checked: the project's own setting, or (`auto`, or an unknown
+ * stored value) the platform default. Pure. The orchestrator then forces
+ * `fast` with `no-working-tree` when the repository has no clone.
+ */
+export function resolveCodeExploration(
+  projectSetting: string | null | undefined,
+  platformDefault: CodePassMode,
+): CodePassModeDecision {
+  if (projectSetting === "explore") return { mode: "explore", reason: "project-explore" };
+  if (projectSetting === "fast") return { mode: "fast", reason: "project-fast" };
+  return { mode: platformDefault, reason: "platform-default" };
+}
+
+/** Issue #2566 — a project's raw setting and what it resolves to now (`GET /api/projects/:id`). */
+export interface ProjectCodeExplorationState {
+  setting: CodeExplorationSetting;
+  resolved: CodePassModeDecision;
 }
 
 /** Why a code pass ended without a validated answer (the orchestrator's degradation reasons). */

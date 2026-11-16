@@ -3989,8 +3989,25 @@ export class AnalysisOrchestrator {
         }
         // #2565 — explore first, or the pass as before. Explore needs the file
         // tools, so a pass with no working tree runs fast and says why.
+        // #2566 — the project's own setting first, read for this pass, scoped
+        // to this project; a failed read degrades to `auto` (the platform).
+        let projectSetting: string | null = null;
+        try {
+          const project = await prisma.project.findFirst({
+            where: { id: input.projectId, deletedAt: null },
+            select: { codeExploration: true },
+          });
+          projectSetting = project?.codeExploration ?? null;
+        } catch (err) {
+          log.warn("Project code exploration setting unreadable; using the platform default", {
+            analysisId: input.analysisId,
+            projectId: input.projectId,
+            error: (err as Error).message,
+          });
+        }
         const codePass = resolveCodePassMode({
           platformDefault: readCodeExplorationSetting(),
+          projectSetting,
           fileToolsAvailable,
         });
         this.noteCodePassMode(input.analysisId, codePass);

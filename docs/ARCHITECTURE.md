@@ -1010,6 +1010,22 @@ the degradation reason when there is one, and `repeatedToolCalls`), returned on 
 analysis snapshot. `grep_files` honours the pass's code access (#2314 / #2448) like the other
 file tools, and counts as code retrieval for #773's evidence threshold (its `text` is the query).
 
+**Per-project override (#2566).** `Project.codeExploration` (`auto | explore | fast`, default
+`auto`; `server/prisma/schema.prisma` and the Postgres twin) is added by migration
+`20261201002566_issue2566_project_code_exploration` in both trees, with rollbacks in
+`server/prisma/rollbacks/` and `server/prisma/postgres/rollbacks/` (the SQLite round trip is in
+`server/tests/project-code-exploration-2566.sqlite.test.ts`; the Postgres one runs in the
+`postgres-migrate-deploy` job via `scripts/ci/postgres-rollback-roundtrip.sh`). The pure resolver
+`resolveCodeExploration(projectSetting, platformDefault)` (`packages/shared/src/code-exploration.ts`)
+returns `project-explore` / `project-fast` for an explicit setting and `platform-default` for
+`auto`; the orchestrator reads the project's column per code pass and a missing working tree
+still forces `fast` (`no-working-tree`). `PATCH /api/projects/:id/code-exploration
+{ codeExploration }` needs `project.update` and project access (a caller outside the project's
+workspace gets 404), validates with `updateCodeExplorationSchema` (strict) and again in
+`updateProjectCodeExploration`, and audits `project.codeExploration.update`.
+`GET /api/projects/:id` returns `codeExploration` (raw) and `codeExplorationResolved`
+(`{ mode, reason }` against the platform key now).
+
 **Symbol embeddings — the vector half of code search (#797, Epic #780).** Until #797,
 `search_code_symbols` (and #729's fused seeding, and Spec-Kit's RAG context) was
 **BM25-only in production**: `project-code-searcher.ts` handed `HybridCodeSearch` a

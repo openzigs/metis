@@ -1455,6 +1455,15 @@ jobs:
         working-directory: server
         run: pnpm prisma migrate status
 
+      # #2566 — the codeExploration rollback on real Postgres: up -> rollback ->
+      # up over seeded projects, which survive both directions.
+      - name: Postgres rollback round trip (projects.codeExploration, #2566)
+        run: >-
+          bash scripts/ci/postgres-rollback-roundtrip.sh
+          20261201002566_issue2566_project_code_exploration projects codeExploration
+          scripts/ci/postgres-rollback-2566-seed.sql
+          "SELECT id || ':' || name FROM projects WHERE id LIKE 'p-2566-%' ORDER BY id"
+
       - name: Remove the Postgres container
         if: always()
         run: docker rm -f "metis-ci-postgres-${GITHUB_JOB}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >/dev/null 2>&1 || true

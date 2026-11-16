@@ -11,16 +11,22 @@
  * knowledge service uses to drop the project's vector table.
  */
 import {
+  CODE_EXPLORATION_SETTINGS,
+  type CodeExplorationSetting,
   type CreateProjectInput,
   type DatabaseAwareAnalysisSetting,
+  DEFAULT_CODE_EXPLORATION_SETTING,
+  type ProjectCodeExplorationState,
   type ProjectStatus,
   type SqlLineageSetting,
   DATABASE_AWARE_ANALYSIS_SETTINGS,
   PROJECT_STATUSES,
+  resolveCodeExploration,
   SQL_LINEAGE_SETTINGS,
   type RoleKey,
   type UpdateProjectInput,
 } from "@metis/shared";
+import { readCodeExplorationSetting } from "../analysis/code-exploration-setting.js";
 import { prisma } from "../prisma.js";
 import { SUPPORTED_PROVIDER_KEYS } from "../ai/config.js";
 import { audit } from "../audit/audit-service.js";
@@ -607,6 +613,73 @@ export async function updateProjectDatabaseAwareAnalysis(
     metadata: {
       previous: (project as { databaseAwareAnalysis?: string }).databaseAwareAnalysis ?? null,
       next: databaseAwareAnalysis,
+    },
+  });
+  return updated;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Issue #2566 (epic #2564) — `codeExploration` project setting.
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A project's raw `codeExploration` value (an unknown stored value reads
+ * `auto`) and what it resolves to against the platform key now. The working
+ * tree is checked per pass, at run time, so `resolved` is what a pass WITH a
+ * clone runs.
+ */
+export function codeExplorationStateOf(
+  raw: string | null | undefined,
+): ProjectCodeExplorationState {
+  const setting = (CODE_EXPLORATION_SETTINGS as readonly string[]).includes(raw ?? "")
+    ? (raw as CodeExplorationSetting)
+    : DEFAULT_CODE_EXPLORATION_SETTING;
+  return { setting, resolved: resolveCodeExploration(setting, readCodeExplorationSetting()) };
+}
+
+/**
+ * A project as the GET and PATCH routes return it: its `codeExploration`
+ * normalised, and what that resolves to (`codeExplorationResolved`). One
+ * shape for both, so the two responses cannot drift (#2567 reads them).
+ */
+export function withCodeExploration<T extends { codeExploration: string }>(
+  project: T,
+): T & { codeExplorationResolved: ProjectCodeExplorationState["resolved"] } {
+  const state = codeExplorationStateOf(project.codeExploration);
+  return { ...project, codeExploration: state.setting, codeExplorationResolved: state.resolved };
+}
+
+/**
+ * Validate and persist a per-project `codeExploration` override. The route
+ * validates with `updateCodeExplorationSchema` first; this re-checks the
+ * whitelist so a direct service call cannot store another value (OWASP A03),
+ * applies the same owner/admin/coordinator mutate check, and audits.
+ */
+export async function updateProjectCodeExploration(
+  projectId: string,
+  codeExploration: CodeExplorationSetting,
+  actor: ProjectActor,
+) {
+  if (!(CODE_EXPLORATION_SETTINGS as readonly string[]).includes(codeExploration)) {
+    throw new ProjectError(
+      400,
+      "INVALID_CODE_EXPLORATION_SETTING",
+      `codeExploration must be one of ${CODE_EXPLORATION_SETTINGS.join("|")}`,
+    );
+  }
+  const project = await getProjectOrThrow(projectId);
+  assertCanMutate(project, actor);
+  const updated = await prisma.project.update({
+    where: { id: projectId },
+    data: { codeExploration },
+  });
+  audit({
+    actor: { id: actor.id },
+    action: "project.codeExploration.update",
+    target: { type: "project", id: projectId },
+    metadata: {
+      previous: project.codeExploration ?? null,
+      next: codeExploration,
     },
   });
   return updated;
