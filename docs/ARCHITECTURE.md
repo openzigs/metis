@@ -492,14 +492,15 @@ model picker. Prices are never written there — each entry reads
 with. Sources, later wins: builtin rows → local discovery (`GET {base}/models`,
 Ollama `POST /api/show` for context length and capabilities; bounded, cached
 60 s per base URL, single-flight) → `AI_MODEL_CATALOG_OVERRIDES` (operator JSON keyed
-`"<provider>:<model>"`). The context window and output ceiling the watermark, the explore
-transcript ceiling and the document reader size to come from `catalogModelLimits` (#2599): the
+`"<provider>:<model>"`). The watermark, the explore transcript ceiling and the document reader
+size themselves by the context window and output ceiling from `catalogModelLimits` (#2599): the
 entry's, then, on `anthropic` and `bedrock-gateway`, the Claude family's native row
 (`claudeFamilyModelId` matches `claude-<family>-<n>[-<m>]` inside a regional, global, dated,
 `-v1:0` or ARN spelling, as `claudeFamilyRate` does for price), so a Bedrock Sonnet 5.5 id no
 gateway row names reads 1M, not the 32,768 fallback. A generation with no row is never given
 a neighbour's window, and the entry itself (capabilities, catalog membership) is unchanged.
-`resolveContextWindow` logs one warning per `provider:model` that runs on the fallback.
+`resolveContextWindow` logs one warning per `provider:model` that runs on the fallback, for at
+most 256 distinct ids (a chat turn's model id is request-supplied).
 Discovery runs from the route and, since #195, from a
 `local-gemma` provider's first call that carries tools (`ensureLocalDiscovery`:
 waits on an empty cache, serves a stale one while refreshing it, stops waiting

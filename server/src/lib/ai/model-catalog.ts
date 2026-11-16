@@ -679,9 +679,14 @@ export function lookupCatalogEntry(
  * inference profile (`us.anthropic.…`, `global.anthropic.…`), the in-region id
  * (`anthropic.claude-sonnet-5-5-20260101-v1:0`), or the tail of an ARN. The
  * minor version is one or two digits, so a date is never read as one.
+ *
+ * The major-only branch is taken only when no one- or two-digit minor follows,
+ * so a minor that is present but trails an unknown character
+ * (`claude-sonnet-5-6[1m]`, `…-5-6.preview`, `…-5-5_x`) names no family rather
+ * than backtracking to the major's row (`claude-sonnet-5`).
  */
 const CLAUDE_FAMILY_IN_ID =
-  /(?:^|[./])(claude-(?:sonnet|opus|haiku|fable)-\d+(?:[-.]\d{1,2})?)(?=$|[-:@])/;
+  /(?:^|[./])(claude-(?:sonnet|opus|haiku|fable)-\d+(?:[-.]\d{1,2}(?=$|[-:@])|(?![-.]\d{1,2}(?!\d))))(?=$|[-:@])/;
 
 /** The providers whose Claude ids are resolved by family when no row names them. */
 const CLAUDE_FAMILY_PROVIDERS: ReadonlySet<string> = new Set(["anthropic", "bedrock-gateway"]);

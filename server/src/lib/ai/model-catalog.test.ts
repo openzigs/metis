@@ -162,12 +162,21 @@ describe("Claude family limits (#2599)", () => {
     expect(claudeFamilyModelId(id)).toBe(family);
   });
 
-  it.each(["claude-sonnet-5-6", "us.anthropic.claude-sonnet-55", "notclaude-sonnet-5-5", "gpt-4o"])(
-    "names no family for %s",
-    (id) => {
-      expect(claudeFamilyModelId(id)).toBeUndefined();
-    },
-  );
+  it.each([
+    "claude-sonnet-5-6",
+    "us.anthropic.claude-sonnet-55",
+    "notclaude-sonnet-5-5",
+    "gpt-4o",
+    // A minor that is present but followed by an unknown character never falls
+    // back to the major-only row (claude-sonnet-5): the minor is unknown, so the
+    // window is too.
+    "claude-sonnet-5-6[1m]",
+    "claude-sonnet-5-6.preview",
+    "claude-sonnet-5-5_x",
+    "us.anthropic.claude-sonnet-5-6[1m]",
+  ])("names no family for %s", (id) => {
+    expect(claudeFamilyModelId(id)).toBeUndefined();
+  });
 
   it("gives a gateway Sonnet 5.5 id the family's limits, without making it a catalog entry", () => {
     const id = "us.anthropic.claude-sonnet-5-5-20260101-v1:0";

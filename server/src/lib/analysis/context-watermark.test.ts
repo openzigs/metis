@@ -10,12 +10,14 @@ vi.mock("../logger.js", () => ({
 }));
 
 import {
+  __contextWindowFallbackWarningCount,
   __resetContextWindowFallbackWarnings,
   ContextWatermark,
   clampAnswerReservePercent,
   clampWatermarkPercent,
   DEFAULT_ANSWER_RESERVE_PERCENT,
   DEFAULT_CONTEXT_WINDOW_FALLBACK,
+  FALLBACK_WARNING_CAP,
   resolveAnswerReserve,
   resolveContextWindow,
 } from "./context-watermark.js";
@@ -155,6 +157,24 @@ describe("the fallback warning (#2599)", () => {
     expect(warn.mock.calls[0][0]).toContain("AI_MODEL_CATALOG_OVERRIDES");
     resolveContextWindow("local-gemma", "other:2b", { env: {} });
     expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops recording after FALLBACK_WARNING_CAP models, so request-supplied ids cannot grow it", () => {
+    for (let i = 0; i < FALLBACK_WARNING_CAP + 50; i += 1) {
+      resolveContextWindow("openai", `mystery-${i}`, { env: {} });
+    }
+    // One warning per model up to the cap, then one saying the rest go unreported.
+    expect(warn).toHaveBeenCalledTimes(FALLBACK_WARNING_CAP + 1);
+    expect(warn.mock.calls[FALLBACK_WARNING_CAP][1]).toEqual({ cap: FALLBACK_WARNING_CAP });
+    expect(__contextWindowFallbackWarningCount()).toBe(FALLBACK_WARNING_CAP);
+    // A model recorded before the cap is still deduplicated.
+    resolveContextWindow("openai", "mystery-0", { env: {} });
+    expect(warn).toHaveBeenCalledTimes(FALLBACK_WARNING_CAP + 1);
+    // The fallback itself is unchanged past the cap.
+    expect(resolveContextWindow("openai", "mystery-new", { env: {} })).toEqual({
+      tokens: DEFAULT_CONTEXT_WINDOW_FALLBACK,
+      source: "fallback",
+    });
   });
 
   it("is silent when the catalog knows the window, and for the offline stub", () => {
