@@ -253,7 +253,12 @@ async function runPipeline(
   return { calls, capability, retrieve };
 }
 
+// Restore the flag's value from before each test rather than deleting it, so
+// a value `tests/setup.ts` (or the shell) gave it survives this file (#2255).
+let priorReaderFlag: string | undefined;
+
 beforeEach(() => {
+  priorReaderFlag = process.env.ANALYSIS_DOCUMENT_READER;
   vi.clearAllMocks();
   persisted.capability = [];
   persisted.outputs.clear();
@@ -261,7 +266,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  delete process.env.ANALYSIS_DOCUMENT_READER;
+  if (priorReaderFlag === undefined) delete process.env.ANALYSIS_DOCUMENT_READER;
+  else process.env.ANALYSIS_DOCUMENT_READER = priorReaderFlag;
   __resetConfigSingleton();
 });
 
@@ -346,8 +352,8 @@ describe("#2230 — the document agent through the document reader", () => {
     ]);
   });
 
-  it("set false, the document agent retrieves as before and no coverage is recorded", async () => {
-    process.env.ANALYSIS_DOCUMENT_READER = "false";
+  it("is off by default: the document agent retrieves as before and no coverage is recorded", async () => {
+    delete process.env.ANALYSIS_DOCUMENT_READER;
     const { calls, capability, retrieve } = await runPipeline();
     expect(loader).not.toHaveBeenCalled();
     expect(calls.some((c) => c.systemMessage?.includes("from beginning to end"))).toBe(false);

@@ -66,7 +66,8 @@ vi.mock("../lib/ai/index.js", async () => {
   };
 });
 
-const { impactRunDeps, documentReaderDep } = await import("./impact-analysis.js");
+const { impactRunDeps, documentReaderDep, saveImpactClarifiable } =
+  await import("./impact-analysis.js");
 const { executeImpactAnalysis, InMemoryCodeGraphDataSource } =
   await import("../lib/impact-analysis/impact-analysis-engine.js");
 const { __resetTokenTrackerSingleton, getTokenTracker } =
@@ -241,9 +242,16 @@ afterEach(() => {
 });
 
 describe("#2231 — the route wires the document reader into an impact run", () => {
-  it("set false: no reader, and the document is split heuristically", () => {
+  it("is off by default: no reader, and the document is split heuristically", () => {
     vi.stubEnv("ANALYSIS_DOCUMENT_READER", "false");
     expect(impactRunDeps("user-1", ["proj-1"]).documentReader).toBeUndefined();
+    // #2270 — nor a dialog: the splitter's paragraphs carry no verified quote.
+    expect(impactRunDeps("user-1", ["proj-1"]).onDocumentReading).toBeUndefined();
+  });
+
+  it("#2270 — with the flag on, what the reader found is stored as the run's dialog", () => {
+    vi.stubEnv("ANALYSIS_DOCUMENT_READER", "true");
+    expect(impactRunDeps("user-1", ["proj-1"]).onDocumentReading).toBe(saveImpactClarifiable);
   });
 
   it("with the flag on, the model reads the document: one change per requirement, metered as its own stage", async () => {

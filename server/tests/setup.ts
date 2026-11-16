@@ -43,12 +43,6 @@ process.env.LOCAL_GEMMA_DISCOVER_CAPABILITIES =
 // suite happened to write a requirement. Off here; its own tests turn it on.
 process.env.REQUIREMENT_EMBEDDINGS_SYNC_ON_WRITE =
   process.env.REQUIREMENT_EMBEDDINGS_SYNC_ON_WRITE ?? "0";
-// #2255 — the document reader is on by default, so an analysis's document
-// specialist reads its documents with the model before anything else. Suites
-// that script a provider's replies in order predate it, so it is off here; its
-// own tests turn it on (`document-reader-pipeline-2230.test.ts`) and
-// `document-reader/flag.test.ts` checks the production default.
-process.env.ANALYSIS_DOCUMENT_READER = process.env.ANALYSIS_DOCUMENT_READER ?? "false";
 // Epic #158 — never auto-start OTel during tests so individual specs can
 // install their own SpanProcessor.
 process.env.OTEL_SDK_DISABLED = process.env.OTEL_SDK_DISABLED ?? "true";

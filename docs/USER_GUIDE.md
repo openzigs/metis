@@ -2354,8 +2354,9 @@ What METIS does in a check:
 A check started from a document reads the document and checks **each requirement in it on
 its own**, rather than treating the whole document as one requirement. [#2272]
 
-- With the document reader on (the `ANALYSIS_DOCUMENT_READER` setting, on by default since
-  #2255; an administrator can turn it off), the AI model reads the whole document, and every requirement,
+- With the document reader on (the `ANALYSIS_DOCUMENT_READER` setting, off by default; an
+  administrator turns it on, at a higher model cost and a few minutes longer a document), the
+  AI model reads the whole document, and every requirement,
   constraint and business rule it finds is one requirement to check, with the section it
   sits in. With the reader off, or when the model
   cannot read it, the document is split by paragraph and bullet instead, and the check's

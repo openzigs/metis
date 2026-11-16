@@ -26,7 +26,7 @@ import path from "node:path";
 import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 import { PrismaClient } from "@prisma/client";
 import { RESTRICTED_SOURCE_TITLE, type AclSubject } from "@metis/shared";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readGeneratedClientProvider } from "./lib/db/generated-client-provider.js";
 import {
   createMigratedSqlite,
@@ -370,9 +370,17 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       process.env.REPO_CLONE_DIR = cloneRoot;
     }, MIGRATED_SQLITE_HOOK_TIMEOUT_MS);
 
+    // Restore the flag's prior value rather than deleting it (#2255), so a
+    // value `tests/setup.ts` or the shell gave it survives this file.
+    let priorReaderFlag: string | undefined;
+    beforeEach(() => {
+      priorReaderFlag = process.env.ANALYSIS_DOCUMENT_READER;
+    });
+
     afterEach(() => {
       searchedAs.length = 0;
-      delete process.env.ANALYSIS_DOCUMENT_READER;
+      if (priorReaderFlag === undefined) delete process.env.ANALYSIS_DOCUMENT_READER;
+      else process.env.ANALYSIS_DOCUMENT_READER = priorReaderFlag;
       __resetConfigSingleton();
     });
 
@@ -385,7 +393,7 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     const prepare = (path: (typeof paths)[string]) => {
-      // #2255 — on by default now, so a retrieval path says false itself.
+      // #2255 — each path sets the flag itself rather than relying on the default.
       process.env.ANALYSIS_DOCUMENT_READER = path.reader ? "true" : "false";
       __resetConfigSingleton();
       return orchestrator({ emptySearch: path.emptySearch });

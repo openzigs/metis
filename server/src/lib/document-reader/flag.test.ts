@@ -1,8 +1,10 @@
 /**
- * #2255 — the document reader is on by default. Measured on Sonnet 5.5, it
- * holds the whole-document read's requirement recall and precision on every
- * document that read could answer (docs/DOCUMENT_UNDERSTANDING_BASELINE.md),
- * so an analysis reads a document in full unless an operator turns it off.
+ * #2255 — the document reader stays off by default (opt-in). Measured on
+ * Sonnet 5.5 only, it holds the whole-document read's requirement recall and
+ * precision on every document that read could answer
+ * (docs/DOCUMENT_UNDERSTANDING_BASELINE.md), but costs several times as much and
+ * takes several times as long a document, so the owner kept it an operator's
+ * choice.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __resetConfigSingleton } from "../config/config-service.js";
@@ -20,29 +22,32 @@ afterEach(() => {
 });
 
 describe("#2255 — ANALYSIS_DOCUMENT_READER", () => {
-  it("is on when nothing sets it", () => {
+  it("is off when nothing sets it", () => {
     vi.stubEnv(DOCUMENT_READER_FLAG, undefined);
     __resetConfigSingleton();
-    expect(DOCUMENT_READER_DEFAULT).toBe(true);
-    expect(isDocumentReaderEnabled()).toBe(true);
+    expect(DOCUMENT_READER_DEFAULT).toBe(false);
+    expect(isDocumentReaderEnabled()).toBe(false);
   });
 
-  it("is on when set empty, as an unset key reads", () => {
+  it("is off when set empty, as an unset key reads", () => {
     vi.stubEnv(DOCUMENT_READER_FLAG, "");
-    __resetConfigSingleton();
-    expect(isDocumentReaderEnabled()).toBe(true);
-  });
-
-  it("an operator can still turn it off", () => {
-    vi.stubEnv(DOCUMENT_READER_FLAG, "false");
     __resetConfigSingleton();
     expect(isDocumentReaderEnabled()).toBe(false);
   });
 
-  it("the registry entry tells the operator it is on by default", () => {
+  it("an operator can turn it on", () => {
+    vi.stubEnv(DOCUMENT_READER_FLAG, "true");
+    __resetConfigSingleton();
+    expect(isDocumentReaderEnabled()).toBe(true);
+  });
+
+  it("the registry entry says it is off by default, how to turn it on, and what it costs", () => {
     const def = getKeyDef(DOCUMENT_READER_FLAG);
     expect(def?.valueType).toBe("bool");
-    expect(def?.description).toMatch(/ON by default/);
-    expect(def?.description).not.toMatch(/OFF by default/);
+    expect(def?.description).toMatch(/OFF by default/);
+    expect(def?.description).not.toMatch(/ON by default/);
+    expect(def?.description).toMatch(/Set true/);
+    expect(def?.description).toMatch(/\$0\.66 to \$1\.12/);
+    expect(def?.description).toMatch(/Sonnet 5\.5 only/);
   });
 });
