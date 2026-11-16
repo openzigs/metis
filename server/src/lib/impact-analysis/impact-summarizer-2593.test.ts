@@ -108,6 +108,17 @@ describe("noDatabaseImpactClaims (#2593)", () => {
       noDatabaseImpactClaims("It adds a column to `api_keys`; the migration needs review."),
     ).toEqual([]);
   });
+
+  it("does not flag the compliant wording the prompt and repair message ask for", () => {
+    for (const ok of [
+      "There is no database connection, so database impact was not checked.",
+      "With no database connection, the impact on tables could not be checked.",
+      "There is no database connector, so the impact on tables was not checked.",
+      "It does not touch the UI but adds a database migration.",
+    ]) {
+      expect(noDatabaseImpactClaims(ok), ok).toEqual([]);
+    }
+  });
 });
 
 describe("the prompts say the database was not checked (#2593)", () => {

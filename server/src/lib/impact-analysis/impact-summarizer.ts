@@ -1105,9 +1105,9 @@ function tierOrderCheck(shown: RunTableFact[]): DraftCheck {
 const NO_DATABASE_IMPACT_CLAIMS: readonly RegExp[] = [
   /\bconfined to (?:the )?code\b/i,
   /\bcode[- ]only\b/i,
-  /\bno (?:database|db|schema)\b[^.;]*?\b(?:change|changes|impact|impacts|migration|migrations|work|tables?)\b/i,
+  /\bno (?:database|db|schema)\b(?! (?:connection|connector))[^.;]*?\b(?:change|changes|impact|impacts|migration|migrations|work|tables?)\b/i,
   /\bno (?:affected |impacted )?tables?\b[^.;]*?\b(?:identified|found|affected|impacted|involved|touched)\b/i,
-  /\b(?:does|do|will) not (?:affect|touch|impact|change|require)\b[^.;]*?\b(?:database|schema|db|tables?)\b/i,
+  /\b(?:does|do|will) not (?:affect|touch|impact|change|require) (?:the |any )?(?:database|schema|db|tables?)\b/i,
   /\b(?:database|schema|db)\b[^.;]*?\b(?:is|are|remains?|stays?) (?:unaffected|untouched|unchanged)\b/i,
 ];
 
@@ -1146,7 +1146,7 @@ function databaseNotCheckedCheck(): DraftCheck {
 const DATABASE_NOT_CHECKED_FACT =
   "DATABASE: NOT CHECKED — there is no database connection, so no affected tables proves " +
   "nothing about the database. Do NOT say the impact is confined to code or that no " +
-  "database change is needed; if you mention the database, say its impact was not checked.\n";
+  "database change is needed; if you mention the database, say its impact was not checked.";
 
 /**
  * Call the summarizer, run every {@link DraftCheck} over the draft, and — on a
