@@ -76,6 +76,58 @@ describe("LiveAgentProgress (#2571)", () => {
     expect(screen.getByTestId("p")).toHaveTextContent("Re-running · 1m 10s");
   });
 
+  it("keeps the ticking time out of the live region: it holds only what a poll changes", () => {
+    render(<LiveAgentProgress live={live()} clockOffsetMs={offset()} testId="p" />);
+    const region = screen.getByRole("status");
+    expect(region).toHaveTextContent(/^Reading the code: 14 files read, 9 searches$/);
+    act(() => {
+      vi.advanceTimersByTime(5_000);
+    });
+    // The time moved on; the live region's text did not.
+    expect(screen.getByTestId("p")).toHaveTextContent("1 min 15 s so far.");
+    expect(screen.getByRole("status")).toHaveTextContent(
+      /^Reading the code: 14 files read, 9 searches$/,
+    );
+    expect(screen.getByTestId("p-elapsed")).not.toHaveAttribute("role");
+  });
+
+  it("the #766 line's live region holds the steps, not the time", () => {
+    render(
+      <LiveAgentProgress
+        live={live({ agentKey: "database", rerun: true, toolCalls: 3 })}
+        clockOffsetMs={offset()}
+        testId="p"
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent(/^Re-running · 3 steps so far$/);
+    expect(screen.getByTestId("p")).toHaveTextContent("Re-running · 3 steps so far · 1m 10s");
+  });
+
+  it("with announce={false} there is no live region, so a second copy is not announced", () => {
+    render(
+      <>
+        <LiveAgentProgress
+          live={live()}
+          clockOffsetMs={offset()}
+          testId="header"
+          announce={false}
+        />
+        <LiveAgentProgress live={live()} clockOffsetMs={offset()} testId="card" />
+      </>,
+    );
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.getByTestId("header")).toHaveTextContent("Reading the code: 14 files read");
+  });
+
+  it("stops its one-second timer on unmount", () => {
+    const { unmount } = render(
+      <LiveAgentProgress live={live()} clockOffsetMs={offset()} testId="p" />,
+    );
+    expect(vi.getTimerCount()).toBe(1);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("says none of agent, token, turn or tool call", () => {
     const { container } = render(
       <LiveAgentProgress live={live()} clockOffsetMs={offset()} testId="p" />,

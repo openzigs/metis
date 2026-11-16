@@ -1237,6 +1237,8 @@ export default function AnalysisPage(): React.ReactElement {
                       clockOffsetMs={clockOffsetMs}
                       testId="analysis-run-code-progress"
                       className="mt-1 text-xs text-muted-foreground"
+                      // The code card below carries the live region; one announcement, not two.
+                      announce={false}
                     />
                   ) : null}
                 </div>
@@ -1342,6 +1344,7 @@ export default function AnalysisPage(): React.ReactElement {
                     liveContinuation={
                       liveAgents.find((l) => l.agentKey === "code" && l.continuation) ?? null
                     }
+                    clockOffsetMs={clockOffsetMs}
                   />
 
                   {/* Issue #1006 — the imported requirements this run started from. */}

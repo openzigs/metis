@@ -27,7 +27,8 @@ import {
   liveAgentLine,
   codeReadingProgress,
   EXPLORE_PROGRESS_NOTE,
-  plainElapsed,
+  elapsedLabel,
+  liveAgentLineParts,
   serverClockOffsetMs,
   stickyLiveAgents,
   approvalsNoneMessage,
@@ -654,7 +655,9 @@ describe("stickyLiveAgents", () => {
       [snap({ liveAgents: [codeLive(4)] }), snap(), snap()],
       LIVE_AGENT_STICKY_MS / 2,
     );
-    expect(progressLines(seen).map((l) => l.length)).toEqual([1, 1, 0]);
+    // The entry started two minutes before T0, with no files read yet.
+    const line = "Reading the code: 0 files read, 0 searches, 2 min 0 s so far.";
+    expect(progressLines(seen)).toEqual([[line], [line], []]);
   });
 
   it("never carries an entry over to another analysis", () => {
@@ -787,6 +790,8 @@ describe("codeReadingProgress", () => {
   it("reads the counts and the time so far, with the explore note", () => {
     expect(codeReadingProgress(live(), at(70))).toEqual({
       line: "Reading the code: 14 files read, 9 searches, 1 min 10 s so far.",
+      counts: "Reading the code: 14 files read, 9 searches",
+      elapsed: ", 1 min 10 s so far.",
       note: EXPLORE_PROGRESS_NOTE,
     });
   });
@@ -809,6 +814,8 @@ describe("codeReadingProgress", () => {
   it("fast mode shows the same counts without the explore note", () => {
     expect(codeReadingProgress(live({ mode: "fast" }), at(70))).toEqual({
       line: "Reading the code: 14 files read, 9 searches, 1 min 10 s so far.",
+      counts: "Reading the code: 14 files read, 9 searches",
+      elapsed: ", 1 min 10 s so far.",
       note: null,
     });
     expect(codeReadingProgress(live({ mode: undefined }), at(70))?.note).toBeNull();
@@ -839,13 +846,40 @@ describe("codeReadingProgress", () => {
   });
 });
 
-describe("plainElapsed and serverClockOffsetMs", () => {
-  it("words elapsed time, never negative", () => {
-    const t0 = Date.parse("2026-11-16T10:00:00.000Z");
-    expect(plainElapsed("2026-11-16T10:00:00.000Z", t0 + 70_000)).toBe("1 min 10 s");
-    expect(plainElapsed("2026-11-16T10:00:00.000Z", t0 + 3_725_000)).toBe("62 min 5 s");
-    expect(plainElapsed("2026-11-16T10:00:00.000Z", t0 - 5_000)).toBe("0 s");
-    expect(plainElapsed("nope", t0)).toBeNull();
+describe("elapsedLabel and serverClockOffsetMs", () => {
+  const start = "2026-11-16T10:00:00.000Z";
+  const t0 = Date.parse(start);
+
+  it("words elapsed time plainly (#2571), never negative", () => {
+    expect(elapsedLabel(start, t0 + 70_000, "plain")).toBe("1 min 10 s");
+    expect(elapsedLabel(start, t0 + 3_725_000, "plain")).toBe("62 min 5 s");
+    expect(elapsedLabel(start, t0 + 45_000, "plain")).toBe("45 s");
+    expect(elapsedLabel(start, t0 - 5_000, "plain")).toBe("0 s");
+    expect(elapsedLabel("nope", t0, "plain")).toBeNull();
+  });
+
+  it("keeps #766's short form by default", () => {
+    expect(elapsedLabel(start, t0 + 252_000)).toBe("4m 12s");
+    expect(elapsedLabel(start, t0 + 45_000)).toBe("45s");
+    expect(elapsedLabel(start, t0 - 5_000)).toBe("0s");
+    expect(elapsedLabel("nope", t0)).toBeNull();
+  });
+
+  it("splits the #766 line into what a poll changes and the ticking time", () => {
+    const entry = {
+      agentKey: "database",
+      startedAt: start,
+      toolCalls: 3,
+      filesRead: 0,
+      searches: 0,
+      rerun: true,
+      phase: "investigating" as const,
+    };
+    expect(liveAgentLineParts(entry, t0 + 70_000)).toEqual({
+      status: "Re-running · 3 steps so far",
+      elapsed: " · 1m 10s",
+    });
+    expect(liveAgentLineParts({ ...entry, startedAt: "nope" }, t0).elapsed).toBe("");
   });
 
   it("is the server's clock minus the browser's at receipt, 0 without a server time", () => {

@@ -12,10 +12,15 @@
  * Elapsed time counts up once a second on the SERVER's clock: the agent's
  * `startedAt` against `Date.now() + clockOffsetMs`, where the offset comes from
  * the snapshot's `liveAgentsReadAt` ({@link serverClockOffsetMs}).
+ *
+ * Only the part a poll changes sits in the `role="status"` live region; the
+ * time that ticks every second sits beside it, so a screen reader is not told
+ * the time once a second. With `announce={false}` (the header, which repeats
+ * the card) there is no live region at all, so the change is announced once.
  */
 import { useEffect, useState } from "react";
 import type { AnalysisLiveAgent } from "@metis/shared";
-import { codeReadingProgress, liveAgentLine } from "./analysis-views";
+import { codeReadingProgress, liveAgentLineParts } from "./analysis-views";
 
 interface Props {
   live: AnalysisLiveAgent;
@@ -23,6 +28,8 @@ interface Props {
   clockOffsetMs: number;
   testId: string;
   className?: string;
+  /** Whether the counts are a polite live region; `false` where another copy already is. */
+  announce?: boolean;
 }
 
 export function LiveAgentProgress({
@@ -30,6 +37,7 @@ export function LiveAgentProgress({
   clockOffsetMs,
   testId,
   className = "mt-2 text-xs text-muted-foreground",
+  announce = true,
 }: Props): React.ReactElement {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -38,18 +46,21 @@ export function LiveAgentProgress({
   }, []);
   const serverNow = now + clockOffsetMs;
   const reading = codeReadingProgress(live, serverNow);
-  if (!reading) {
-    return (
-      <p className={className} role="status" data-testid={testId}>
-        {liveAgentLine(live, serverNow)}
-      </p>
-    );
-  }
+  const { status, elapsed } = reading
+    ? { status: reading.counts, elapsed: reading.elapsed }
+    : liveAgentLineParts(live, serverNow);
+  const line = (
+    <p className={reading ? undefined : className} data-testid={testId}>
+      <span role={announce ? "status" : undefined} data-testid={`${testId}-status`}>
+        {status}
+      </span>
+      <span data-testid={`${testId}-elapsed`}>{elapsed}</span>
+    </p>
+  );
+  if (!reading) return line;
   return (
     <div className={className}>
-      <p role="status" data-testid={testId}>
-        {reading.line}
-      </p>
+      {line}
       {reading.note ? (
         <p className="mt-0.5" data-testid={`${testId}-note`}>
           {reading.note}
