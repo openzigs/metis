@@ -49,6 +49,7 @@ import type { CorpusSearch } from "./search.js";
 import { seededRandom } from "./stats.js";
 import {
   createA20Arm,
+  createA21Arm,
   createA3AArm,
   createA3Arm,
   createA3NArm,
@@ -99,6 +100,7 @@ export const MODEL_ARMS: ReadonlySet<string> = new Set([
   "A3N",
   "A3P",
   "A20",
+  "A21",
   "A4",
   "A7",
   "A7O",
@@ -525,6 +527,7 @@ export const ARM_FACTORIES: Record<string, (deps: ArmDeps) => LocalizationArm> =
   A3N: createA3NArm,
   A3P: createA3PArm,
   A20: createA20Arm,
+  A21: createA21Arm,
   A4: createA4Arm,
   A7: createA7Arm,
   A7O: createA7OArm,

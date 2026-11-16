@@ -23,6 +23,11 @@
  *     budget, and {@link EXPLORER_ITEM_CAP_USD} per item; the citations alone
  *     are the files. Paired with A3A, it says whether exploring beats today's
  *     pass by enough to pay for itself.
+ *   - `A21` (production explore, #2568): the pass production runs with
+ *     `ANALYSIS_CODE_EXPLORATION=explore` (#2565), at production's bounds
+ *     (turn cap, token budget, transcript ceiling, #2569's dollar ceiling) and
+ *     no eval-only cap; the citations alone are the files. Paired with A3A, it
+ *     says whether A20's gain survives production's limits.
  *
  * The pass itself (database, clone, tools, agent loop) is injected as an
  * {@link AgentPass}, so this module is testable without a model or a database;
@@ -56,7 +61,7 @@ import {
   type SeedingFiles,
 } from "./arm-core.js";
 import { fileKey, type LocalizationCorpus, type LocalizationItem } from "./corpus.js";
-import type { AgentRunStats } from "./scorer.js";
+import { addLoopTotals, type AgentLoopTotals, type AgentRunStats } from "./scorer.js";
 
 // The pass contract lives in arm-core.ts (#1810: no import cycle with arms.ts).
 export type {
@@ -69,7 +74,7 @@ export type {
 
 /** A3's variants. */
 export interface AgentVariant {
-  id: "A3" | "A3A" | "A3N" | "A3P" | "A20";
+  id: "A3" | "A3A" | "A3N" | "A3P" | "A20" | "A21";
   toolset: AgentToolset;
   /** Union the citations with A0's hybrid seeds (stored-link channel), or use them alone. */
   union: boolean;
@@ -81,6 +86,7 @@ export const AGENT_VARIANTS: Readonly<Record<AgentVariant["id"], AgentVariant>> 
   A3N: { id: "A3N", toolset: "files", union: false },
   A3P: { id: "A3P", toolset: "graph-primitives", union: false },
   A20: { id: "A20", toolset: "explorer", union: false },
+  A21: { id: "A21", toolset: "production-explore", union: false },
 };
 
 /**
@@ -139,6 +145,45 @@ export function resolveCitations(
   return { files, links: [...links.values()], unresolvedFiles: unresolved.size };
 }
 
+/**
+ * #2568 — one pass's loop as report totals. A pass is degraded only when it has
+ * no schema-valid answer, as production's `codePassOutcome` reads it: a bound
+ * that cut the loop before the final-answer retry produced a valid answer is
+ * not a degradation. A degraded pass carries one reason, in the orchestrator's
+ * order (cost-ceiling, then token-budget, then turn-limit, else "other"), so
+ * the stop counts never exceed the degraded count.
+ */
+export function passLoopTotals(result: AgentPassResult): AgentLoopTotals | undefined {
+  const l = result.loop;
+  if (!l) return undefined;
+  const budgeted = l.tokenBudget !== null && l.tokenBudget > 0;
+  const reason = result.answered
+    ? null
+    : l.costCeilingReached
+      ? "cost-ceiling"
+      : l.budgetExhausted
+        ? "token-budget"
+        : l.turnsExhausted
+          ? "turn-limit"
+          : "other";
+  return {
+    passes: 1,
+    degraded: reason === null ? 0 : 1,
+    budgetStops: reason === "token-budget" ? 1 : 0,
+    turnStops: reason === "turn-limit" ? 1 : 0,
+    costCeilingStops: reason === "cost-ceiling" ? 1 : 0,
+    tokensUsed: l.tokensUsed,
+    tokenBudget: budgeted ? l.tokenBudget! : 0,
+    budgetedPasses: budgeted ? 1 : 0,
+    budgetedTokensUsed: budgeted ? l.tokensUsed : 0,
+    maxBudgetShare: budgeted ? l.tokensUsed / l.tokenBudget! : 0,
+    promptTokens: l.promptTokens,
+    cacheReadTokens: l.cacheReadTokens,
+    cacheWriteTokens: l.cacheWriteTokens,
+    repeatedToolCalls: l.repeatedToolCalls,
+  };
+}
+
 /** A pass, and what it cost the meter, shared by the arms that read it. */
 interface SharedPass {
   /** #1810 — names the pass, so a report can tell when two arms read different passes. */
@@ -161,6 +206,8 @@ const TOOLSET_LABELS: Record<AgentToolset, string> = {
   files:
     "list_files, read_file_slice, grep_files (literal text search); no graph or symbol search, no seeded blocks",
   explorer: `grep_files, list_files, read_file_slice (up to ${EXPLORER_READ_MAX_LINES} lines a call: whole files), search_code_graph, search_code_symbols (filters on); no search_knowledge; seeded fused / affected-code / affected-schema blocks offered as hints only (#2560)`,
+  "production-explore":
+    "buildExploreCodePass (#2565): grep_files, list_files, read_file_slice (ANALYSIS_EXPLORE_READ_MAX_LINES lines a call, 80,000 characters), search_code_graph, search_code_symbols (filters on); no search_knowledge; seeded fused / affected-code / affected-schema blocks offered as hints only",
 };
 
 /**
@@ -216,6 +263,7 @@ export function createAgentArm(deps: ArmDeps, variant: AgentVariant): Localizati
   }
 
   const explorer = variant.toolset === "explorer";
+  const productionExplore = variant.toolset === "production-explore";
   const toolsetLabel = TOOLSET_LABELS[variant.toolset];
   return {
     id: variant.id,
@@ -225,6 +273,7 @@ export function createAgentArm(deps: ArmDeps, variant: AgentVariant): Localizati
       `${variant.toolset === "files" ? ", file tools only (no graph)" : ""}` +
       `${variant.toolset === "graph-primitives" ? ", with chat's search primitives" : ""}` +
       `${explorer ? ", from a Claude-Code-style exploring pass" : ""}` +
+      `${productionExplore ? ", from production's explore-mode code pass" : ""}` +
       ` (${provider.key}/${provider.model})`,
     configuration: {
       ...(a0 ? a0.configuration : {}),
@@ -233,7 +282,9 @@ export function createAgentArm(deps: ArmDeps, variant: AgentVariant): Localizati
         : "the agent's citations alone (#1755)",
       agentPass: explorer
         ? `the agentic code pass explore-first (#2560): extractNewRequirementCandidates(text) as the requirements, the text as extraInstructions, buildAgenticPassPrompt with explorerSystemMessage's steps, runAgentLoop at ${EXPLORER_MAX_TURNS} turns, no token budget, transcript compaction at ${EXPLORER_TRANSCRIPT_TOKENS} tokens, no deadline, one nudge to explore when it answers before any tool call; one pass per repository`
-        : "the orchestrator's agentic code pass: extractNewRequirementCandidates(text) as the requirements, the text as extraInstructions, buildAgenticPassPrompt, runAgentLoop at resolveAgenticMaxTurns (single pass, no escalation), one pass per repository",
+        : productionExplore
+          ? "the orchestrator's agentic code pass in explore mode (#2565): extractNewRequirementCandidates(text) as the requirements, the text as extraInstructions, buildAgenticPassPrompt with buildExploreCodePass's steps, runAgentLoop at resolveAgenticMaxTurns and agenticPassEffectiveBudget(ANALYSIS_AGENT_TOKEN_BUDGET), the explore transcript ceiling, the explorer nudge then #1388's continuation, the final-answer retry with its reasoning setting and evidence digest, #2569's dollar ceiling (ANALYSIS_CODE_PASS_MAX_USD per requirement) on the provider (single pass, no escalation, no post-loop salvage); one pass per repository"
+          : "the orchestrator's agentic code pass: extractNewRequirementCandidates(text) as the requirements, the text as extraInstructions, buildAgenticPassPrompt, runAgentLoop at resolveAgenticMaxTurns (single pass, no escalation), one pass per repository",
       ...(explorer
         ? {
             costCapPerItemUsd: EXPLORER_ITEM_CAP_USD,
@@ -271,6 +322,7 @@ export function createAgentArm(deps: ArmDeps, variant: AgentVariant): Localizati
         passGroup: variant.toolset,
         passIds: [],
       };
+      const loops: Array<AgentLoopTotals | undefined> = [];
       let reusedCost: number | null = 0;
       let reusedSeconds = 0;
       const itemStart = meter!.spentUsd();
@@ -297,6 +349,7 @@ export function createAgentArm(deps: ArmDeps, variant: AgentVariant): Localizati
         agent.citedFiles += resolved.files.length + resolved.unresolvedFiles;
         agent.unresolvedFiles += resolved.unresolvedFiles;
         agent.passIds.push(shared.id);
+        loops.push(passLoopTotals(shared.result));
         const key = (filePath: string) => fileKey(repo.name, filePath);
         named.push(...resolved.files.map(key));
         if (!variant.union) {
@@ -318,6 +371,8 @@ export function createAgentArm(deps: ArmDeps, variant: AgentVariant): Localizati
           });
         }
       }
+      const loop = addLoopTotals(loops);
+      if (loop) agent.loop = loop;
       return {
         ...mergeSeedings(seedings),
         llmNamedFiles: [...new Set(named)],
@@ -354,4 +409,9 @@ export function createA3PArm(deps: ArmDeps): LocalizationArm {
 /** A20 — the Claude-Code-style explorer; citations alone (#2560). */
 export function createA20Arm(deps: ArmDeps): LocalizationArm {
   return createAgentArm(deps, AGENT_VARIANTS.A20);
+}
+
+/** A21 — production's explore-mode code pass at production's bounds; citations alone (#2568). */
+export function createA21Arm(deps: ArmDeps): LocalizationArm {
+  return createAgentArm(deps, AGENT_VARIANTS.A21);
 }

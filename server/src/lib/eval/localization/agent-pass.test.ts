@@ -4,7 +4,12 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { AIProvider } from "../../ai/types.js";
 import type { runAgentLoop } from "../../analysis/agent-loop.js";
-import { buildAgenticPassPrompt } from "../../analysis/agentic-pass-context.js";
+import {
+  agenticPassEffectiveBudget,
+  buildAgenticPassPrompt,
+  resolveAgentTokenBudget,
+  resolveAgenticMaxTurns,
+} from "../../analysis/agentic-pass-context.js";
 import type { AgentTool } from "../../analysis/tools/types.js";
 import {
   assertClonesFor,
@@ -29,6 +34,19 @@ import { EXPLORER_MAX_TURNS, EXPLORER_TRANSCRIPT_TOKENS } from "./arm-core.js";
 import type { MaterializedState } from "./materialize.js";
 
 const answer = (findings: unknown[]) => JSON.stringify({ summary: "s", findings });
+
+/** #2568 — what a real loop result always carries beside the answer: its usage and how it ended. */
+const LOOP_END = {
+  usage: {
+    promptTokens: 100,
+    completionTokens: 20,
+    totalTokens: 120,
+    cacheReadTokens: 300,
+    cacheWriteTokens: 0,
+  },
+  budgetExhausted: false,
+  turnsExhausted: false,
+};
 
 describe("citationsFromAnswer", () => {
   it("reads every finding's code and repository-source citations, with the finding's confidence", () => {
@@ -133,7 +151,12 @@ describe("createMaterializedAgentPass", () => {
       finalResponse: answer([{ citations: [{ filePath: "a.go", startLine: 1, endLine: 2 }] }]),
       hasFinalAnswer: true,
       turnsUsed: 4,
-      toolCalls: [{}, {}, {}],
+      toolCalls: [
+        { tool: "grep_files", args: { text: "total" } },
+        { tool: "read_file_slice", args: { filePath: "a.go" } },
+        { tool: "grep_files", args: { text: "total" } },
+      ],
+      ...LOOP_END,
     })) as unknown as ReturnType<typeof vi.fn> & typeof runAgentLoop;
     return {
       provider,
@@ -160,6 +183,18 @@ describe("createMaterializedAgentPass", () => {
       turns: 4,
       toolCalls: 3,
       answered: true,
+      // #2568 — the loop's end, read for the report: the second grep repeats the first.
+      loop: {
+        tokensUsed: 120,
+        tokenBudget: deps.runLoop.mock.calls[0]![2].maxTokens,
+        promptTokens: 100,
+        cacheReadTokens: 300,
+        cacheWriteTokens: 0,
+        budgetExhausted: false,
+        turnsExhausted: false,
+        costCeilingReached: false,
+        repeatedToolCalls: 1,
+      },
     });
     expect(deps.assembleSeeds).toHaveBeenCalledWith({
       projectId: "proj-r",
@@ -474,6 +509,7 @@ describe("createMaterializedAgentPass", () => {
           hasFinalAnswer: true,
           turnsUsed: 1,
           toolCalls: [],
+          ...LOOP_END,
         };
       }) as unknown as typeof runAgentLoop;
       const deps = explorerDeps({
@@ -564,5 +600,108 @@ describe("createMaterializedAgentPass", () => {
     await expect(pass({ corpus: "c", repo: "zz", text: "t", toolset: "graph" })).rejects.toThrow(
       /repository zz is not materialized/,
     );
+  });
+  describe("production's explore pass (A21, #2568)", () => {
+    const searchCodeGraph = { name: "search_code_graph" } as AgentTool;
+    const searchCodeSymbols = { name: "search_code_symbols" } as AgentTool;
+    const a21Deps = (overrides: Partial<MaterializedAgentPassDeps> = {}) =>
+      depsWith(root, {
+        explorerSearchTools: () => ({ searchCodeGraph, searchCodeSymbols }),
+        ...overrides,
+      });
+    const request = {
+      corpus: "c",
+      repo: "r",
+      text: "Change the total",
+      toolset: "production-explore",
+    } as const;
+    const shape = (tools: AgentTool[]) =>
+      tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters }));
+
+    it("runs buildExploreCodePass's tools and steps at production's turn cap, budget and transcript", async () => {
+      const deps = a21Deps();
+      const result = await createMaterializedAgentPass(deps)(request);
+      expect(result.answered).toBe(true);
+      expect(deps.graphTools).not.toHaveBeenCalled();
+      const [, input, options] = deps.runLoop.mock.calls[0]!;
+      const production = buildExploreCodePass({
+        search: { searchCodeGraph, searchCodeSymbols },
+        providerKey: provider.key,
+        model: provider.model,
+      });
+      expect(shape(input.tools)).toEqual(shape(production.tools));
+      expect(input.systemMessage).toContain(PRODUCTION_EXPLORER_STEPS);
+      expect(input.userMessage).toContain("AFFECTED");
+      expect(options.maxTurns).toBe(resolveAgenticMaxTurns(1));
+      expect(options.maxTurns).not.toBe(EXPLORER_MAX_TURNS);
+      expect(options.maxTokens).toBe(agenticPassEffectiveBudget(resolveAgentTokenBudget(), seeds));
+      expect(options.transcriptCompaction).toEqual(production.transcriptCompaction);
+      // No eval-only cap: the model is called through the (guarded) provider.
+      expect(options).not.toHaveProperty("callModel");
+      expect(options.finalAnswerRetry).toMatchObject({
+        reasoning: expect.any(Object),
+        evidence: expect.any(Function),
+      });
+      expect(result.loop?.tokenBudget).toBe(options.maxTokens);
+    });
+
+    it("scales the turn cap with the requirements, as production does", async () => {
+      const six = Array.from({ length: 6 }, (_, i) => ({ id: `NR-${i + 1}`, text: `r${i}` }));
+      const deps = a21Deps({ extractRequirements: vi.fn(async () => six) });
+      await createMaterializedAgentPass(deps)(request);
+      const [, , options] = deps.runLoop.mock.calls[0]!;
+      expect(options.maxTurns).toBe(resolveAgenticMaxTurns(6));
+      expect(options.maxTurns).toBeGreaterThan(resolveAgenticMaxTurns(1));
+    });
+
+    it("sends the explorer nudge once, before any tool call, then #1388's continuation", async () => {
+      const deps = a21Deps();
+      await createMaterializedAgentPass(deps)(request);
+      const [, , options] = deps.runLoop.mock.calls[0]!;
+      const state = { turnsUsed: 1, turnsLeft: 9, nudgesSent: 0 };
+      // #1388 allows MAX_CONTINUATION_NUDGES; the explorer adds one.
+      expect(options.continuation.maxNudges).toBe(3);
+      expect(options.continuation.nudge("prose", state)).toBe(EXPLORER_NUDGE);
+      // A second tool-less reply is #1388's, never the explorer's again.
+      const second = options.continuation.nudge("prose", state);
+      expect(second).not.toBe(EXPLORER_NUDGE);
+      expect(second).toEqual(expect.any(String));
+      options.onToolCall({ tool: "grep_files", args: {}, resultPreview: "" });
+      expect(options.continuation.nudge("prose", state)).not.toBe(EXPLORER_NUDGE);
+    });
+
+    it("is stopped by #2569's dollar ceiling, not by an eval cap", async () => {
+      process.env.ANALYSIS_CODE_PASS_MAX_USD = "0.000001";
+      try {
+        const chat = vi.fn(async () => ({
+          content: JSON.stringify({ tool: "grep_files", text: "total" }),
+          model: provider.model,
+          usage: { promptTokens: 1000, completionTokens: 1000, totalTokens: 2000 },
+        }));
+        const { runLoop: _stub, ...rest } = a21Deps({
+          provider: { ...provider, chat } as unknown as AIProvider,
+        });
+        const result = await createMaterializedAgentPass(rest)(request);
+        // The first call is priced past the ceiling, so the next one is refused.
+        expect(chat).toHaveBeenCalledTimes(1);
+        expect(result.answered).toBe(false);
+        expect(result.loop?.costCeilingReached).toBe(true);
+      } finally {
+        delete process.env.ANALYSIS_CODE_PASS_MAX_USD;
+      }
+    });
+
+    it("refuses to run without its clone or its search tools", async () => {
+      const noClone = depsWith(path.join(root, "absent"), {
+        explorerSearchTools: () => ({ searchCodeGraph, searchCodeSymbols }),
+      });
+      await expect(createMaterializedAgentPass(noClone)(request)).rejects.toThrow(
+        /A21 needs the clone of c\/r/,
+      );
+      await expect(createMaterializedAgentPass(depsWith(root))(request)).rejects.toThrow(
+        /A21 needs the explore pass's search tools/,
+      );
+      expect(noClone.runLoop).not.toHaveBeenCalled();
+    });
   });
 });
