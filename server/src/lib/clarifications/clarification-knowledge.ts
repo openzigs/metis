@@ -55,6 +55,13 @@ export function clarificationTitle(record: Pick<StoredClarification, "question">
   return `Clarification: ${q.length > TITLE_QUESTION_CHARS ? `${q.slice(0, TITLE_QUESTION_CHARS)}…` : q}`;
 }
 
+/** #2270 — what the run an answer was given in is called, by origin. */
+const ORIGIN_NAMES: Record<Exclude<StoredClarification["origin"], "spec-kit">, string> = {
+  analysis: "requirements analysis",
+  impact: "impact analysis",
+  portfolio: "portfolio check",
+};
+
 /** The Markdown a record is indexed as. */
 export function renderClarificationDocument(record: StoredClarification): string {
   const where = record.source
@@ -65,7 +72,7 @@ export function renderClarificationDocument(record: StoredClarification): string
   const origin =
     record.origin === "spec-kit"
       ? `Spec Kit /clarify${record.specKitFeature ? ` (feature ${inertLine(record.specKitFeature)})` : ""}`
-      : `requirements analysis ${record.analysisId ?? ""}`.trim();
+      : `${ORIGIN_NAMES[record.origin]} ${record.analysisId ?? ""}`.trim();
   return [
     `# ${clarificationTitle(record)}`,
     "",

@@ -20,22 +20,55 @@ import type { ClarificationState } from "./types/requirements.js";
 const log = createChildLogger("clarification-dialog-store");
 
 /**
+ * #2270 — what a dialog is about when it is not a requirements analysis: an
+ * Impact Analysis run or a portfolio check started on a document. Its state
+ * lives in `SubjectClarificationDialog`, keyed on the subject, because neither
+ * has an `Analysis` row for `ClarificationDialogState` to key on.
+ */
+export type DialogSubjectKind = "impact" | "portfolio";
+
+/**
+ * #2270 — which dialog: an analysis id (the requirements analysis's dialog,
+ * as before), or a subject. Every store function takes either.
+ */
+export type DialogKey = string | { kind: DialogSubjectKind; id: string };
+
+type SubjectWhere = { impactAnalysisId: string } | { portfolioAssessmentId: string };
+
+/** The subject's unique column, as a Prisma `where`. */
+export function subjectWhere(key: { kind: DialogSubjectKind; id: string }): SubjectWhere {
+  return key.kind === "impact" ? { impactAnalysisId: key.id } : { portfolioAssessmentId: key.id };
+}
+
+/** One string per dialog, for logs and process-local maps: distinct across kinds. */
+export function dialogKeyString(key: DialogKey): string {
+  return typeof key === "string" ? key : `${key.kind}:${key.id}`;
+}
+
+/**
  * Read the durable dialog state for an analysis, or `undefined` when none has
  * been checkpointed (or the stored blob is unparseable).
  */
-export async function readDialogState(analysisId: string): Promise<ClarificationState | undefined> {
-  return (await readDialogStateRevision(analysisId))?.state;
+export async function readDialogState(key: DialogKey): Promise<ClarificationState | undefined> {
+  return (await readDialogStateRevision(key))?.state;
 }
 
 /**
  * Upsert the durable dialog state for an analysis. Idempotent: repeated writes
  * with the same `analysisId` overwrite the prior checkpoint.
  */
-export async function writeDialogState(
-  analysisId: string,
-  state: ClarificationState,
-): Promise<void> {
+export async function writeDialogState(key: DialogKey, state: ClarificationState): Promise<void> {
   const serialized = JSON.stringify(state);
+  if (typeof key !== "string") {
+    // #2270 — the run created the row with its requirements; there is no
+    // dialog to write without one.
+    await prisma.subjectClarificationDialog.update({
+      where: subjectWhere(key),
+      data: { state: serialized },
+    });
+    return;
+  }
+  const analysisId = key;
   await prisma.clarificationDialogState.upsert({
     where: { analysisId },
     create: { analysisId, state: serialized },
@@ -58,17 +91,24 @@ export interface DialogStateRevision {
  * {@link readDialogState} is.
  */
 export async function readDialogStateRevision(
-  analysisId: string,
+  key: DialogKey,
 ): Promise<DialogStateRevision | undefined> {
-  const row = await prisma.clarificationDialogState.findUnique({
-    where: { analysisId },
-    select: { state: true },
-  });
-  if (!row) return undefined;
+  const row =
+    typeof key === "string"
+      ? await prisma.clarificationDialogState.findUnique({
+          where: { analysisId: key },
+          select: { state: true },
+        })
+      : await prisma.subjectClarificationDialog.findUnique({
+          where: subjectWhere(key) as Prisma.SubjectClarificationDialogWhereUniqueInput,
+          select: { state: true },
+        });
+  // #2270 — a subject's row exists before its dialog starts, with no state.
+  if (!row || row.state === null) return undefined;
   try {
     return { state: JSON.parse(row.state) as ClarificationState, revision: row.state };
   } catch {
-    log.warn("Corrupt clarification dialog state — ignoring", { analysisId });
+    log.warn("Corrupt clarification dialog state — ignoring", { dialog: dialogKeyString(key) });
     return undefined;
   }
 }
@@ -84,12 +124,14 @@ export async function readDialogStateRevision(
  * created it first. `client` is the transaction to write in, if any.
  */
 export async function replaceDialogState(
-  analysisId: string,
+  key: DialogKey,
   revision: string | undefined,
   state: ClarificationState,
   client: Prisma.TransactionClient = prisma,
 ): Promise<string | null> {
   const serialized = JSON.stringify(state);
+  if (typeof key !== "string") return replaceSubjectState(key, revision, serialized, client);
+  const analysisId = key;
   if (revision === undefined) {
     // A writer that read no state may have read a row that will not parse
     // (readDialogStateRevision ignores it). Creating would then collide with
@@ -146,16 +188,48 @@ export async function replaceDialogState(
  * deadlock-free: do not cite this order as one nothing reverses.
  */
 export async function commitDialogState(
-  analysisId: string,
+  key: DialogKey,
   revision: string,
   state: ClarificationState,
   alongside: (tx: Prisma.TransactionClient) => Promise<void>,
 ): Promise<string | null> {
   return prisma.$transaction(async (tx) => {
-    const committed = await replaceDialogState(analysisId, revision, state, tx);
+    const committed = await replaceDialogState(key, revision, state, tx);
     if (committed !== null) await alongside(tx);
     return committed;
   });
+}
+
+/**
+ * #2270 — {@link replaceDialogState} for a subject's dialog. Its row is
+ * created by the run, with the requirements and no state, so a first write is
+ * a compare-and-set on `state` being null (or, as for an analysis, on the raw
+ * text of a state that will not parse). No row: nothing to write, `null`.
+ */
+async function replaceSubjectState(
+  key: { kind: DialogSubjectKind; id: string },
+  revision: string | undefined,
+  serialized: string,
+  client: Prisma.TransactionClient,
+): Promise<string | null> {
+  const where = subjectWhere(key);
+  let expected: string | null;
+  if (revision === undefined) {
+    const existing = await client.subjectClarificationDialog.findUnique({
+      where: where as Prisma.SubjectClarificationDialogWhereUniqueInput,
+      select: { state: true },
+    });
+    if (!existing) return null;
+    if (existing.state !== null && parses(existing.state)) return null;
+    expected = existing.state;
+  } else {
+    expected = revision;
+  }
+  const { count } = await client.subjectClarificationDialog.updateMany({
+    where: { ...where, state: expected },
+    data: { state: serialized },
+  });
+  return count === 1 ? serialized : null;
 }
 
 function parses(text: string): boolean {
@@ -167,7 +241,18 @@ function parses(text: string): boolean {
   }
 }
 
-/** Delete the durable dialog state for an analysis (no-op when absent). */
-export async function deleteDialogState(analysisId: string): Promise<void> {
-  await prisma.clarificationDialogState.deleteMany({ where: { analysisId } });
+/**
+ * Delete the durable dialog state for an analysis (no-op when absent). #2270 —
+ * a subject's dialog keeps its row (it holds the run's requirements): only its
+ * state is cleared, so the questions can be asked again.
+ */
+export async function deleteDialogState(key: DialogKey): Promise<void> {
+  if (typeof key !== "string") {
+    await prisma.subjectClarificationDialog.updateMany({
+      where: subjectWhere(key),
+      data: { state: null },
+    });
+    return;
+  }
+  await prisma.clarificationDialogState.deleteMany({ where: { analysisId: key } });
 }

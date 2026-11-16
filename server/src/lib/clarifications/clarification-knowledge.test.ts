@@ -82,6 +82,15 @@ describe("#2236 — the clarification document", () => {
     expect(specKit).not.toContain("Applies to requirements");
     expect(specKit).not.toContain("Source paragraph");
   });
+
+  it("#2270 — names an impact run's and a portfolio check's answer by what it was asked in", () => {
+    expect(renderClarificationDocument(record({ origin: "impact", analysisId: "ia-1" }))).toContain(
+      "- Asked in: impact analysis ia-1",
+    );
+    expect(
+      renderClarificationDocument(record({ origin: "portfolio", analysisId: "pa-1" })),
+    ).toContain("- Asked in: portfolio check pa-1");
+  });
 });
 
 describe("#2236 — indexClarification edges", () => {

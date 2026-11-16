@@ -252,16 +252,17 @@ export interface PersistAgentResultInput {
   /**
    * Issue #741 (Epic #727) — persistence mode for the `(analysisId, agentKey)`
    * pair. `"replace"` (default) deletes any prior row so single-agent regenerate
-   * (#57) leaves no orphans. `"append"` keeps prior rows so the multi-repo
-   * resume endpoint MERGES a resumed connector's findings alongside the original
-   * run's findings (both are read back by {@link readFlattenedFindings}) instead
-   * of clobbering them.
+   * (#57) leaves no orphans. `"append"` keeps prior rows, so the new row's
+   * findings sit beside the earlier ones (both are read back by
+   * {@link readFlattenedFindings}). A "Continue with a larger budget"
+   * continuation (#1131) appends, and so does a failed or cancelled resume
+   * pass, so it cannot delete the row it was meant to replace.
    *
    * Issue #2011 — `"supersede"` is `"replace"` in ONE transaction: the scope's
    * earlier rows go and this row (with its findings) lands together, or neither
-   * does. A resumed repository's completed pass uses it, so a failed delete can
-   * no longer leave that repository's findings doubled, and no read between the
-   * two writes sees both sets.
+   * does. The resume endpoint's completed pass uses it (it no longer appends),
+   * so a failed delete can no longer leave that repository's findings doubled,
+   * and no read between the two writes sees both sets.
    */
   mode?: "replace" | "append" | "supersede";
   /**
@@ -1090,8 +1091,9 @@ export async function persistAgentResult(
 ): Promise<PersistedAgentResult> {
   // Replace any prior AgentResult row for the same (analysisId, agentKey) pair
   // so single-agent regenerate (#57) doesn't leave orphan rows. `mode: "append"`
-  // (#741 resume) skips the delete so resumed-repo findings merge rather than
-  // clobber the original run's code findings.
+  // skips the delete: a continuation (#1131) lands beside the rows it continues,
+  // and a failed or cancelled resume pass keeps the rows it would have replaced.
+  // A completed resume pass uses `"supersede"` (#2011, below), not append.
   //
   // Issue #763 — when a `connectorId` is supplied (the multi-repo agentic `code`
   // path), the delete is SCOPED to that connector so persisting repo N's result
@@ -2577,6 +2579,8 @@ export async function getAnalysisSnapshot(
     ledgerUsage: await readAnalysisLedgerUsage(row.projectId, id),
     // #766 — a Regenerate in progress, shown on the agent's card.
     liveAgents: readLiveAgents(id),
+    // #2570 — the server's clock at that read, for the live elapsed time.
+    liveAgentsReadAt: new Date().toISOString(),
     // #1131 — the budget Continue would run with, quoted before it starts.
     codeContinuation: codeInvestigationContinueOffered(snapshot.capability)
       ? {

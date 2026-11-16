@@ -63,6 +63,7 @@ import { ModelRecommendation } from "@/components/analysis/ModelRecommendation";
 import { RunStatusBadge, StatusBadge } from "@/components/analysis/analysis-status-badge";
 import { formatChangeRunLabels } from "@/lib/format-change-run-label";
 import { EnhancementStatus } from "@/components/analysis/EnhancementStatus";
+import { LiveAgentProgress } from "@/components/analysis/live-agent-progress";
 import { EnhancementResults } from "@/components/analysis/EnhancementResults";
 import { ApprovalsPanel } from "@/components/analysis/ApprovalsPanel";
 import { countApprovedRequirements } from "@/components/analysis/PromoteApprovedRequirementsButton";
@@ -190,7 +191,7 @@ import {
   runHasQuestionsView,
   tabForAnchor,
   traceabilityPendingMessage,
-  liveAgentLine,
+  serverClockOffsetMs,
   stickyLiveAgents,
   EMPTY_STICKY_LIVE_STATE,
   type AnalysisTab,
@@ -417,6 +418,12 @@ export default function AnalysisPage(): React.ReactElement {
     stickyLive.current = next.state;
     return next.live;
   }, [detail.data]);
+  // #2571 — the server's clock against this browser's, from the latest poll.
+  const clockOffsetMs = useMemo(
+    () => serverClockOffsetMs(detail.data?.liveAgentsReadAt, detail.dataUpdatedAt),
+    [detail.data, detail.dataUpdatedAt],
+  );
+  const codeLive = liveAgents.find((l) => l.agentKey === "code") ?? null;
 
   const detailStatus = detail.data?.status;
   useEffect(() => {
@@ -1222,6 +1229,18 @@ export default function AnalysisPage(): React.ReactElement {
                     Started {new Date(detail.data.startedAt).toLocaleString()} ·{" "}
                     <span data-testid="analysis-run-spend">{runSpendLabel(detail.data)}</span>
                   </p>
+                  {/* Issue #2571 — the run's running state says what METIS is doing in the code. */}
+                  {codeLive &&
+                  (detail.data.status === "running" || detail.data.status === "pending") ? (
+                    <LiveAgentProgress
+                      live={codeLive}
+                      clockOffsetMs={clockOffsetMs}
+                      testId="analysis-run-code-progress"
+                      className="mt-1 text-xs text-muted-foreground"
+                      // The code card below carries the live region; one announcement, not two.
+                      announce={false}
+                    />
+                  ) : null}
                 </div>
                 <div className="flex items-center gap-2">
                   {/* #2350 — chat about this change request, scoped to its project. */}
@@ -1325,6 +1344,7 @@ export default function AnalysisPage(): React.ReactElement {
                     liveContinuation={
                       liveAgents.find((l) => l.agentKey === "code" && l.continuation) ?? null
                     }
+                    clockOffsetMs={clockOffsetMs}
                   />
 
                   {/* Issue #1006 — the imported requirements this run started from. */}
@@ -2033,14 +2053,14 @@ export default function AnalysisPage(): React.ReactElement {
                             {/* Issue #766 — a Regenerate or Continue in progress, on the
                             card it will replace: the stored result still reads
                             `completed` until then. */}
+                            {/* Issue #2571 — while METIS reads the code: files read,
+                            searches and time so far, on the server's clock. */}
                             {live ? (
-                              <p
-                                className="mt-2 text-xs text-muted-foreground"
-                                role="status"
-                                data-testid={`agent-live-${card.agentKey}`}
-                              >
-                                {liveAgentLine(live)}
-                              </p>
+                              <LiveAgentProgress
+                                live={live}
+                                clockOffsetMs={clockOffsetMs}
+                                testId={`agent-live-${card.agentKey}`}
+                              />
                             ) : null}
                             {isSpecialist &&
                             agent &&

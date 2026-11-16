@@ -65,7 +65,9 @@ export type AgenticDegradationReason =
   /** Final response was prose (or otherwise carried no JSON object). */
   | "non-json-response"
   /** A JSON object came back but failed `agentOutputSchema` validation. */
-  | "schema-invalid";
+  | "schema-invalid"
+  /** #2569 — the pass reached its dollar ceiling (`ANALYSIS_CODE_PASS_MAX_USD`). */
+  | "cost-ceiling";
 
 /** Human-readable, non-technical explanation per reason (goes into the run's notes). */
 const REASON_TEXT: Record<AgenticDegradationReason, string> = {
@@ -75,6 +77,7 @@ const REASON_TEXT: Record<AgenticDegradationReason, string> = {
   "non-json-response":
     "the code agent answered in prose instead of the required JSON, even after being asked once more for JSON only",
   "schema-invalid": "the code agent's answer did not match the required findings schema",
+  "cost-ceiling": "the code agent reached its cost ceiling mid-investigation",
 };
 
 /**

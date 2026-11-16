@@ -52,12 +52,16 @@ import {
   resolveAgenticMaxTurns,
   type AgenticPassSeeds,
 } from "../../analysis/agentic-pass-context.js";
+import {
+  EXPLORER_NUDGE,
+  GRAPH_STEPS,
+  explorerSystemMessage as productionExplorerSystemMessage,
+  explorerTools as productionExplorerTools,
+  type ExplorerSearchTools,
+} from "../../analysis/code-pass-variant.js";
 import { DEFAULT_TRANSCRIPT_COMPACTION } from "../../analysis/context-window-manager.js";
 import { listFilesTool } from "../../analysis/tools/list-files.js";
-import {
-  createReadFileSliceTool,
-  readFileSliceTool,
-} from "../../analysis/tools/read-file-slice.js";
+import { readFileSliceTool } from "../../analysis/tools/read-file-slice.js";
 import type { AgentTool, ToolContext } from "../../analysis/tools/types.js";
 import {
   citationTargets,
@@ -116,18 +120,13 @@ export interface MaterializedAgentPassDeps {
   runLoop?: typeof runAgentLoop;
 }
 
-/** #2560 — the explorer's tools, in the order the model is shown them. */
-export function explorerTools(search: {
-  searchCodeGraph: AgentTool;
-  searchCodeSymbols: AgentTool;
-}): AgentTool[] {
-  return [
-    grepFilesTool,
-    listFilesTool,
-    createReadFileSliceTool(EXPLORER_READ_MAX_LINES),
-    search.searchCodeGraph,
-    search.searchCodeSymbols,
-  ];
+/**
+ * #2560 — the explorer's tools, in the order the model is shown them. #2565 —
+ * production's explore-mode tools ({@link productionExplorerTools}) at A20's
+ * read cap, so the eval measures the pass production runs.
+ */
+export function explorerTools(search: ExplorerSearchTools): AgentTool[] {
+  return productionExplorerTools(search, EXPLORER_READ_MAX_LINES);
 }
 
 /** Thrown by the explorer's model caller once the pass's dollar cap is spent. */
@@ -168,14 +167,6 @@ export function withSearchPrimitives(
   return out;
 }
 
-/** Production's investigation steps with a working tree (`buildAgenticCodePrompt`). */
-const GRAPH_STEPS = [
-  "- Start by searching the code graph for relevant symbols (classes, functions, interfaces)",
-  "- Use read_file_slice to examine specific implementations",
-  "- Use list_files to discover project structure when needed",
-  "- Use search_knowledge to find additional documentation context",
-].join("\n");
-
 const FILE_STEPS = [
   "- Start by using grep_files to find where relevant names and phrases appear in the repository",
   "- Use read_file_slice to examine specific implementations",
@@ -196,35 +187,17 @@ export function filesOnlySystemMessage(systemMessage: string): string {
   return systemMessage.replace(GRAPH_STEPS, FILE_STEPS);
 }
 
-const EXPLORER_STEPS = [
-  "- Explore the repository the way a developer does before making the change: start with grep_files for the names, phrases and identifiers the requirement implies, and list_files to learn the layout",
-  `- Use read_file_slice to read whole files (omit startLine and endLine; up to ${EXPLORER_READ_MAX_LINES} lines a call), not just snippets, so you see how the code around a hit works`,
-  "- Use search_code_graph and search_code_symbols (with fileGlob, symbolKind and language filters) when a literal search misses something named differently",
-  "- Any seeded or retrieved code context in the request is a set of HINTS from a search, not an answer: confirm or discard each hint by reading the code, and look beyond it",
-  "- Keep exploring until you can name every file the change would edit, then give your answer",
-].join("\n");
-
-/**
- * #2560 — sent once when the explorer answers before calling any tool: on the
- * first Miniflux items, Sonnet answered A20's first turn from the seeded blocks
- * alone, which is A3A's pass under another label.
- */
-export const EXPLORER_NUDGE =
-  "You answered without reading any code. The seeded context is only a hint. Explore first: grep_files for the names the requirement implies, read the files that matter in full with read_file_slice, and check what else the change would touch. Then give your final answer as JSON.";
-
 /**
  * #2560 — A20's prompt: production's, with the investigation steps rewritten
- * for exploration first. Throws when production's steps are not found, as
- * {@link filesOnlySystemMessage} does.
+ * for exploration first. #2565 — production's explore-mode prompt
+ * ({@link productionExplorerSystemMessage}) at A20's read cap: the steps and
+ * {@link EXPLORER_NUDGE} are defined in production code only.
  */
 export function explorerSystemMessage(systemMessage: string): string {
-  if (!systemMessage.includes(GRAPH_STEPS)) {
-    throw new Error(
-      "A20: the agentic code prompt's investigation steps changed; update EXPLORER_STEPS in agent-pass.ts",
-    );
-  }
-  return systemMessage.replace(GRAPH_STEPS, EXPLORER_STEPS);
+  return productionExplorerSystemMessage(systemMessage, EXPLORER_READ_MAX_LINES);
 }
+
+export { EXPLORER_NUDGE };
 
 /**
  * The citations of an answer that could be code, in answer order, each with its

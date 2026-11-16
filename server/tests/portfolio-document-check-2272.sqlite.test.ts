@@ -309,6 +309,47 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
       expect(view.repos.some((r) => r.repoConnectionId === RC_P1_API)).toBe(true);
     });
 
+    it("#2270 — a reading with a vague requirement is stored as the check's dialog; one with none is not", async () => {
+      readerEnabled = true;
+      // The reading above: its requirements carry no GtWR flag, so nothing to ask.
+      const plain = await start("ana", { documentId: DOC_A, scope: "product", productIds: [P1] });
+      expect((await settled(plain, "ana")).status).toBe("completed");
+      expect(
+        await db.subjectClarificationDialog.count({ where: { portfolioAssessmentId: plain } }),
+      ).toBe(0);
+
+      const vague = `${RESET_CRITERIA[0]} quickly`;
+      reader.mockImplementationOnce(async () => ({
+        reading: {
+          ...READING,
+          statements: [{ ...READING.statements[0]!, statement: vague, quote: vague }],
+        },
+        costUsd: 0.05,
+      }));
+      const id = await start("ana", { documentId: DOC_A, scope: "product", productIds: [P1] });
+      expect((await settled(id, "ana")).status).toBe("completed");
+      const row = await db.subjectClarificationDialog.findUnique({
+        where: { portfolioAssessmentId: id },
+      });
+      expect(row).toMatchObject({ projectId: PROJECTS[0].id, documentId: DOC_A, state: null });
+      const stored = JSON.parse(row!.requirements) as {
+        requirements: Array<{ id: string; ambiguities: Array<{ field: string }> }>;
+      };
+      expect(stored.requirements.map((r) => [r.id, r.ambiguities.map((a) => a.field)])).toEqual([
+        ["T1", ["R7:quickly"]],
+      ]);
+      // Read back through the route the page reads.
+      const read = await get("ana", `/${id}/clarify`);
+      expect(read.status).toBe(200);
+      expect(read.body.data.state).toBeNull();
+      expect(read.body.data.requirements.requirements[0].sources[0]).toMatchObject({
+        documentId: DOC_A,
+        quote: vague,
+      });
+      // A reader of another workspace cannot see the check, nor its dialog.
+      expect((await get("ola", `/${id}/clarify`)).status).toBe(404);
+    });
+
     it("with the reader off, the splitter's parts are checked, and the statement says so", async () => {
       readerEnabled = false;
       reader.mockClear();

@@ -30,6 +30,7 @@ import {
   recordClarification,
   reopenChangedSources,
   type ClarificationInput,
+  type ClarificationOrigin,
   type StoredClarification,
 } from "./clarification-records.js";
 
@@ -77,6 +78,8 @@ export function answeredClarificationInputs(
     productIds: string[];
     now: Date;
     rounds?: ReadonlySet<number>;
+    /** #2270 — whose dialog it is; default a requirements analysis's. */
+    origin?: ClarificationOrigin;
   },
 ): ClarificationInput[] {
   const titles = new Map((requirements?.requirements ?? []).map((r) => [r.id, r.title]));
@@ -90,7 +93,7 @@ export function answeredClarificationInputs(
       const questionKey = keyOfQuestion(q, (id) => titles.get(id), ctx.analysisId);
       // A later round's answer to the same question replaces an earlier one.
       out.set(questionKey, {
-        origin: "analysis",
+        origin: ctx.origin ?? "analysis",
         questionKey,
         analysisId: ctx.analysisId,
         questionId: q.id,
@@ -243,7 +246,13 @@ export function priorAnswerSourceFor(
           recordId: record.id,
           answer: record.answer,
           answeredAt: record.answeredAt.toISOString(),
-          ...(record.analysisId ? { fromAnalysisId: record.analysisId } : {}),
+          // #2270 — and which kind of run it was, so the panel names it.
+          ...(record.analysisId
+            ? {
+                fromAnalysisId: record.analysisId,
+                fromOrigin: record.origin === "spec-kit" ? "analysis" : record.origin,
+              }
+            : {}),
         });
       }
       return out;
