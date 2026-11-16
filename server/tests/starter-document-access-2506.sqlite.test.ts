@@ -385,10 +385,9 @@ describe.skipIf(readGeneratedClientProvider() !== "sqlite")(
     });
 
     const prepare = (path: (typeof paths)[string]) => {
-      if (path.reader) {
-        process.env.ANALYSIS_DOCUMENT_READER = "true";
-        __resetConfigSingleton();
-      }
+      // #2255 — on by default now, so a retrieval path says false itself.
+      process.env.ANALYSIS_DOCUMENT_READER = path.reader ? "true" : "false";
+      __resetConfigSingleton();
       return orchestrator({ emptySearch: path.emptySearch });
     };
 
