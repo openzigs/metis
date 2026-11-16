@@ -153,6 +153,8 @@ test.describe("Continue with a larger budget (#1131)", () => {
           agentKey: "code",
           startedAt: new Date(Date.now() - 64_000).toISOString(),
           toolCalls: 12,
+          filesRead: 14,
+          searches: 9,
           rerun: true,
           phase: "investigating",
           continuation: { requirements: 3, total: 19 },
@@ -166,7 +168,10 @@ test.describe("Continue with a larger budget (#1131)", () => {
       "Rerun in progress: re-investigating 3 of 19 requirements",
       { timeout: 90_000 },
     );
-    await expect(analysis.capabilityBanner).toContainText("12 steps so far");
+    // #2571 — the same "Reading the code: …" line as the code card.
+    await expect(analysis.capabilityBanner).toContainText(
+      "Reading the code: 14 files read, 9 searches",
+    );
     await expect(analysis.continueButton).toHaveCount(0);
   });
 

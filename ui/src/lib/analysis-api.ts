@@ -428,6 +428,8 @@ export interface AnalysisSnapshot extends AnalysisListItem {
   ledgerUsage?: AnalysisLedgerUsage | null;
   /** Issue #766 — agents running right now, e.g. a Regenerate in progress. */
   liveAgents?: AnalysisLiveAgent[];
+  /** Issue #2570 — the server's clock when it read `liveAgents` (ISO). */
+  liveAgentsReadAt?: string;
   /** #2548 — what of this run the viewer is shown as restricted; absent when nothing is. */
   restrictedView?: AnalysisRestrictedView;
   /** Issue #1131 — the budget Continue would run with; present only while it is offered. */
@@ -485,6 +487,7 @@ type AnalysisSnapshotPayload = AnalysisListItem &
     databaseAware: AnalysisDatabaseAware | null;
     sourceRequirements: AnalysisSourceRequirement[];
     liveAgents: AnalysisLiveAgent[];
+    liveAgentsReadAt: string;
     ledgerUsage: AnalysisLedgerUsage | null;
     codeContinuation: AnalysisCodeContinuationQuote | null;
     restrictedView: AnalysisRestrictedView;

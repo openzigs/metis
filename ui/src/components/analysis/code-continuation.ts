@@ -14,7 +14,7 @@ import type {
   CodeInvestigationGap,
 } from "@metis/shared";
 import { formatTokens } from "@/lib/run-tokens";
-import { liveAgentLine } from "./analysis-views";
+import { codeReadingProgress, liveAgentLine } from "./analysis-views";
 
 /** Unrounded USD to four places, as the run header shows it. */
 function usd(value: number): string {
@@ -83,10 +83,15 @@ export function continuationEstimate(input: {
   return { scope, budget, firstRun };
 }
 
-/** The line the banner shows while a continuation runs. */
+/**
+ * The line the banner shows while a continuation runs; #2571 — while it reads
+ * the code, the same "Reading the code: …" line as the agent card. `now` is on
+ * the server's clock (`Date.now() + clockOffsetMs`).
+ */
 export function continuationProgressLine(live: AnalysisLiveAgent, now: number): string {
   const scope = live.continuation
     ? `re-investigating ${live.continuation.requirements} of ${live.continuation.total} requirements`
     : "re-investigating the requirements the code analysis did not reach";
-  return `Rerun in progress: ${scope}. ${liveAgentLine(live, now)}`;
+  const progress = codeReadingProgress(live, now)?.line ?? liveAgentLine(live, now);
+  return `Rerun in progress: ${scope}. ${progress}`;
 }

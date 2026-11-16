@@ -25,6 +25,11 @@ import {
   EMPTY_STICKY_LIVE_STATE,
   LIVE_AGENT_STICKY_MS,
   liveAgentLine,
+  codeReadingProgress,
+  EXPLORE_PROGRESS_NOTE,
+  elapsedLabel,
+  liveAgentLineParts,
+  serverClockOffsetMs,
   stickyLiveAgents,
   approvalsNoneMessage,
   runHasQuestionsView,
@@ -635,6 +640,26 @@ describe("stickyLiveAgents", () => {
     expect(seen.map((l) => l.length)).toEqual([1, 1, 0]);
   });
 
+  // Issue #2571 — the progress line is drawn from these entries, so it goes
+  // when they go: when the run leaves `running`, and after the sticky window.
+  const progressLines = (seen: ReturnType<typeof poll>) =>
+    seen.map((l) => l.map((a) => codeReadingProgress(a, T0)?.line ?? null));
+
+  it("#2571 — the progress line goes once the run leaves running", () => {
+    const seen = poll([snap({ liveAgents: [codeLive(4)] }), snap({ status: "completed" })]);
+    expect(progressLines(seen)).toEqual([[expect.stringContaining("Reading the code")], []]);
+  });
+
+  it("#2571 — the progress line stays across a missed poll and goes after the sticky window", () => {
+    const seen = poll(
+      [snap({ liveAgents: [codeLive(4)] }), snap(), snap()],
+      LIVE_AGENT_STICKY_MS / 2,
+    );
+    // The entry started two minutes before T0, with no files read yet.
+    const line = "Reading the code: 0 files read, 0 searches, 2 min 0 s so far.";
+    expect(progressLines(seen)).toEqual([[line], [line], []]);
+  });
+
   it("never carries an entry over to another analysis", () => {
     const first = stickyLiveAgents(
       EMPTY_STICKY_LIVE_STATE,
@@ -743,5 +768,124 @@ describe("#1137 — serverPage", () => {
       from: 0,
       to: 0,
     });
+  });
+});
+
+// Issue #2571 — the plain-language line while METIS reads the code.
+describe("codeReadingProgress", () => {
+  const started = "2026-11-16T10:00:00.000Z";
+  const at = (seconds: number) => Date.parse(started) + seconds * 1000;
+  const live = (over: Partial<Parameters<typeof codeReadingProgress>[0]> = {}) => ({
+    agentKey: "code",
+    startedAt: started,
+    toolCalls: 23,
+    filesRead: 14,
+    searches: 9,
+    mode: "explore" as const,
+    rerun: false,
+    phase: "investigating" as const,
+    ...over,
+  });
+
+  it("reads the counts and the time so far, with the explore note", () => {
+    expect(codeReadingProgress(live(), at(70))).toEqual({
+      line: "Reading the code: 14 files read, 9 searches, 1 min 10 s so far.",
+      counts: "Reading the code: 14 files read, 9 searches",
+      elapsed: ", 1 min 10 s so far.",
+      note: EXPLORE_PROGRESS_NOTE,
+    });
+  });
+
+  it("follows the data: a later poll's count changes the line", () => {
+    expect(codeReadingProgress(live({ filesRead: 15 }), at(72))?.line).toBe(
+      "Reading the code: 15 files read, 9 searches, 1 min 12 s so far.",
+    );
+  });
+
+  it("uses the singular for one, and seconds under a minute", () => {
+    expect(codeReadingProgress(live({ filesRead: 1, searches: 1 }), at(9))?.line).toBe(
+      "Reading the code: 1 file read, 1 search, 9 s so far.",
+    );
+    expect(codeReadingProgress(live({ filesRead: 0, searches: 0 }), at(0))?.line).toBe(
+      "Reading the code: 0 files read, 0 searches, 0 s so far.",
+    );
+  });
+
+  it("fast mode shows the same counts without the explore note", () => {
+    expect(codeReadingProgress(live({ mode: "fast" }), at(70))).toEqual({
+      line: "Reading the code: 14 files read, 9 searches, 1 min 10 s so far.",
+      counts: "Reading the code: 14 files read, 9 searches",
+      elapsed: ", 1 min 10 s so far.",
+      note: null,
+    });
+    expect(codeReadingProgress(live({ mode: undefined }), at(70))?.note).toBeNull();
+  });
+
+  it("leaves other agents, a re-summary and an entry without counts to the #766 line", () => {
+    expect(codeReadingProgress(live({ agentKey: "database" }), at(5))).toBeNull();
+    expect(codeReadingProgress(live({ phase: "synthesizing" }), at(5))).toBeNull();
+    const { filesRead: _f, searches: _s, ...older } = live();
+    expect(codeReadingProgress(older as never, at(5))).toBeNull();
+  });
+
+  it("drops an unreadable start time rather than show a wrong one", () => {
+    expect(codeReadingProgress(live({ startedAt: "not a date" }), at(5))?.line).toBe(
+      "Reading the code: 14 files read, 9 searches.",
+    );
+  });
+
+  it("never says agent, token, turn or tool call", () => {
+    const copy = [
+      codeReadingProgress(live(), at(70))!.line,
+      codeReadingProgress(live({ filesRead: 1, searches: 1 }), at(3))!.line,
+      EXPLORE_PROGRESS_NOTE,
+    ]
+      .join(" ")
+      .toLowerCase();
+    for (const word of ["agent", "token", "turn", "tool call"]) expect(copy).not.toContain(word);
+  });
+});
+
+describe("elapsedLabel and serverClockOffsetMs", () => {
+  const start = "2026-11-16T10:00:00.000Z";
+  const t0 = Date.parse(start);
+
+  it("words elapsed time plainly (#2571), never negative", () => {
+    expect(elapsedLabel(start, t0 + 70_000, "plain")).toBe("1 min 10 s");
+    expect(elapsedLabel(start, t0 + 3_725_000, "plain")).toBe("62 min 5 s");
+    expect(elapsedLabel(start, t0 + 45_000, "plain")).toBe("45 s");
+    expect(elapsedLabel(start, t0 - 5_000, "plain")).toBe("0 s");
+    expect(elapsedLabel("nope", t0, "plain")).toBeNull();
+  });
+
+  it("keeps #766's short form by default", () => {
+    expect(elapsedLabel(start, t0 + 252_000)).toBe("4m 12s");
+    expect(elapsedLabel(start, t0 + 45_000)).toBe("45s");
+    expect(elapsedLabel(start, t0 - 5_000)).toBe("0s");
+    expect(elapsedLabel("nope", t0)).toBeNull();
+  });
+
+  it("splits the #766 line into what a poll changes and the ticking time", () => {
+    const entry = {
+      agentKey: "database",
+      startedAt: start,
+      toolCalls: 3,
+      filesRead: 0,
+      searches: 0,
+      rerun: true,
+      phase: "investigating" as const,
+    };
+    expect(liveAgentLineParts(entry, t0 + 70_000)).toEqual({
+      status: "Re-running · 3 steps so far",
+      elapsed: " · 1m 10s",
+    });
+    expect(liveAgentLineParts({ ...entry, startedAt: "nope" }, t0).elapsed).toBe("");
+  });
+
+  it("is the server's clock minus the browser's at receipt, 0 without a server time", () => {
+    const received = Date.parse("2026-11-16T11:00:00.000Z");
+    expect(serverClockOffsetMs("2026-11-16T10:00:00.000Z", received)).toBe(-3_600_000);
+    expect(serverClockOffsetMs(undefined, received)).toBe(0);
+    expect(serverClockOffsetMs("garbage", received)).toBe(0);
   });
 });
