@@ -135,6 +135,11 @@ function ImpactAnalysisDetailView({
     mutationFn: () => impactAnalysisApi.exportReport(data.id),
     onSuccess: ({ blob, filename }) => triggerDownload(blob, filename),
   });
+  // #2595 — the BA hand-off: the change request plus this analysis, as Word or PDF.
+  const handoffMutation = useMutation({
+    mutationFn: (format: "docx" | "pdf") => impactAnalysisApi.exportHandoff(data.id, format),
+    onSuccess: ({ blob, filename }) => triggerDownload(blob, filename),
+  });
   const publishMutation = useMutation({
     mutationFn: () => impactAnalysisApi.publishToJira(data.id),
   });
@@ -213,6 +218,22 @@ function ImpactAnalysisDetailView({
           >
             {exportMutation.isPending ? "Exporting…" : "Export markdown"}
           </Button>
+          {(["docx", "pdf"] as const).map((format) => {
+            const busy = handoffMutation.isPending && handoffMutation.variables === format;
+            return (
+              <Button
+                key={format}
+                variant="outline"
+                size="sm"
+                data-testid={`impact-export-${format}`}
+                title="The change request and this impact analysis, as one document to hand off"
+                disabled={!canExport || handoffMutation.isPending}
+                onClick={() => handoffMutation.mutate(format)}
+              >
+                {busy ? "Exporting…" : format === "docx" ? "Export Word" : "Export PDF"}
+              </Button>
+            );
+          })}
           <Button
             variant="outline"
             size="sm"
@@ -285,6 +306,11 @@ function ImpactAnalysisDetailView({
         {exportMutation.isError ? (
           <p className="text-xs text-destructive" data-testid="impact-export-error">
             {(exportMutation.error as Error).message}
+          </p>
+        ) : null}
+        {handoffMutation.isError ? (
+          <p className="text-xs text-destructive" data-testid="impact-export-handoff-error">
+            {(handoffMutation.error as Error).message}
           </p>
         ) : null}
         {publishMutation.isError ? (

@@ -83,6 +83,28 @@ export const impactAnalysisApi = {
   },
 
   /**
+   * Issue #2595 — download the BA hand-off: the change request the run was
+   * started from plus this impact analysis, as a Word or PDF document.
+   */
+  async exportHandoff(
+    id: string,
+    format: "docx" | "pdf",
+  ): Promise<{ blob: Blob; filename: string }> {
+    const res = await streamFetch(`${BASE}/${encodeURIComponent(id)}/export?format=${format}`, {
+      method: "GET",
+    });
+    if (!res.ok) {
+      throw new Error(await parseStreamError(res));
+    }
+    const blob = await res.blob();
+    const filename = filenameFromDisposition(
+      res.headers.get("content-disposition"),
+      `impact-analysis-${id}.${format}`,
+    );
+    return { blob, filename };
+  },
+
+  /**
    * Issue #963 — publish the impact run to Jira as ONE issue (idempotent). An
    * explicit `projectId` bills the issue to a specific run project; omit it to
    * use the first configured run project.
