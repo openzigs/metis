@@ -274,7 +274,9 @@ export async function withPassReads<T>(
  */
 // Known coarseness (fails closed): `isHidden` records a readable restricted
 // file whenever it is checked, so a directory listing or a fused-search seed
-// records every such file it walks, not only the ones actually read.
+// records every such file it walks, not only the ones actually read. A caller
+// that walks many files can ask `wouldHide` instead, which records nothing, and
+// call `isHidden` only on what it returns (`grep_files`, #2565).
 export function passCodeAccess(pass: PassReads): CodeAccessFilter {
   const hidden = codeAccessFilterOf(pass.hiddenFiles);
   if (pass.readableFiles.size === 0) return hidden;
@@ -295,6 +297,7 @@ export function passCodeAccess(pass: PassReads): CodeAccessFilter {
       for (const paths of readableIn(repo)) recordPassReads(pass, paths.get(p) ?? []);
       return false;
     },
+    wouldHide: (repo, filePath) => hidden.isHidden(repo, filePath),
     hiddenFileCount: hidden.hiddenFileCount,
   };
 }

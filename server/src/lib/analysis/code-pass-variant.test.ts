@@ -10,6 +10,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { __resetConfigSingleton } from "../config/config-service.js";
+import { recordCodePassMode } from "./analysis-capability.js";
+import { passCodeAccess, type PassReads } from "./pass-reads.js";
 import type { AgentLoopContinuationState, AgentLoopOptions } from "./agent-loop.js";
 import { buildAgenticPassPrompt } from "./agentic-pass-context.js";
 import {
@@ -48,6 +50,9 @@ beforeAll(async () => {
     Array.from({ length: n }, (_, i) => `line ${i + 1}`.padEnd(width, "x")).join("\n");
   await fs.writeFile(path.join(clone, "src", "long.ts"), numbered(1500));
   await fs.writeFile(path.join(clone, "src", "wide.ts"), numbered(1000, 500));
+  // One minified line longer than the size cap, alone and followed by another line.
+  await fs.writeFile(path.join(clone, "src", "bundle.min.js"), "x".repeat(100_000));
+  await fs.writeFile(path.join(clone, "src", "bundle2.min.js"), `${"y".repeat(100_000)}\nend`);
   // A secret near the end of a 1000-line read: redacted at the larger cap too.
   const withSecret = numbered(950).split("\n");
   withSecret[899] = `const apiKey = "${TOKEN}"`;
@@ -162,6 +167,41 @@ describe("the explore pass's prompt and tools", () => {
     const out = await read.execute({ filePath: "src/long.ts" }, ctx());
     expect(out.resultCount).toBe(300);
   });
+
+  it("falls back to the default read cap on a zero, negative or non-numeric env value", async () => {
+    for (const bad of ["0", "-1", "abc"]) {
+      process.env.ANALYSIS_EXPLORE_READ_MAX_LINES = bad;
+      __resetConfigSingleton();
+      const pass = buildExploreCodePass({
+        search: { searchCodeGraph, searchCodeSymbols },
+        providerKey: "offline-stub",
+        model: "stub",
+      });
+      expect(pass.readMaxLines).toBe(1000);
+      const read = pass.tools.find((t) => t.name === "read_file_slice")!;
+      const out = await read.execute({ filePath: "src/long.ts" }, ctx());
+      expect(out.resultCount).toBe(1000);
+    }
+  });
+});
+
+describe("recordCodePassMode across a multi-repository run", () => {
+  it("is explore only while every pass explored; a fast pass wins, in either order", () => {
+    const exploreThenFast: Parameters<typeof recordCodePassMode>[0] = {};
+    recordCodePassMode(exploreThenFast, { mode: "explore", reason: "platform-default" });
+    recordCodePassMode(exploreThenFast, { mode: "fast", reason: "no-working-tree" });
+    expect(exploreThenFast.codePassMode).toEqual({ mode: "fast", reason: "no-working-tree" });
+
+    const fastThenExplore: Parameters<typeof recordCodePassMode>[0] = {};
+    recordCodePassMode(fastThenExplore, { mode: "fast", reason: "no-working-tree" });
+    recordCodePassMode(fastThenExplore, { mode: "explore", reason: "platform-default" });
+    expect(fastThenExplore.codePassMode).toEqual({ mode: "fast", reason: "no-working-tree" });
+
+    const allExplore: Parameters<typeof recordCodePassMode>[0] = {};
+    recordCodePassMode(allExplore, { mode: "explore", reason: "platform-default" });
+    recordCodePassMode(allExplore, { mode: "explore", reason: "platform-default" });
+    expect(allExplore.codePassMode).toEqual({ mode: "explore", reason: "platform-default" });
+  });
 });
 
 describe("read_file_slice at the explore caps", () => {
@@ -186,6 +226,30 @@ describe("read_file_slice at the explore caps", () => {
       `[Cut at ${EXPLORE_READ_MAX_CHARS} characters per call: request lines ${kept + 1}-`,
     );
     expect(out.citations?.[0]).toMatchObject({ endLine: kept, truncated: true });
+  });
+
+  it("marks a one-line file longer than the size cap truncated, and says the line was cut", async () => {
+    const out = await tool("read_file_slice").execute({ filePath: "src/bundle.min.js" }, ctx());
+    expect(out.isError).toBeUndefined();
+    expect(out.truncated).toBe(true);
+    expect(out.content).toContain(
+      `[Line 1 cut at ${EXPLORE_READ_MAX_CHARS} of its 100000 characters;`,
+    );
+    expect(out.content).not.toContain("request lines");
+    expect(out.citations?.[0]).toMatchObject({ startLine: 1, endLine: 1, truncated: true });
+    expect(out.citations?.[0]).not.toHaveProperty("next");
+  });
+
+  it("says a cut first line was cut, and names the next line, when more follow", async () => {
+    const out = await tool("read_file_slice").execute({ filePath: "src/bundle2.min.js" }, ctx());
+    expect(out.truncated).toBe(true);
+    expect(out.content).toContain("[Line 1 cut at");
+    expect(out.content).toContain("request lines 2-2 next");
+  });
+
+  it("reads a line within the size cap whole, with no cut note", async () => {
+    const out = await tool("read_file_slice").execute({ filePath: "src/long.ts" }, ctx());
+    expect(out.content).not.toMatch(/\[Line \d+ cut at/);
   });
 
   it("cuts an explicit range at the size cap too", async () => {
@@ -224,6 +288,33 @@ describe("grep_files and list_files keep a hidden file out (#2314 / #2448)", () 
     expect(open.content).toContain("src/secret.ts"); // positive control
   });
 
+  it("grep_files in a starter pass records only the files that matched as read", async () => {
+    const pass: PassReads = {
+      analysisId: "a1",
+      projectId: "p1",
+      actor: {} as PassReads["actor"],
+      readable: new Set(["d-public", "d-long", "d-wide"]),
+      readableFiles: new Map([
+        [
+          "rc1",
+          new Map([
+            ["src/public.ts", ["d-public"]],
+            ["src/long.ts", ["d-long"]],
+            ["src/wide.ts", ["d-wide"]],
+          ]),
+        ],
+      ]),
+      hiddenFiles: [{ connectorId: "rc1", path: "src/secret.ts" }],
+      upstream: null,
+      own: new Set(),
+    };
+    const out = await tool("grep_files").execute({ text: "feeRate" }, ctx(passCodeAccess(pass)));
+    expect(out.content).toContain("src/public.ts");
+    expect(out.content).not.toContain("src/secret.ts");
+    // long.ts and wide.ts were walked and searched, but nothing in them matched.
+    expect([...pass.own]).toEqual(["d-public"]);
+  });
+
   it("list_files does not list a hidden file", async () => {
     const hidden = await tool("list_files").execute({ pattern: "src/*.ts" }, ctx(HIDING_SECRET));
     expect(hidden.content).toContain("src/public.ts");
@@ -257,6 +348,19 @@ describe("the explore transcript ceiling (#1384)", () => {
       ...DEFAULT_TRANSCRIPT_COMPACTION,
       maxTranscriptTokens: 4_096,
     });
+  });
+
+  it("falls back to the default on a zero, negative or non-numeric env value", () => {
+    process.env.AI_MODEL_CATALOG_OVERRIDES = JSON.stringify({
+      "offline-stub:big": { contextWindow: 1_000_000 },
+    });
+    for (const bad of ["0", "-5", "abc"]) {
+      process.env.ANALYSIS_EXPLORE_TRANSCRIPT_TOKENS = bad;
+      __resetConfigSingleton();
+      expect(resolveExploreTranscriptTokens("offline-stub", "big")).toBe(
+        DEFAULT_EXPLORE_TRANSCRIPT_TOKENS,
+      );
+    }
   });
 
   it("is the configured ceiling when that is lower", () => {
