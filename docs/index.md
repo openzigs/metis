@@ -11,6 +11,8 @@ to find a page.
 - [Architecture](ARCHITECTURE.md): how the server, UI and packages fit together
 - [Development](DEVELOPMENT.md): contributing, tests and the quality gate
 - [Operations](OPERATIONS.md) and the [DR runbook](DR_RUNBOOK.md): running it in production
+- [Setup quick start](SETUP_QUICKSTART.md): configuring a client deployment for the best
+  impact-analysis results, and why each setting is on or off
 
 ## Testing METIS with AI agents
 
