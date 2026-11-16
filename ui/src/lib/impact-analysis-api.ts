@@ -33,6 +33,37 @@ export interface ImpactJiraPublishResult {
   url: string;
 }
 
+/**
+ * #2594 — what "Publish to Jira" would do, read before the analyst confirms.
+ * Nothing is sent to Jira to compute it.
+ */
+export interface ImpactJiraPublishPreview {
+  provider: "jira";
+  /** The METIS run project whose Jira connection the issue is created through. */
+  project: { id: string; name: string };
+  jiraProjectKey: string;
+  /** The Jira site's base URL; null when the connection is gone. */
+  jiraSite: string | null;
+  title: string;
+  /** 1, or 0 when the run was published before (a re-publish creates nothing). */
+  issuesToCreate: number;
+  /**
+   * Why the publish would fail before it reaches Jira (the connection was
+   * removed or is in an error state), else null. The dialog offers no confirm.
+   */
+  blockedReason: string | null;
+  /**
+   * The issue an earlier publish created. `jiraProjectKey` is the project it is
+   * in, which differs from the top-level key when the run's Jira config changed.
+   */
+  alreadyPublished: {
+    issueKey: string;
+    jiraProjectKey: string;
+    url: string;
+    publishedAt: string;
+  } | null;
+}
+
 export const impactAnalysisApi = {
   create: (body: CreateImpactAnalysisInput) =>
     apiFetch<CreateImpactAnalysisResponse>(BASE, { method: "POST", body }),
@@ -83,6 +114,28 @@ export const impactAnalysisApi = {
   },
 
   /**
+   * Issue #2595 — download the BA hand-off: the change request the run was
+   * started from plus this impact analysis, as a Word or PDF document.
+   */
+  async exportHandoff(
+    id: string,
+    format: "docx" | "pdf",
+  ): Promise<{ blob: Blob; filename: string }> {
+    const res = await streamFetch(`${BASE}/${encodeURIComponent(id)}/export?format=${format}`, {
+      method: "GET",
+    });
+    if (!res.ok) {
+      throw new Error(await parseStreamError(res));
+    }
+    const blob = await res.blob();
+    const filename = filenameFromDisposition(
+      res.headers.get("content-disposition"),
+      `impact-analysis-${id}.${format}`,
+    );
+    return { blob, filename };
+  },
+
+  /**
    * Issue #963 — publish the impact run to Jira as ONE issue (idempotent). An
    * explicit `projectId` bills the issue to a specific run project; omit it to
    * use the first configured run project.
@@ -92,6 +145,10 @@ export const impactAnalysisApi = {
       method: "POST",
       body,
     }),
+
+  /** #2594 — preview the Jira publish; writes nothing. */
+  previewJiraPublish: (id: string) =>
+    apiFetch<ImpactJiraPublishPreview>(`${BASE}/${encodeURIComponent(id)}/publish/jira/preview`),
 
   /**
    * Issue #966 — mark (or re-mark) an affected-table row relevant/not-relevant.

@@ -112,14 +112,58 @@ export function outcomeRequirementCount(
   return stored;
 }
 
+/**
+ * Issue #2596 — while the approval gate holds the run's requirements, how many
+ * the Checkpoints tab lists, reconciled with the count the summary gives. In
+ * the 2026-11-16 walkthrough the summary said "Eight requirements" and the
+ * checkpoints listed 18: the 8 plus 10 NFRs the analysis found, and nothing on
+ * the page said so. `undefined` when the gate is not holding requirements.
+ */
+export function describeListedForApproval(
+  metadata: Record<string, unknown> | null | undefined,
+): string | undefined {
+  // Inline, as `outcomeRequirementCount`: page tests mock `@/lib/analysis-api`.
+  const blocked = (
+    (metadata ?? {}) as {
+      promotionBlocked?: {
+        blocked?: unknown;
+        awaitingRequirementCount?: unknown;
+        reviewedRequirementCount?: unknown;
+        synthesisRequirementCount?: unknown;
+        setDifference?: { elicitedNfrs?: unknown } | null;
+      } | null;
+    }
+  ).promotionBlocked;
+  if (blocked?.blocked !== true) return undefined;
+  const listed = blocked.reviewedRequirementCount ?? blocked.awaitingRequirementCount;
+  if (typeof listed !== "number" || listed <= 0) return undefined;
+  const nfrs = blocked.setDifference?.elicitedNfrs;
+  const written = blocked.synthesisRequirementCount;
+  if (
+    typeof nfrs === "number" &&
+    nfrs > 0 &&
+    typeof written === "number" &&
+    listed - nfrs === written
+  ) {
+    return (
+      `${listed} requirement(s) are listed for approval on the Checkpoints tab: the ${written} ` +
+      `the analysis wrote up and ${nfrs} non-functional requirement(s) it found.`
+    );
+  }
+  return `${listed} requirement(s) are listed for approval on the Checkpoints tab; none is saved until it is approved.`;
+}
+
 export function AnalysisOutcomeCard({
   status,
   agentResults,
   requirementCount,
+  listedForApproval,
   narrativeHidden = false,
 }: {
   status: string;
   agentResults: readonly OutcomeAgent[];
+  /** #2596 — {@link describeListedForApproval}, while the gate holds the requirements. */
+  listedForApproval?: string;
   /** #2548 — the server hid the run's narrative from this viewer (`restrictedView.narrative`). */
   narrativeHidden?: boolean;
   /**
@@ -170,6 +214,11 @@ export function AnalysisOutcomeCard({
       {requirementCount !== undefined ? (
         <p className="mt-2 text-xs text-muted-foreground" data-testid="analysis-outcome-count">
           {requirementCount} requirement{requirementCount === 1 ? "" : "s"} stored for this run.
+        </p>
+      ) : null}
+      {listedForApproval ? (
+        <p className="mt-2 text-xs text-muted-foreground" data-testid="analysis-outcome-listed">
+          {listedForApproval}
         </p>
       ) : null}
     </section>

@@ -77,6 +77,42 @@ describe("impactAnalysisApi", () => {
     await expect(impactAnalysisApi.exportReport("ia-1")).rejects.toThrow(/boom/);
   });
 
+  it("#2595 — downloads the hand-off in the format asked for", async () => {
+    vi.mocked(streamFetch).mockResolvedValue({
+      ok: true,
+      blob: async () => new Blob(["doc"]),
+      headers: new Headers({
+        "content-disposition": 'attachment; filename="Expiring keys - impact hand-off.pdf"',
+      }),
+    } as unknown as Response);
+    const { filename } = await impactAnalysisApi.exportHandoff("ia/1", "pdf");
+    expect(streamFetch).toHaveBeenCalledWith("/impact-analyses/ia%2F1/export?format=pdf", {
+      method: "GET",
+    });
+    expect(filename).toBe("Expiring keys - impact hand-off.pdf");
+  });
+
+  it("#2595 — names the hand-off by its run when the server names none", async () => {
+    vi.mocked(streamFetch).mockResolvedValue({
+      ok: true,
+      blob: async () => new Blob(["doc"]),
+      headers: new Headers(),
+    } as unknown as Response);
+    const { filename } = await impactAnalysisApi.exportHandoff("ia-1", "docx");
+    expect(filename).toBe("impact-analysis-ia-1.docx");
+  });
+
+  it("#2595 — throws with the parsed error when the hand-off export fails", async () => {
+    vi.mocked(streamFetch).mockResolvedValue({
+      ok: false,
+      json: async () => ({ error: { message: "format must be docx or pdf" } }),
+      headers: new Headers(),
+    } as unknown as Response);
+    await expect(impactAnalysisApi.exportHandoff("ia-1", "docx")).rejects.toThrow(
+      /format must be docx or pdf/,
+    );
+  });
+
   // #963 — Jira publish.
   it("POSTs the Jira publish request with an optional projectId", async () => {
     vi.mocked(apiFetch).mockResolvedValue({ provider: "jira", issueKey: "IMP-1", url: "u" });
@@ -85,6 +121,13 @@ describe("impactAnalysisApi", () => {
       method: "POST",
       body: { projectId: "project-002" },
     });
+  });
+
+  // #2594 — the confirmation's preview is a GET that writes nothing.
+  it("GETs the Jira publish preview", async () => {
+    vi.mocked(apiFetch).mockResolvedValue({ provider: "jira" });
+    await impactAnalysisApi.previewJiraPublish("ia/1");
+    expect(apiFetch).toHaveBeenCalledWith("/impact-analyses/ia%2F1/publish/jira/preview");
   });
 
   it("defaults the Jira publish body to an empty object", async () => {

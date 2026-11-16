@@ -106,3 +106,55 @@ describe("#1568 — requirements that would be promoted with no code link", () =
     expect([...out].sort()).toEqual(["REQ-1", "REQ-2"]);
   });
 });
+
+/**
+ * Issue #2596 — an elicited NFR is never joined to a synthesis item (#2449):
+ * promotion writes its evidence from the findings it cites by id. In the
+ * 2026-11-16 walkthrough all 10 NFRs were marked "No code link" before
+ * approval, and 8 of them were promoted with code links.
+ */
+describe("#2596 — an elicited NFR is judged on the findings it cites", () => {
+  const nfr = (id: string, title: string, evidenceFindingIds: string[]) => ({
+    id,
+    title,
+    elicitedNfr: { nfrCategory: "security" as const, evidenceFindingIds },
+  });
+  const WITH_IDS = [
+    { findingId: "f-code", citations: [codeCitation] },
+    { findingId: "f-man", citations: [manPage] },
+    { findingId: "f-unverified", citations: [codeCitation], verdict: "could-not-verify" },
+  ];
+
+  it("does not mark one citing a finding that cites code", () => {
+    const out = requirementsWithoutCodeEvidence({
+      structured: [nfr("NFR-1", "Expired API keys refused identically", ["f-man", "f-code"])],
+      synthesized: SYNTHESIS,
+      findings: WITH_IDS,
+    });
+    expect([...out]).toEqual([]);
+  });
+
+  it("marks one citing only documentation, an unverified finding or an unknown id", () => {
+    const out = requirementsWithoutCodeEvidence({
+      structured: [
+        nfr("NFR-2", "Docs only", ["f-man"]),
+        nfr("NFR-3", "Unverified", ["f-unverified"]),
+        nfr("NFR-4", "Gone", ["f-deleted"]),
+        nfr("NFR-5", "Cites nothing", []),
+      ],
+      synthesized: SYNTHESIS,
+      findings: WITH_IDS,
+    });
+    expect([...out].sort()).toEqual(["NFR-2", "NFR-3", "NFR-4", "NFR-5"]);
+  });
+
+  it("never reads a synthesis item an NFR's title happens to resemble", () => {
+    // The item restates the NFR's title word for word and cites code; the NFR cites nothing.
+    const out = requirementsWithoutCodeEvidence({
+      structured: [nfr("NFR-6", "Mark all entries older than a threshold as read", [])],
+      synthesized: [item("Mark all entries older than a threshold as read", ["NFR-6"], [0])],
+      findings: WITH_IDS,
+    });
+    expect([...out]).toEqual(["NFR-6"]);
+  });
+});

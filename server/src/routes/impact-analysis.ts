@@ -100,6 +100,7 @@ import {
   type SubjectDialog,
 } from "../lib/clarifications/subject-clarifications.js";
 import { subjectClarifyUserRateLimiter } from "../middleware/subject-clarify-rate-limit.js";
+import { handoffExportUserRateLimiter } from "../middleware/handoff-export-rate-limit.js";
 import {
   handleSubjectClarifyPost,
   noDialog,
@@ -135,7 +136,16 @@ import { canSeeDocument } from "../lib/documents/document-visibility.js";
 import { diffImpactRuns } from "../lib/impact-analysis/impact-drift.js";
 import type { ImpactDriftReport } from "@metis/shared";
 import { serializeImpactAnalysisMarkdown } from "../lib/analysis/analysis-export.js";
-import { publishImpactAnalysisToJira } from "../lib/publishing/impact-analysis-publish.js";
+import {
+  answeredClarifications,
+  handoffTitle,
+  loadHandoffChangeRequest,
+  serializeHandoffMarkdown,
+} from "../lib/impact-analysis/handoff-export.js";
+import {
+  findImpactAnalysisJiraLink,
+  publishImpactAnalysisToJira,
+} from "../lib/publishing/impact-analysis-publish.js";
 import { PublishError } from "../lib/publishing/finding-publisher.js";
 import { manualUsageOverrideSchema, impactTableFeedbackInputSchema } from "@metis/shared";
 import {
@@ -851,6 +861,85 @@ const listQuerySchema = z.object({ analysisId: z.string().min(1).max(64).optiona
 const publishImpactToJiraSchema = z.object({
   projectId: z.string().min(1).max(200).optional(),
 });
+
+/**
+ * #2594 — the Jira project an impact run publishes into: an explicit in-run
+ * `projectId`, or the first run project (sorted) with a Jira connection and
+ * project key. Shared by the preview and the publish, so what the analyst
+ * confirmed is where the issue goes. Throws the same 400s the publish always did.
+ */
+async function resolveImpactJiraTarget(
+  runProjectIds: readonly string[],
+  requestedProjectId: string | undefined,
+): Promise<{
+  id: string;
+  name: string;
+  jiraProjectKey: string;
+  jiraSite: string | null;
+  /** Why a new issue cannot be created through this connection, else null. */
+  connectionProblem: string | null;
+}> {
+  let candidateIds = [...runProjectIds].sort((a, b) => a.localeCompare(b));
+  if (requestedProjectId) {
+    if (!candidateIds.includes(requestedProjectId)) {
+      throw new AppError(
+        400,
+        "PROJECT_NOT_IN_RUN",
+        "The requested project is not part of this impact analysis run.",
+      );
+    }
+    candidateIds = [requestedProjectId];
+  }
+
+  const configured = await prisma.project.findMany({
+    where: {
+      id: { in: candidateIds },
+      NOT: [{ jiraConnectionId: null }, { jiraProjectKey: null }],
+    },
+    select: {
+      id: true,
+      name: true,
+      jiraProjectKey: true,
+      jiraPublishConnection: { select: { baseUrl: true, deletedAt: true, status: true } },
+    },
+  });
+  const byId = new Map(configured.map((p) => [p.id, p]));
+  const target = candidateIds.map((pid) => byId.get(pid)).find((p) => p !== undefined);
+  if (!target?.jiraProjectKey) {
+    throw new AppError(
+      400,
+      "JIRA_NOT_CONFIGURED",
+      "No project in this impact analysis run has a Jira connection or project key configured — set one in project settings before publishing to Jira.",
+    );
+  }
+  const conn = target.jiraPublishConnection;
+  const live = conn && !conn.deletedAt ? conn : null;
+  // Mirrors the checks createJiraIssue (finding-publish-ports.ts) makes before
+  // it calls Jira, so the preview can say up front that a create would fail.
+  const connectionProblem = !live
+    ? `The Jira connection for project ${target.name} was removed. Set one in project settings before publishing to Jira.`
+    : live.status === "error"
+      ? `The Jira connection for project ${target.name} is in an error state. Re-test it in project settings before publishing to Jira.`
+      : null;
+  return {
+    id: target.id,
+    name: target.name,
+    jiraProjectKey: target.jiraProjectKey,
+    jiraSite: live ? live.baseUrl : null,
+    connectionProblem,
+  };
+}
+
+/** #2594 — the project key of a Jira issue key (`AAA-12` → `AAA`). */
+function jiraProjectKeyOf(issueKey: string): string {
+  const dash = issueKey.lastIndexOf("-");
+  return dash > 0 ? issueKey.slice(0, dash) : issueKey;
+}
+
+/** #963 — the Jira issue title for a run (plain text). */
+function impactJiraTitle(summary: string | null | undefined, id: string): string {
+  return `Impact analysis: ${summary?.slice(0, 200) ?? `run ${id}`}`;
+}
 
 /**
  * Default per-project schema introspector for the usage-classification compute
@@ -1592,6 +1681,109 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
     }
   });
 
+  // GET /:id/export?format=docx|pdf — Issue #2595. The BA's hand-off: the change
+  // request the run was started from plus this impact analysis, as ONE readable
+  // Word or PDF document through the generated-docs export pipeline (no LLM
+  // call). Authorized as GET /:id; the change request is read only within the
+  // run's projects, as this reader may see it (#2447), and the run's own
+  // clarification answers only when its document is readable to them (#2270).
+  // A PDF, or a Word export holding a Mermaid diagram, launches Chromium, so
+  // both formats are capped per user (handoffExportUserRateLimiter).
+  r.get(
+    "/:id/export",
+    requirePermission("analysis.read"),
+    handoffExportUserRateLimiter,
+    async (req, res, next) => {
+      try {
+        const format = z.enum(["docx", "pdf"]).safeParse(req.query.format);
+        if (!format.success) {
+          throw new AppError(400, "INVALID_FORMAT", "format must be docx or pdf");
+        }
+        const actor = actorOf(req);
+        const id = String(req.params.id);
+        const detail = await loadAccessibleImpactDetail(actor, id);
+
+        const projects = await prisma.project.findMany({
+          where: { id: { in: detail.projectIds } },
+          select: { id: true, name: true },
+        });
+        const projectNames: Record<string, string> = {};
+        for (const p of projects) projectNames[p.id] = p.name;
+
+        const changeRequest = await loadHandoffChangeRequest(detail, userSourceReader(actor.id));
+        const dialog = await readableImpactDialog(actor, id);
+        const markdown = serializeHandoffMarkdown(
+          {
+            detail,
+            projectNames,
+            changeRequest,
+            impactClarifications: answeredClarifications(dialog?.state, dialog?.requirements),
+            readAt: new Date().toISOString(),
+          },
+          format.data,
+        );
+
+        const { exportDocument } = await import("../lib/docs-gen/exporters.js");
+        const result = await exportDocument(
+          markdown,
+          handoffTitle({ detail, changeRequest }),
+          format.data,
+        );
+        res.setHeader("Content-Type", result.mimeType);
+        res.setHeader("Content-Disposition", `attachment; filename="${result.filename}"`);
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write -- `result.buffer` is a generated binary document (PDF/DOCX), not HTML; the explicit binary Content-Type, attachment disposition, and nosniff header prevent any HTML interpretation.
+        res.send(result.buffer);
+      } catch (err) {
+        next(asAppError(err));
+      }
+    },
+  );
+
+  // GET /:id/publish/jira/preview — #2594. What "Publish to Jira" would do,
+  // without sending anything: the Jira project (key + site) and METIS project
+  // the issue goes to, how many issues would be created, the title, and the
+  // issue an earlier publish already created. Re-publishing a run creates no
+  // second issue (the IssueLink below is the idempotency key), so the preview
+  // says so instead of promising a new one. Same guard and permission as the
+  // publish itself; the UI asks for this before the analyst confirms.
+  r.get("/:id/publish/jira/preview", requirePermission("issue.publish"), async (req, res, next) => {
+    try {
+      const actor = actorOf(req);
+      const id = String(req.params.id);
+      const query = publishImpactToJiraSchema.parse(req.query ?? {});
+      const detail = await loadAccessibleImpactDetail(actor, id);
+      const target = await resolveImpactJiraTarget(detail.projectIds, query.projectId);
+      const existing = await findImpactAnalysisJiraLink(id);
+      res.status(200).json(
+        ok({
+          provider: "jira" as const,
+          project: { id: target.id, name: target.name },
+          jiraProjectKey: target.jiraProjectKey,
+          jiraSite: target.jiraSite,
+          title: impactJiraTitle(detail.summary, id),
+          issuesToCreate: existing ? 0 : 1,
+          // A re-publish returns the existing issue without calling Jira, so
+          // a broken connection only blocks the first publish.
+          blockedReason: existing ? null : target.connectionProblem,
+          alreadyPublished: existing
+            ? {
+                issueKey: existing.issueKey,
+                // The project it went to, read from the key: the run's Jira
+                // config may have changed since, so it can differ from
+                // `jiraProjectKey` (today's target).
+                jiraProjectKey: jiraProjectKeyOf(existing.issueKey),
+                url: existing.url,
+                publishedAt: existing.publishedAt.toISOString(),
+              }
+            : null,
+        }),
+      );
+    } catch (err) {
+      next(asAppError(err));
+    }
+  });
+
   // POST /:id/publish/jira — Issue #963 (Epic #960). Publish the run to Jira as
   // ONE issue, mirroring the finding-publisher pattern (marker dedup + idempotent
   // IssueLink keyed on impactAnalysisId). Idempotent re-publish returns the same
@@ -1599,43 +1791,15 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
   // connection: an explicit `projectId` (body) must be one of the run's projects;
   // otherwise the first configured run project (sorted) is used. Clear 400 when no
   // run project has a Jira connection/project key (same semantics as analysis.ts).
+  // #2594 — the page sends the `projectId` its preview named, after the analyst
+  // confirms, so the issue goes where the confirmation said.
   r.post("/:id/publish/jira", requirePermission("issue.publish"), async (req, res, next) => {
     try {
       const actor = actorOf(req);
       const id = String(req.params.id);
       const body = publishImpactToJiraSchema.parse(req.body ?? {});
       const detail = await loadAccessibleImpactDetail(actor, id);
-
-      // Candidate run projects, optionally narrowed to an explicit (in-run) project.
-      let candidateIds = [...detail.projectIds].sort((a, b) => a.localeCompare(b));
-      if (body.projectId) {
-        if (!candidateIds.includes(body.projectId)) {
-          throw new AppError(
-            400,
-            "PROJECT_NOT_IN_RUN",
-            "The requested project is not part of this impact analysis run.",
-          );
-        }
-        candidateIds = [body.projectId];
-      }
-
-      // Pick the first candidate with a configured Jira connection + project key.
-      const configured = await prisma.project.findMany({
-        where: {
-          id: { in: candidateIds },
-          NOT: [{ jiraConnectionId: null }, { jiraProjectKey: null }],
-        },
-        select: { id: true },
-      });
-      const configuredIds = new Set(configured.map((p) => p.id));
-      const jiraProjectId = candidateIds.find((pid) => configuredIds.has(pid));
-      if (!jiraProjectId) {
-        throw new AppError(
-          400,
-          "JIRA_NOT_CONFIGURED",
-          "No project in this impact analysis run has a Jira connection or project key configured — set one in project settings before publishing to Jira.",
-        );
-      }
+      const target = await resolveImpactJiraTarget(detail.projectIds, body.projectId);
 
       const projects = await prisma.project.findMany({
         where: { id: { in: detail.projectIds } },
@@ -1644,13 +1808,13 @@ export function impactAnalysisRouter(deps: UsageClassificationRouterDeps = {}): 
       const projectNames: Record<string, string> = {};
       for (const p of projects) projectNames[p.id] = p.name;
 
-      const title = `Impact analysis: ${detail.summary?.slice(0, 200) ?? `run ${id}`}`;
+      const title = impactJiraTitle(detail.summary, id);
       const markdown = serializeImpactAnalysisMarkdown(detail, { projectNames });
 
       try {
         const link = await publishImpactAnalysisToJira({
           analysisId: id,
-          jiraProjectId,
+          jiraProjectId: target.id,
           title,
           body: markdown,
         });

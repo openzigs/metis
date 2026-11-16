@@ -392,6 +392,11 @@ export interface PromotionBlockedState {
      * synthesis items that matched nothing in it. Absent before #1569.
      */
     offeredFromSynthesis?: number;
+    /**
+     * Issue #2596 — how many requirements of the reviewed list are NFRs the
+     * analysis elicited (#2449). Absent before #2596.
+     */
+    elicitedNfrs?: number;
   };
   /** Issue #1104 — UI-ready one-line explanation of the gate. */
   reason?: string;

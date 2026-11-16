@@ -844,6 +844,26 @@ function writePathGapSection(gaps: WritePathCoverageGap[]): string[] {
 }
 
 /**
+ * #2595 — how many blast-radius symbols, and covering tests, the markdown export
+ * lists per requirement change. These are raw symbol lists: one walkthrough run
+ * had 3,014 blast-radius rows across 18 changes, and listing every one made a
+ * 552 KB file nobody could read. The rest are counted and left on the page.
+ */
+export const MAX_EXPORTED_SYMBOL_LIST = 10;
+
+/**
+ * #2595 — the first {@link MAX_EXPORTED_SYMBOL_LIST} symbols as bullets, and a
+ * line counting the rest, which the impact analysis page lists in full.
+ */
+function cappedSymbolBullets(symbols: ImpactAffectedSymbolView[], withRepo: boolean): string {
+  const shown = symbols.slice(0, MAX_EXPORTED_SYMBOL_LIST);
+  const lines = shown.map((s) => impactSymbolBullet(s, withRepo));
+  const rest = symbols.length - shown.length;
+  if (rest > 0) lines.push(`- *…and ${rest} more, listed on the impact analysis page.*`);
+  return lines.join("\n");
+}
+
+/**
  * #1004 — the #962 "tests covering the impacted code" panel, in the exported
  * artifact (it was on screen but absent from the download). Empty ⇒ no section.
  */
@@ -855,7 +875,7 @@ function affectedTestsSection(tests: ImpactAffectedSymbolView[], withRepo: boole
     `#### Tests covering the impacted code (${tests.length} across ${fileCount} ${
       fileCount === 1 ? "file" : "files"
     })`,
-    tests.map((t) => impactSymbolBullet(t, withRepo)).join("\n"),
+    cappedSymbolBullets(tests, withRepo),
   ];
 }
 
@@ -997,11 +1017,12 @@ function impactItemSection(item: ImpactItemView, ctx: ImpactItemLabelContext): s
     parts.push(editCandidates.map((s) => impactSymbolBullet(s, withRepo)).join("\n"));
   }
   if (blastRadius.length > 0) {
+    // #2595 — listed only in part (see MAX_EXPORTED_SYMBOL_LIST); the rest counted.
     parts.push("#### Blast radius (for review)");
     parts.push(
       "_Callers, lineage writers and related code. Listed for review; not a claim that each one changes._",
     );
-    parts.push(blastRadius.map((s) => impactSymbolBullet(s, withRepo)).join("\n"));
+    parts.push(cappedSymbolBullets(blastRadius, withRepo));
   }
 
   // #962/#1004 — the tests that already cover the impacted code.

@@ -80,6 +80,7 @@ import {
   withGoverningStaleness,
 } from "../lib/governing/requirement-staleness.js";
 import { requirementsWithoutCodeEvidence } from "../lib/analysis/code-evidence.js";
+import { resembledRequirements } from "../lib/analysis/resembling-requirements.js";
 import { inSynthesisOrder } from "../lib/analysis/synthesis-finding-order.js";
 import { createChildLogger } from "../lib/logger.js";
 import {
@@ -593,14 +594,13 @@ const log = createChildLogger("analysis-routes");
  */
 async function requirementsWithoutCodeEvidenceFor(
   analysisId: string,
-  listed: ReadonlyArray<{ type: string; itemId: string; status: string; createdAt: Date }>,
-  filtered: boolean,
+  listed: ReadonlyArray<{ type: string }>,
+  // Every approval, not the filtered page, so a rejection still counts.
+  approvals: ReadonlyArray<{ type: string; itemId: string; status: string; createdAt: Date }>,
 ): Promise<Set<string>> {
   if (!listed.some((a) => a.type === "requirement")) return new Set();
   // Best-effort: the approvals list must not fail over an advisory mark.
   try {
-    // Every approval, not the filtered page, so a rejection still counts.
-    const approvals = filtered ? await listApprovalRequests(analysisId) : listed;
     const requirementApprovals = approvals.filter((a) => a.type === "requirement");
     const [structured, synthesis] = await Promise.all([
       getStructuredRequirements(analysisId),
@@ -626,6 +626,30 @@ async function requirementsWithoutCodeEvidenceFor(
       error: (err as Error).message,
     });
     return new Set();
+  }
+}
+
+/**
+ * Issue #2596 — of the reviewed list, each requirement the analysis added (an
+ * elicited NFR, or an item offered from synthesis) mapped to the requirement
+ * read from the documents that it resembles (`resembledRequirements`). Empty
+ * for an analysis with no requirement approvals or no reviewed list.
+ */
+async function resembledRequirementsFor(
+  analysisId: string,
+  listed: ReadonlyArray<{ type: string }>,
+): Promise<Map<string, string>> {
+  if (!listed.some((a) => a.type === "requirement")) return new Map();
+  // Best-effort, as the #1568 mark: grouping is advisory.
+  try {
+    const structured = await getStructuredRequirements(analysisId);
+    return resembledRequirements(structured?.requirements ?? []);
+  } catch (err) {
+    log.warn("Could not work out which added requirements resemble an extracted one", {
+      analysisId,
+      error: (err as Error).message,
+    });
+    return new Map();
   }
 }
 
@@ -2149,20 +2173,35 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           ? (status as "pending" | "approved" | "rejected")
           : undefined;
       const rows = await listApprovalRequests(analysisId, statusFilter);
+      // Every checkpoint, not the ?status= page: the #1568 and #2596 marks
+      // below are judged over the whole set. Both mark requirements only.
+      const everyRow =
+        statusFilter === undefined || !rows.some((r) => r.type === "requirement")
+          ? rows
+          : await listApprovalRequests(analysisId);
       // Issue #1129 — say which requirement approvals restate a ticked imported
       // item and which the analysis added, so the panel can separate them.
       const origins = await requirementOriginsFor(analysisId, analysis.metadata);
       // Issue #1568 — and which would be promoted with no code link.
-      const withoutCode = await requirementsWithoutCodeEvidenceFor(
-        analysisId,
-        rows,
-        statusFilter !== undefined,
-      );
+      const withoutCode = await requirementsWithoutCodeEvidenceFor(analysisId, rows, everyRow);
+      // Issue #2596 — and which requirement the analysis added restates one
+      // read from the documents, so the panel shows the two side by side.
+      const resembles = await resembledRequirementsFor(analysisId, rows);
       // #2554 — a checkpoint whose entry the caller cannot see is marked, so
       // the panel offers no decision on it (the review routes refuse one; an
       // admin, whom they never refuse, is shown none marked).
       const seen = await hiddenCheckpointIds(readerOf(req), analysisId, rows);
-      const hidden = seen.size > 0 && (await isDurableAdmin(req)) ? new Set<string>() : seen;
+      // #2596 — a resemblance is read off both titles, so neither end may be
+      // an entry the caller cannot see. Judged over every checkpoint, not the
+      // ?status= page: a restricted requirement filtered off the page can
+      // still be the one a listed NFR resembles, and naming it leaks its id.
+      const seenAnywhere =
+        everyRow === rows ? seen : await hiddenCheckpointIds(readerOf(req), analysisId, everyRow);
+      const admin = seenAnywhere.size > 0 && (await isDurableAdmin(req));
+      const hidden = admin ? new Set<string>() : seen;
+      const hiddenItems = admin
+        ? new Set<string>()
+        : new Set(everyRow.filter((r) => seenAnywhere.has(r.id)).map((r) => r.itemId));
       // Its reviewer's note goes too: a reader's note can quote the entry.
       const items = rows.map((row) => {
         const marked = hidden.has(row.id)
@@ -2170,10 +2209,16 @@ export function initAnalysisRouter(opts: InitOptions = {}): {
           : row;
         if (row.type !== "requirement") return marked;
         const origin = origins.get(row.itemId);
+        const candidate = resembles.get(row.itemId);
+        const resembled =
+          candidate && !hiddenItems.has(row.itemId) && !hiddenItems.has(candidate)
+            ? candidate
+            : undefined;
         return {
           ...marked,
           ...(origin ? { origin } : {}),
           ...(withoutCode.has(row.itemId) ? { noCodeEvidence: true } : {}),
+          ...(resembled ? { resembles: resembled } : {}),
         };
       });
       const ticketStatus = await canCreateTickets(analysisId);
