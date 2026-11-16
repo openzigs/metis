@@ -20,6 +20,10 @@
  */
 import { bindMaterializedEnv } from "../src/lib/eval/localization/agent-env.js";
 import { materializeLayout } from "../src/lib/eval/localization/materialize.js";
+import {
+  parseCodePassLiveArgs,
+  selectLiveItems,
+} from "../src/lib/eval/localization/code-pass-live-args.js";
 
 // Prisma binds its database when first imported: bind the eval one first.
 bindMaterializedEnv(process.env, materializeLayout());
@@ -27,18 +31,10 @@ bindMaterializedEnv(process.env, materializeLayout());
 /* eslint-disable no-console -- a local CLI whose output is the measurement */
 const CORPUS = "localization-01-miniflux-heldout";
 
-function arg(name: string): string | undefined {
-  const i = process.argv.indexOf(`--${name}`);
-  return i < 0 ? undefined : process.argv[i + 1];
-}
-
 async function main(): Promise<void> {
-  const mode = arg("mode");
-  if (mode !== "explore" && mode !== "fast") throw new Error("--mode explore|fast is required");
-  const budgetUsd = Number(arg("budget") ?? "1.5");
-  if (!Number.isFinite(budgetUsd) || budgetUsd <= 0) throw new Error("--budget must be > 0");
-  const count = Number(arg("requirements") ?? "5");
-  const step = Number(arg("items") ?? "5");
+  // Checked before any provider is built: a bad flag never starts a paid run.
+  const args = parseCodePassLiveArgs(process.argv.slice(2));
+  const { mode, budgetUsd } = args;
   process.env.ANALYSIS_CODE_EXPLORATION = mode;
   // The analysis monthly TOKEN cap counts every analysis in the eval database;
   // --budget holds the spend instead. An explicit setting is kept.
@@ -60,7 +56,8 @@ async function main(): Promise<void> {
   if (!state) throw new Error(`${CORPUS} is not materialized: run pnpm eval:materialize ${CORPUS}`);
   const repo = state.repos[0]!;
   const corpus = await loadLocalizationCorpus(CORPUS);
-  const items = corpus.manifest.items.filter((_, i) => i % step === 0).slice(0, count);
+  // Refuses an empty selection, still before the provider below is built.
+  const items = selectLiveItems(corpus.manifest.items, args);
   const text = items.map((it) => `${it.title}. ${it.text}`).join("\n\n");
 
   const meter = new LedgerCostMeter();

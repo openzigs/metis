@@ -54,7 +54,7 @@ export interface AgentRunStats {
 export interface AgentLoopTotals {
   /** Passes that carried loop counts. */
   passes: number;
-  /** Passes that ended `token-budget`, `turn-limit`, `cost-ceiling` or with no schema-valid answer. */
+  /** Passes with no schema-valid answer; each is counted under one stop reason, or none ("other"). */
   degraded: number;
   budgetStops: number;
   turnStops: number;

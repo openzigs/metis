@@ -865,8 +865,10 @@ const money = (x: number | null) => (x === null ? "unpriced" : `$${x.toFixed(4)}
 export function loopLine(l: AgentLoopTotals): string {
   const pct = (x: number) => `${(x * 100).toFixed(0)}%`;
   const perPass = (n: number) => (l.passes === 0 ? "n/a" : (n / l.passes).toFixed(1));
+  // Each degraded pass carries one reason (passLoopTotals), so the stops and
+  // "other" sum to `degraded`; the clamp only guards a report written before that.
   const stops = l.budgetStops + l.turnStops + l.costCeilingStops;
-  const unanswered = l.degraded - Math.min(l.degraded, stops);
+  const unanswered = Math.max(0, l.degraded - stops);
   const prompt = l.promptTokens + l.cacheReadTokens + l.cacheWriteTokens;
   return (
     `loops: ${l.degraded} of ${l.passes} passes degraded (${pct(l.passes === 0 ? 0 : l.degraded / l.passes)}; ` +

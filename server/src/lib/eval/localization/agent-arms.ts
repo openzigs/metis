@@ -146,21 +146,32 @@ export function resolveCitations(
 }
 
 /**
- * #2568 — one pass's loop as report totals. A pass is degraded when the token
- * budget, the turn cap or the dollar ceiling cut it, or it has no schema-valid
- * answer: the flip rule's degradation condition counts these.
+ * #2568 — one pass's loop as report totals. A pass is degraded only when it has
+ * no schema-valid answer, as production's `codePassOutcome` reads it: a bound
+ * that cut the loop before the final-answer retry produced a valid answer is
+ * not a degradation. A degraded pass carries one reason, in the orchestrator's
+ * order (cost-ceiling, then token-budget, then turn-limit, else "other"), so
+ * the stop counts never exceed the degraded count.
  */
 export function passLoopTotals(result: AgentPassResult): AgentLoopTotals | undefined {
   const l = result.loop;
   if (!l) return undefined;
   const budgeted = l.tokenBudget !== null && l.tokenBudget > 0;
+  const reason = result.answered
+    ? null
+    : l.costCeilingReached
+      ? "cost-ceiling"
+      : l.budgetExhausted
+        ? "token-budget"
+        : l.turnsExhausted
+          ? "turn-limit"
+          : "other";
   return {
     passes: 1,
-    degraded:
-      !result.answered || l.budgetExhausted || l.turnsExhausted || l.costCeilingReached ? 1 : 0,
-    budgetStops: l.budgetExhausted ? 1 : 0,
-    turnStops: l.turnsExhausted ? 1 : 0,
-    costCeilingStops: l.costCeilingReached ? 1 : 0,
+    degraded: reason === null ? 0 : 1,
+    budgetStops: reason === "token-budget" ? 1 : 0,
+    turnStops: reason === "turn-limit" ? 1 : 0,
+    costCeilingStops: reason === "cost-ceiling" ? 1 : 0,
     tokensUsed: l.tokensUsed,
     tokenBudget: budgeted ? l.tokenBudget! : 0,
     budgetedPasses: budgeted ? 1 : 0,

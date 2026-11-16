@@ -23,7 +23,8 @@ import { buildArms, createA0Arm, MODEL_ARMS } from "./arms.js";
 import type { CostMeter } from "./cost.js";
 import type { LocalizationCorpus } from "./corpus.js";
 import { PartialStore, runFingerprint } from "./partials.js";
-import { runLocalizationEval } from "./runner.js";
+import { loopLine, runLocalizationEval } from "./runner.js";
+import { addLoopTotals } from "./scorer.js";
 import type { CorpusSearch } from "./search.js";
 
 // Two files in each of two repositories; every query finds a.go strongly and
@@ -604,7 +605,14 @@ describe("A21 — production's explore-mode pass (#2568)", () => {
     };
     const agentPass = vi.fn(async (req: AgentPassRequest) => {
       meter.charge(0.01);
-      return { citations: [], turns: 3, toolCalls: 2, answered: true, loop: loops[req.repo] };
+      // r's budget stop left it with no schema-valid answer; s answered.
+      return {
+        citations: [],
+        turns: 3,
+        toolCalls: 2,
+        answered: req.repo !== "r",
+        loop: loops[req.repo],
+      };
     });
     const out = await createA21Arm({ search, agentPass, meter, provider }).localize(
       item,
@@ -629,21 +637,41 @@ describe("A21 — production's explore-mode pass (#2568)", () => {
     });
   });
 
-  it("counts a pass degraded when a bound cut it or it has no schema-valid answer", () => {
-    const pass = (answered: boolean, loop?: ReturnType<typeof loopOf>): AgentPassResult => ({
-      citations: [],
-      turns: 1,
-      toolCalls: 0,
-      answered,
-      ...(loop ? { loop } : {}),
-    });
+  const pass = (answered: boolean, loop?: ReturnType<typeof loopOf>): AgentPassResult => ({
+    citations: [],
+    turns: 1,
+    toolCalls: 0,
+    answered,
+    ...(loop ? { loop } : {}),
+  });
+
+  it("counts a pass degraded only when it has no schema-valid answer, as production does", () => {
     expect(passLoopTotals(pass(true, loopOf()))?.degraded).toBe(0);
-    expect(passLoopTotals(pass(false, loopOf()))?.degraded).toBe(1);
-    expect(passLoopTotals(pass(true, loopOf({ turnsExhausted: true })))).toMatchObject({
+    expect(passLoopTotals(pass(false, loopOf()))).toMatchObject({
+      degraded: 1,
+      budgetStops: 0,
+      turnStops: 0,
+      costCeilingStops: 0,
+    });
+    // A bound cut the loop, but the final-answer retry produced a valid answer:
+    // production's codePassOutcome records no degradation, so neither does A21.
+    for (const end of [
+      { turnsExhausted: true },
+      { budgetExhausted: true },
+      { costCeilingReached: true },
+    ]) {
+      expect(passLoopTotals(pass(true, loopOf(end)))).toMatchObject({
+        degraded: 0,
+        budgetStops: 0,
+        turnStops: 0,
+        costCeilingStops: 0,
+      });
+    }
+    expect(passLoopTotals(pass(false, loopOf({ turnsExhausted: true })))).toMatchObject({
       degraded: 1,
       turnStops: 1,
     });
-    expect(passLoopTotals(pass(true, loopOf({ costCeilingReached: true })))).toMatchObject({
+    expect(passLoopTotals(pass(false, loopOf({ costCeilingReached: true })))).toMatchObject({
       degraded: 1,
       costCeilingStops: 1,
     });
@@ -654,5 +682,27 @@ describe("A21 — production's explore-mode pass (#2568)", () => {
       maxBudgetShare: 0,
     });
     expect(passLoopTotals(pass(true))).toBeUndefined();
+  });
+
+  // The turn cap is "the last reply still had tool calls", so it can hold on a
+  // budget stop too: each pass is counted under one reason, production's first.
+  it("counts each degraded pass's stop once, in production's reason order", () => {
+    const both = passLoopTotals(
+      pass(false, loopOf({ budgetExhausted: true, turnsExhausted: true })),
+    );
+    expect(both).toMatchObject({ degraded: 1, budgetStops: 1, turnStops: 0 });
+    const all = passLoopTotals(
+      pass(
+        false,
+        loopOf({ budgetExhausted: true, turnsExhausted: true, costCeilingReached: true }),
+      ),
+    );
+    expect(all).toMatchObject({ degraded: 1, costCeilingStops: 1, budgetStops: 0, turnStops: 0 });
+    // Summed with a pass that has no stop reason, the four numbers sum to degraded.
+    const totals = addLoopTotals([both, all, passLoopTotals(pass(false, loopOf()))])!;
+    expect(loopLine(totals)).toContain(
+      "3 of 3 passes degraded (100%; 1 token-budget, 0 turn-limit, 1 cost-ceiling, " +
+        "1 other with no schema-valid answer)",
+    );
   });
 });

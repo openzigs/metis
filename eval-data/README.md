@@ -845,12 +845,13 @@ and paired with `A3A`.
   no post-loop salvage.
 - **The eval cannot drift from production.** `server/tests/eval-a21-parity-2568.sqlite.test.ts`
   runs the orchestrator's explore pass and A21 over the same project, clone and requirements
-  (one and six). It checks that both hand `runAgentLoop` the same system and user messages,
+  (one and six, and two under an operator's own settings). It checks that both hand `runAgentLoop` the same system and user messages,
   tools, `maxTurns`, `maxTokens`, compaction, prompt caching and retry, and that the
   continuation sends the same nudges.
 - **New report lines (#2568).** Every agent arm's report now has a `loops:` line. It gives the
-  passes that ended degraded (cut by the token budget, the turn cap or the dollar ceiling, or
-  with no schema-valid answer), the tokens per pass against the effective budget, the cache-read
+  passes that ended degraded, which as in production's `codePassOutcome` means with no
+  schema-valid answer, each counted once under its reason in production's order (dollar
+  ceiling, token budget, turn cap, else "other"); the tokens per pass against the effective budget, the cache-read
   share of prompt tokens, and repeated identical tool calls. Partials recorded before #2568 do
   not carry these counts, so they show no such line.
 
