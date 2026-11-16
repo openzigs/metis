@@ -45,7 +45,7 @@ export const ANALYSIS_DEPTH_OPTIONS: ReadonlyArray<{
     value: "explore",
     label: "Thorough",
     description:
-      "METIS reads the code the way a developer would before answering. On a real product we tested, it found about a fifth more of the files a change touches. It takes a few seconds longer per requirement and costs a little more.",
+      "METIS reads the code the way a developer would before answering. On a real product we tested, it found 84 in every 100 of the files a change touches, where Fast found 66. It takes a few seconds longer per requirement and costs a little more.",
   },
   {
     value: "fast",

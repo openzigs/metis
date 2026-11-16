@@ -671,6 +671,68 @@ export function lookupCatalogEntry(
   };
 }
 
+// ── Claude family limits (#2599) ──────────────────────────────────────────
+
+/**
+ * A Claude family id inside any provider spelling of it: bare
+ * (`claude-sonnet-5-5`), dated (`…-20260101`), a Bedrock geo or global
+ * inference profile (`us.anthropic.…`, `global.anthropic.…`), the in-region id
+ * (`anthropic.claude-sonnet-5-5-20260101-v1:0`), or the tail of an ARN. The
+ * minor version is one or two digits, so a date is never read as one.
+ *
+ * The major-only branch is taken only when no one- or two-digit minor follows,
+ * so a minor that is present but trails an unknown character
+ * (`claude-sonnet-5-6[1m]`, `…-5-6.preview`, `…-5-5_x`) names no family rather
+ * than backtracking to the major's row (`claude-sonnet-5`).
+ */
+const CLAUDE_FAMILY_IN_ID =
+  /(?:^|[./])(claude-(?:sonnet|opus|haiku|fable)-\d+(?:[-.]\d{1,2}(?=$|[-:@])|(?![-.]\d{1,2}(?!\d))))(?=$|[-:@])/;
+
+/** The providers whose Claude ids are resolved by family when no row names them. */
+const CLAUDE_FAMILY_PROVIDERS: ReadonlySet<string> = new Set(["anthropic", "bedrock-gateway"]);
+
+/**
+ * #2599 — the bare id of the native `anthropic` builtin row a Claude model id
+ * belongs to, or `undefined` when it names no family that has a row. A later
+ * generation (`claude-sonnet-5-6`) has no row and is never given a neighbour's
+ * window: an over-estimate would let a prompt overflow.
+ */
+export function claudeFamilyModelId(model: string): string | undefined {
+  const hit = CLAUDE_FAMILY_IN_ID.exec(model.trim().toLowerCase())?.[1];
+  if (!hit) return undefined;
+  const id = hit.replace(".", "-");
+  return BUILTIN_MODELS.some((m) => m.provider === "anthropic" && m.id === id) ? id : undefined;
+}
+
+/** The context window and output ceiling the catalog knows for one model. */
+export interface CatalogModelLimits {
+  contextWindow: number | null;
+  maxOutputTokens: number | null;
+}
+
+/**
+ * #2599 — `provider:model`'s context window and output ceiling: the catalog
+ * entry's ({@link lookupCatalogEntry}, so an operator override still wins),
+ * then, on the Anthropic API and the Bedrock gateway, the Claude family's row.
+ * Pricing already matches by family (`claudeFamilyRate`); without this a
+ * Bedrock Sonnet 5.5 id, which no gateway row names, read as a 32,768-token
+ * model instead of a 1M one. Only the limits come from the family; the
+ * catalog entry, its capabilities and its membership are unchanged.
+ */
+export function catalogModelLimits(
+  provider: string,
+  model: string,
+  env: NodeJS.ProcessEnv = process.env,
+): CatalogModelLimits {
+  const entry = lookupCatalogEntry(provider, model, env);
+  const familyId = CLAUDE_FAMILY_PROVIDERS.has(provider) ? claudeFamilyModelId(model) : undefined;
+  const family = familyId ? builtinFor("anthropic", familyId) : undefined;
+  return {
+    contextWindow: entry?.contextWindow ?? family?.contextWindow ?? null,
+    maxOutputTokens: entry?.maxOutputTokens ?? (familyId ? maxOutputFor(familyId) : null),
+  };
+}
+
 /**
  * #131 — the {@link ProviderCapabilities} a direct adapter reports for one
  * model. An unknown model gets the provider's defaults (what the adapter did

@@ -380,6 +380,19 @@ describe("the explore transcript ceiling (#1384)", () => {
     }
   });
 
+  it("is 64k for a Bedrock gateway Sonnet 5.5 id, which no gateway row names (#2599)", () => {
+    for (const id of [
+      "us.anthropic.claude-sonnet-5-5",
+      "us.anthropic.claude-sonnet-5-5-20260101-v1:0",
+      "global.anthropic.claude-sonnet-5-5-v1:0",
+      "anthropic.claude-sonnet-5-5-20260101-v1:0",
+    ]) {
+      expect(resolveExploreTranscriptTokens("bedrock-gateway", id)).toBe(
+        DEFAULT_EXPLORE_TRANSCRIPT_TOKENS,
+      );
+    }
+  });
+
   it("is the configured ceiling when that is lower", () => {
     process.env.ANALYSIS_EXPLORE_TRANSCRIPT_TOKENS = "20000";
     __resetConfigSingleton();

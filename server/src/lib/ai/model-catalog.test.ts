@@ -9,7 +9,9 @@ import {
   MODEL_CATALOG_OVERRIDES_ENV,
   __resetModelCatalogForTests,
   catalogCapabilities,
+  catalogModelLimits,
   catalogPrice,
+  claudeFamilyModelId,
   discoverLocalModels,
   ensureLocalDiscovery,
   getModelCatalog,
@@ -140,6 +142,69 @@ describe("lookup", () => {
   it("uses the extra output ceilings for gpt-4o and a zero context as unknown", () => {
     expect(lookupCatalogEntry("openai", "gpt-4o", {})?.maxOutputTokens).toBe(16_384);
     expect(lookupCatalogEntry("offline-stub", "offline-stub", {})?.contextWindow).toBeNull();
+  });
+});
+
+describe("Claude family limits (#2599)", () => {
+  it.each([
+    ["us.anthropic.claude-sonnet-5-5", "claude-sonnet-5-5"],
+    ["global.anthropic.claude-opus-5-5-20260101-v1:0", "claude-opus-5-5"],
+    ["anthropic.claude-haiku-5-5-v1:0", "claude-haiku-5-5"],
+    ["claude-sonnet-5.5", "claude-sonnet-5-5"],
+    // A date is never read as a minor version.
+    ["claude-sonnet-5-20260101", "claude-sonnet-5"],
+    ["us.anthropic.claude-haiku-4-5-20251001-v1:0", "claude-haiku-4-5"],
+    [
+      "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.anthropic.claude-sonnet-5-5-v1:0",
+      "claude-sonnet-5-5",
+    ],
+  ])("names the family of %s", (id, family) => {
+    expect(claudeFamilyModelId(id)).toBe(family);
+  });
+
+  it.each([
+    "claude-sonnet-5-6",
+    "us.anthropic.claude-sonnet-55",
+    "notclaude-sonnet-5-5",
+    "gpt-4o",
+    // A minor that is present but followed by an unknown character never falls
+    // back to the major-only row (claude-sonnet-5): the minor is unknown, so the
+    // window is too.
+    "claude-sonnet-5-6[1m]",
+    "claude-sonnet-5-6.preview",
+    "claude-sonnet-5-5_x",
+    "us.anthropic.claude-sonnet-5-6[1m]",
+  ])("names no family for %s", (id) => {
+    expect(claudeFamilyModelId(id)).toBeUndefined();
+  });
+
+  it("gives a gateway Sonnet 5.5 id the family's limits, without making it a catalog entry", () => {
+    const id = "us.anthropic.claude-sonnet-5-5-20260101-v1:0";
+    expect(catalogModelLimits("bedrock-gateway", id, {})).toEqual({
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+    });
+    expect(lookupCatalogEntry("bedrock-gateway", id, {})).toBeUndefined();
+  });
+
+  it("keeps a row's own limits and an override's, and leaves other providers alone", () => {
+    expect(catalogModelLimits("bedrock-gateway", "us.anthropic.claude-sonnet-5", {})).toEqual({
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+    });
+    const env = {
+      [MODEL_CATALOG_OVERRIDES_ENV]: JSON.stringify({
+        "bedrock-gateway:us.anthropic.claude-sonnet-5-5": { maxOutputTokens: 8_000 },
+      }),
+    };
+    expect(catalogModelLimits("bedrock-gateway", "us.anthropic.claude-sonnet-5-5", env)).toEqual({
+      contextWindow: 1_000_000,
+      maxOutputTokens: 8_000,
+    });
+    expect(catalogModelLimits("openai", "us.anthropic.claude-sonnet-5-5", {})).toEqual({
+      contextWindow: null,
+      maxOutputTokens: null,
+    });
   });
 });
 

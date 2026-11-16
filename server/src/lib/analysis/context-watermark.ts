@@ -16,7 +16,7 @@
  *   • The watermark decides WHETHER to compact. Which turns to fold is the
  *     compactor's job, because it needs turn boundaries this module never had.
  */
-import { lookupCatalogEntry } from "../ai/model-catalog.js";
+import { catalogModelLimits } from "../ai/model-catalog.js";
 import { createChildLogger } from "../logger.js";
 
 const log = createChildLogger("context-watermark");
@@ -53,13 +53,66 @@ export function resolveContextWindow(
   model: string,
   opts: { fallback?: number; env?: NodeJS.ProcessEnv } = {},
 ): ResolvedContextWindow {
-  const window = lookupCatalogEntry(provider, model, opts.env)?.contextWindow;
+  const window = catalogModelLimits(provider, model, opts.env).contextWindow;
   if (typeof window === "number" && window > 0) return { tokens: window, source: "catalog" };
   const fallback =
     typeof opts.fallback === "number" && Number.isFinite(opts.fallback) && opts.fallback >= 1024
       ? Math.floor(opts.fallback)
       : DEFAULT_CONTEXT_WINDOW_FALLBACK;
+  warnFallbackOnce(provider, model, fallback);
   return { tokens: fallback, source: "fallback" };
+}
+
+/**
+ * #2599 — the models already reported as running on an assumed window. A
+ * fallback shrinks the explore transcript ceiling, the document reader's read
+ * size and chat's compaction point, and nothing else says so; one warning per
+ * `provider:model` names it without repeating on every pass of a run.
+ *
+ * Bounded at {@link FALLBACK_WARNING_CAP}: on the chat path the model id is
+ * request-supplied (`chatBodySchema.model`), so an unbounded set would let a
+ * caller grow it, and the log, by one entry per distinct string.
+ */
+const warnedFallbacks = new Set<string>();
+let fallbackCapReported = false;
+
+/** The most distinct `provider:model` fallbacks reported before reporting stops. */
+export const FALLBACK_WARNING_CAP = 256;
+
+function warnFallbackOnce(provider: string, model: string, tokens: number): void {
+  // The offline stub has no window by design (it sends nothing anywhere).
+  if (provider === "offline-stub") return;
+  const key = `${provider}:${model}`;
+  if (warnedFallbacks.has(key)) return;
+  if (warnedFallbacks.size >= FALLBACK_WARNING_CAP) {
+    if (!fallbackCapReported) {
+      fallbackCapReported = true;
+      log.warn(
+        "Too many distinct models are running on an assumed context window; further ones are " +
+          "not reported.",
+        { cap: FALLBACK_WARNING_CAP },
+      );
+    }
+    return;
+  }
+  warnedFallbacks.add(key);
+  log.warn(
+    "The model catalog does not know this model's context window, so an assumed window is " +
+      "used. Compaction, the explore transcript ceiling and document reading will size to it. " +
+      "Set the real window with AI_MODEL_CATALOG_OVERRIDES.",
+    { provider, model: model.slice(0, 200), assumedContextWindow: tokens },
+  );
+}
+
+/** @internal test-only — forget which fallbacks were already reported. */
+export function __resetContextWindowFallbackWarnings(): void {
+  warnedFallbacks.clear();
+  fallbackCapReported = false;
+}
+
+/** @internal test-only — how many fallbacks are recorded. */
+export function __contextWindowFallbackWarningCount(): number {
+  return warnedFallbacks.size;
 }
 
 /**
@@ -105,7 +158,7 @@ export function resolveAnswerReserve(
   const percent = clampAnswerReservePercent(opts.percent);
   if (percent === 0 || contextWindowTokens <= 0) return { tokens: 0, source: "off" };
   const share = Math.floor((contextWindowTokens * percent) / 100);
-  const cap = lookupCatalogEntry(provider, model, opts.env)?.maxOutputTokens;
+  const cap = catalogModelLimits(provider, model, opts.env).maxOutputTokens;
   if (typeof cap === "number" && cap > 0 && cap < share) return { tokens: cap, source: "catalog" };
   return { tokens: share, source: "window-share" };
 }
