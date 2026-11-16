@@ -110,6 +110,15 @@ describe("the mode decision", () => {
       reason: "no-working-tree",
     });
   });
+
+  it("#2566 — takes the project's setting first, but no working tree still wins", () => {
+    const mode = (platformDefault: "explore" | "fast", projectSetting: string, files = true) =>
+      resolveCodePassMode({ platformDefault, projectSetting, fileToolsAvailable: files });
+    expect(mode("fast", "explore")).toEqual({ mode: "explore", reason: "project-explore" });
+    expect(mode("explore", "fast")).toEqual({ mode: "fast", reason: "project-fast" });
+    expect(mode("explore", "auto")).toEqual({ mode: "explore", reason: "platform-default" });
+    expect(mode("fast", "explore", false)).toEqual({ mode: "fast", reason: "no-working-tree" });
+  });
 });
 
 describe("the explore pass's prompt and tools", () => {

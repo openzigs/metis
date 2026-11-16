@@ -18,6 +18,7 @@
  */
 import {
   CODE_PASS_MODES,
+  resolveCodeExploration,
   type CodePassMode,
   type CodePassModeDecision,
   type CodePassOutcome,
@@ -137,15 +138,18 @@ export function readCodeExplorationSetting(): CodePassMode {
 }
 
 /**
- * The mode a code pass runs in, and why. A pass with no working tree runs
- * `fast` (explore needs `grep_files` and the file reads).
+ * The mode a code pass runs in, and why: the project's setting (#2566), else
+ * the platform default. A pass with no working tree runs `fast` whatever was
+ * asked (explore needs `grep_files` and the file reads).
  */
 export function resolveCodePassMode(input: {
   platformDefault: CodePassMode;
+  /** The project's raw `codeExploration` (`auto | explore | fast`); absent reads as `auto`. */
+  projectSetting?: string | null;
   fileToolsAvailable: boolean;
 }): CodePassModeDecision {
   if (!input.fileToolsAvailable) return { mode: "fast", reason: "no-working-tree" };
-  return { mode: input.platformDefault, reason: "platform-default" };
+  return resolveCodeExploration(input.projectSetting, input.platformDefault);
 }
 
 /**

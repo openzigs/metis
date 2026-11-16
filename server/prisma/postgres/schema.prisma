@@ -802,6 +802,15 @@ model Project {
   /// service/route layer.
   sqlLineage String @default("auto")
 
+  /// Issue #2566 (epic #2564) — how the analysis code pass investigates this
+  /// project's code: `auto` (default) defers to the platform key
+  /// `ANALYSIS_CODE_EXPLORATION` (#2565); `explore` / `fast` override it. A
+  /// repository with no clone still runs `fast`. `String` column for
+  /// sqlite/postgres twin portability; validated against
+  /// `CODE_EXPLORATION_SETTINGS` (`packages/shared/src/code-exploration.ts`)
+  /// at the service/route layer.
+  codeExploration String @default("auto")
+
   @@index([status])
   @@index([createdById])
   @@index([workspaceId])
