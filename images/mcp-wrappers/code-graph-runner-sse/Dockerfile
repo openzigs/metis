@@ -28,7 +28,7 @@
 #   transport: 'sse' (forced by MCPRegistryService.create)
 
 # Use a current Alpine-backed Node image so Trivy picks up fixed OpenSSL/npm packages.
-FROM node:22-alpine3.23 AS builder
+FROM node:25-alpine3.23 AS builder
 WORKDIR /build
 
 # Install build deps for any optional native modules (we don't ship any but
@@ -59,7 +59,7 @@ RUN npm exec --yes --package typescript@5.6.3 -- tsc -p tsconfig.json \
 # ---------------------------------------------------------------------------
 # Runtime layer — minimal Alpine, no compiler, no shell beyond ash.
 # ---------------------------------------------------------------------------
-FROM node:22-alpine3.23 AS runtime
+FROM node:25-alpine3.23 AS runtime
 
 LABEL org.opencontainers.image.title="code-graph-runner-sse"
 LABEL org.opencontainers.image.description="METIS Code Discovery MCP server (Epic #298)"

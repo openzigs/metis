@@ -8,7 +8,7 @@
 #
 # `-y` is baked into the entrypoint so first-run downloads don't stall on
 # an interactive "ok to proceed?" prompt.
-FROM node:22-alpine3.23
+FROM node:25-alpine3.23
 
 RUN npm install -g npm@latest \
  && npm cache clean --force
