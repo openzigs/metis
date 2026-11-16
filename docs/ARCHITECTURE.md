@@ -984,6 +984,32 @@ When a project has a **code graph** (from deep-ingest) and the document agent ex
 > by name (`sortToolsForCache`) before rendering the schema block into the cache-stable
 > prompt lead, so every tool's schema position is deterministic.
 
+**Explore-first mode (#2565, epic #2564).** The agentic code pass runs in one of two
+modes, picked by the tunable platform key `ANALYSIS_CODE_EXPLORATION` (`explore | fast`,
+default `fast` until #2568 re-measures; `fast` is the kill switch) and built in one place,
+`server/src/lib/analysis/code-pass-variant.ts`, which the localization eval's A20 arm
+(`server/src/lib/eval/localization/agent-pass.ts`) imports, so the eval measures this pass.
+
+| | `fast` | `explore` |
+|---|---|---|
+| Tools | the set above | `grep_files`, `list_files`, `read_file_slice`, `search_code_graph`, `search_code_symbols` (filters on); no `search_knowledge` or `describe_table` |
+| `read_file_slice` per call | 200 lines | `ANALYSIS_EXPLORE_READ_MAX_LINES` (1000) lines and 80,000 characters; a cut read names the next range |
+| Investigation steps | graph search first | `EXPLORER_STEPS`: grep and list first, read whole files, seeded blocks are hints to check |
+| Transcript ceiling | 16,000 tokens | `min(ANALYSIS_EXPLORE_TRANSCRIPT_TOKENS` (64,000)`, half the model's catalogued window)` (#1384) |
+| Continuation | #1388's (≤ 2 nudges) | `EXPLORER_NUDGE` once if the model answers before any tool call, then #1388's (≤ 3 nudges in all) |
+| Turns, token budget, signal, caching, final-answer retry | production's | production's, unchanged (`resolveAgenticMaxTurns`, `ANALYSIS_AGENT_TOKEN_BUDGET` via `agenticPassEffectiveBudget`) |
+| Measured cost (A20 vs A3A, Miniflux, 24 items, `claude-sonnet-5-5`) | $0.082 / item, 28 s | $0.120 / item (+46%), 35 s; Recall@5 0.66 → 0.85, edit precision unchanged |
+
+`explore` needs a working tree, so a pass with no clone runs `fast`
+(`resolveCodePassMode` → reason `no-working-tree`). An escalated run's deep and standard
+passes (#739) both use the resolved mode. The run's capability record carries
+`codePassMode`, `codePassModeReason` (`platform-default | project-explore | project-fast |
+no-working-tree`, one vocabulary in `packages/shared/src/code-exploration.ts`) and
+`codePassOutcomes` (per pass: `tokensUsed` against `tokenBudget`, `turnsUsed` of `maxTurns`,
+the degradation reason when there is one, and `repeatedToolCalls`), returned on the
+analysis snapshot. `grep_files` honours the pass's code access (#2314 / #2448) like the other
+file tools, and counts as code retrieval for #773's evidence threshold (its `text` is the query).
+
 **Symbol embeddings — the vector half of code search (#797, Epic #780).** Until #797,
 `search_code_symbols` (and #729's fused seeding, and Spec-Kit's RAG context) was
 **BM25-only in production**: `project-code-searcher.ts` handed `HybridCodeSearch` a

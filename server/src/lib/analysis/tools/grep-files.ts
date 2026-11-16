@@ -364,7 +364,19 @@ async function execute(
     };
   }
   const tally = emptyGrepTally();
-  if (!(await grepClone(context.cloneDir, parsed.args, tally, { maxFilesScanned }))) {
+  // #2565 — the analysis code pass's caller may not see every file (#2314,
+  // #2448): a hidden one is neither searched nor counted, under its own path or
+  // the path a link resolves to, as in chat's `grep_files` and `list_files`.
+  const access = context.codeAccess;
+  const repo = context.connectorId ?? null;
+  const exclude =
+    access && !access.unrestricted
+      ? {
+          isExcluded: (rel: string, realRel: string) =>
+            access.isHidden(repo, rel) || access.isHidden(repo, realRel),
+        }
+      : {};
+  if (!(await grepClone(context.cloneDir, parsed.args, tally, { maxFilesScanned, ...exclude }))) {
     return { content: "Error: Repository clone directory not found.", isError: true };
   }
   return grepResult(parsed.args, tally, maxFilesScanned);

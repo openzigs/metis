@@ -21,6 +21,10 @@ import {
   type MaterializedAgentPassDeps,
 } from "./agent-pass.js";
 import { grepFilesTool } from "../../analysis/tools/grep-files.js";
+import {
+  buildExploreCodePass,
+  EXPLORER_STEPS as PRODUCTION_EXPLORER_STEPS,
+} from "../../analysis/code-pass-variant.js";
 import { EXPLORER_MAX_TURNS, EXPLORER_TRANSCRIPT_TOKENS } from "./arm-core.js";
 import type { MaterializedState } from "./materialize.js";
 
@@ -317,7 +321,9 @@ describe("createMaterializedAgentPass", () => {
         "search_code_graph",
         "search_code_symbols",
       ]);
-      expect(input.tools[2].description).toMatch(/whole file; max 1000 lines per call/);
+      expect(input.tools[2].description).toMatch(
+        /whole file; max 1000 lines and 80000 characters per call/,
+      );
       expect(input.userMessage).toContain("AFFECTED");
       expect(input.systemMessage).toMatch(/HINTS from a search, not an answer/);
       expect(input.systemMessage).not.toContain("search_knowledge");
@@ -326,6 +332,28 @@ describe("createMaterializedAgentPass", () => {
       expect(options.transcriptCompaction).toMatchObject({
         maxTranscriptTokens: EXPLORER_TRANSCRIPT_TOKENS,
       });
+    });
+
+    // #2565 — A20 is built from production's explore pass, so the two cannot drift.
+    it("runs production's explore-mode steps and tools, not a copy of them", async () => {
+      const deps = explorerDeps();
+      await createMaterializedAgentPass(deps)({
+        corpus: "c",
+        repo: "r",
+        text: "Change the total",
+        toolset: "explorer",
+        costCapUsd: 1,
+      });
+      const [, input] = deps.runLoop.mock.calls[0]!;
+      expect(input.systemMessage).toContain(PRODUCTION_EXPLORER_STEPS);
+      const production = buildExploreCodePass({
+        search: { searchCodeGraph, searchCodeSymbols },
+        providerKey: "offline-stub",
+        model: "stub",
+      });
+      const shape = (tools: AgentTool[]) =>
+        tools.map((t) => ({ name: t.name, description: t.description, parameters: t.parameters }));
+      expect(shape(input.tools)).toEqual(shape(production.tools));
     });
 
     it("sends an answer given before any tool call back once, to explore first", async () => {
@@ -512,7 +540,9 @@ describe("createMaterializedAgentPass", () => {
       const explored = explorerSystemMessage(systemMessage);
       expect(explored).toContain("grep_files");
       expect(explored).not.toMatch(/search_knowledge|searching the code graph/);
-      expect(() => explorerSystemMessage("something else")).toThrow(/A20: the agentic code prompt/);
+      expect(() => explorerSystemMessage("something else")).toThrow(
+        /explore: the agentic code prompt/,
+      );
     });
 
     it("explorerTools puts the file tools first, then the searches", () => {

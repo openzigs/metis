@@ -40,6 +40,8 @@ import {
   CODE_CONTINUE_BUDGET_MULTIPLIER,
   codeInvestigationContinueLimitReached,
   type CodeInvestigationGap,
+  type CodePassModeDecision,
+  type CodePassOutcome,
   deriveCapabilityReasons,
   type FindingsLeftOutNotice,
   readFindingsLeftOut,
@@ -160,6 +162,8 @@ import {
   detectCodeAgentFailed,
   detectStaticCapability,
   finalizeCapability,
+  recordCodePassMode,
+  recordCodePassOutcome,
   recordDroppedCitations,
   recordFindingsLeftOut,
   recordRequirementsLeftOut,
@@ -168,6 +172,13 @@ import {
   type RestrictedLeftOutCounts,
   type RestrictedLeftOutReport,
 } from "./analysis-capability.js";
+import {
+  buildExploreCodePass,
+  codePassOutcome,
+  readCodeExplorationSetting,
+  resolveCodePassMode,
+} from "./code-pass-variant.js";
+import { CODE_RETRIEVAL_TOOLS } from "./retrieval-health.js";
 import {
   isSharedVisible,
   sharedDocumentAudience,
@@ -863,9 +874,6 @@ export const REPO_FILE_TOOLS: ReadonlySet<string> = new Set([
   readFileSliceTool.name,
   listFilesTool.name,
 ]);
-
-/** No tool was withheld — the run has a working tree. */
-const NO_WITHHELD_TOOLS: ReadonlySet<string> = new Set();
 
 export interface StartAnalysisOptions {
   projectId: string;
@@ -3979,10 +3987,13 @@ export class AnalysisOrchestrator {
           });
           this.markRepoCloneUnavailable(input.analysisId);
         }
-        // Withheld file tools are excluded from the #773 retrieval-health counters (see
-        // REPO_FILE_TOOLS): an "Unknown tool" error against a capability we chose not
-        // to offer says nothing about whether code retrieval works.
-        const withheldTools = fileToolsAvailable ? NO_WITHHELD_TOOLS : REPO_FILE_TOOLS;
+        // #2565 — explore first, or the pass as before. Explore needs the file
+        // tools, so a pass with no working tree runs fast and says why.
+        const codePass = resolveCodePassMode({
+          platformDefault: readCodeExplorationSetting(),
+          fileToolsAvailable,
+        });
+        this.noteCodePassMode(input.analysisId, codePass);
 
         // #2314 — an analysis's findings, citations and snippets are persisted
         // and read by every project member. A scheduled run reads code as a
@@ -4027,7 +4038,7 @@ export class AnalysisOrchestrator {
         // tool searches as that person and records what it returns; nothing
         // is left out for the shared audience, so nothing is counted.
         const pass = currentPassReads(input.analysisId);
-        const tools = assembleAgenticCodeTools({
+        const graphTools = assembleAgenticCodeTools({
           knowledgeService: knowledge,
           cloneDir,
           fusedCodeDeps: this.deps.fusedCode,
@@ -4045,6 +4056,30 @@ export class AnalysisOrchestrator {
               }),
           ...(input.actorId ? { triggeredBy: input.actorId } : {}),
         });
+        // #2565 — explore mode: A20's five tools (the file tools, graph search
+        // and the filtered symbol search), whole-file reads, a wider transcript
+        // and the explorer nudge. Production's bounds are unchanged.
+        const explore =
+          codePass.mode === "explore"
+            ? buildExploreCodePass({
+                search: {
+                  searchCodeGraph: searchCodeGraphTool,
+                  searchCodeSymbols: createSearchSymbolsTool(this.deps.fusedCode, {
+                    filters: true,
+                  }),
+                },
+                providerKey: this.deps.provider.key,
+                model: input.model ?? this.deps.provider.model,
+              })
+            : undefined;
+        const tools = explore ? explore.tools : graphTools;
+        // Code-retrieval tools this pass does not offer are excluded from the
+        // #773 retrieval-health counters (see REPO_FILE_TOOLS): an "Unknown
+        // tool" error against a capability we chose not to offer says nothing
+        // about whether code retrieval works.
+        const withheldTools: ReadonlySet<string> = new Set(
+          [...CODE_RETRIEVAL_TOOLS].filter((name) => !tools.some((t) => t.name === name)),
+        );
 
         // #729 (Epic #725) — passively seed the agentic prompt with fused
         // code-graph symbol context BEFORE the tool loop, so the agent is
@@ -4139,13 +4174,17 @@ export class AnalysisOrchestrator {
             affectedSchema,
             ...(planContext ? { planContext } : {}),
           };
-          const { systemMessage, userMessage } = buildAgenticPassPrompt({
+          const prompt = buildAgenticPassPrompt({
             projectName: input.projectName,
             projectDescription: input.projectDescription,
             requirements: passRequirements,
             seeds,
             fileToolsAvailable,
           });
+          const userMessage = prompt.userMessage;
+          const systemMessage = explore
+            ? explore.systemMessage(prompt.systemMessage)
+            : prompt.systemMessage;
           const effectiveBudget = agenticPassEffectiveBudget(passBudget, seeds);
           // #1221 — resolved against the model this pass will actually run on
           // so the cap is clamped to that model's ceiling. `provider.model` is
@@ -4165,6 +4204,15 @@ export class AnalysisOrchestrator {
           // #141 — native tool calls on a tool-capable model when the operator
           // enabled them; the text protocol otherwise (and by default).
           const nativeTools = resolveAnalysisNativeTools(this.deps.provider, input.model, tools);
+          // #1388 — a tool-less reply that is not a usable answer, or an
+          // answer leaving most requirements unverified far under budget,
+          // goes back to the model instead of ending the investigation.
+          const coverageContinuation = buildCodePassContinuation({
+            requirementIds: passRequirements.map((r) => r.id),
+            isValidFinalAnswer: isSchemaValidFinalAnswer,
+          });
+          // #2565 — explore mode counts the pass's tool calls for its nudge.
+          let passToolCalls = 0;
           const loopResult = await runAgentLoop(
             this.deps.provider,
             { systemMessage, userMessage, tools, toolContext },
@@ -4172,17 +4220,22 @@ export class AnalysisOrchestrator {
               ...(nativeTools ? { native: nativeTools } : {}),
               maxTurns,
               maxTokens: effectiveBudget,
-              onToolCall: () => recordLiveToolCall(input.analysisId, agentKey),
+              onToolCall: explore
+                ? () => {
+                    passToolCalls += 1;
+                    recordLiveToolCall(input.analysisId, agentKey);
+                  }
+                : () => recordLiveToolCall(input.analysisId, agentKey),
               signal: input.signal,
               model: input.model,
               promptCaching: { system: true, messages: true },
-              // #1388 — a tool-less reply that is not a usable answer, or an
-              // answer leaving most requirements unverified far under budget,
-              // goes back to the model instead of ending the investigation.
-              continuation: buildCodePassContinuation({
-                requirementIds: passRequirements.map((r) => r.id),
-                isValidFinalAnswer: isSchemaValidFinalAnswer,
-              }),
+              // #2565 — explore mode: the explorer nudge first (once, before
+              // any tool call), then #1388's continuation; and a wider
+              // transcript ceiling, bounded by the model's window.
+              continuation: explore
+                ? explore.continuation(coverageContinuation, () => passToolCalls)
+                : coverageContinuation,
+              ...(explore ? { transcriptCompaction: explore.transcriptCompaction } : {}),
               // P0 #769 — when the loop runs out of turns/tokens mid-tool-call,
               // or answers in prose, spend ONE bounded tool-free call asking it
               // to serialize the investigation it has already done.
@@ -4253,6 +4306,18 @@ export class AnalysisOrchestrator {
               reason = "schema-invalid";
             }
           }
+          // #2565 — what this pass spent against its budget and how it ended,
+          // so #2568 can count how often the budget cuts an explore pass short.
+          this.noteCodePassOutcome(
+            input.analysisId,
+            codePassOutcome({
+              mode: codePass.mode,
+              loop: loopResult,
+              tokenBudget: effectiveBudget,
+              maxTurns,
+              degradation: validated ? null : (reason ?? "non-json-response"),
+            }),
+          );
           if (!validated) {
             // #1217 — salvage from the RAW model text the loop preserved, never
             // from `finalResponse`: on a turn/token stop that has already been
@@ -6677,6 +6742,18 @@ export class AnalysisOrchestrator {
     if (!analysisId) return;
     const tracker = this.capabilities.get(analysisId);
     if (tracker) tracker.repoCloneUnavailable = true;
+  }
+
+  /** #2565 — record a code pass's mode decision on the run. No-op without a tracker. */
+  private noteCodePassMode(analysisId: string, decision: CodePassModeDecision): void {
+    const tracker = this.capabilities.get(analysisId);
+    if (tracker) recordCodePassMode(tracker, decision);
+  }
+
+  /** #2565 — record a code pass's spend and ending on the run. No-op without a tracker. */
+  private noteCodePassOutcome(analysisId: string, outcome: CodePassOutcome): void {
+    const tracker = this.capabilities.get(analysisId);
+    if (tracker) recordCodePassOutcome(tracker, outcome);
   }
 
   /**

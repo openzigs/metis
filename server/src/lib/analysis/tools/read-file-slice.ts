@@ -148,6 +148,8 @@ async function execute(
   args: unknown,
   context: ToolContext,
   maxLines: number = MAX_LINES,
+  /** #2565 — characters of numbered lines per call, at most; unset ⇒ lines alone bound a read. */
+  maxChars?: number,
 ): Promise<ToolResult> {
   const validated = validateArgs(args);
   if (!validated) {
@@ -202,8 +204,28 @@ async function execute(
   }
 
   // Clamp to file length
-  const clampedEnd = Math.min(endLine, lines.length);
-  const slice = lines.slice(startLine - 1, clampedEnd);
+  let clampedEnd = Math.min(endLine, lines.length);
+  let slice = lines.slice(startLine - 1, clampedEnd);
+  // #2565 — a size cap per read, not only a line cap: 1000 long lines are far
+  // more than one tool result should carry (a result is re-sent every turn
+  // until compaction elides it). The first line is always kept, cut to the cap.
+  let charCapped = false;
+  if (maxChars !== undefined && slice.length > 0) {
+    let used = 0;
+    let kept = 0;
+    for (const line of slice) {
+      const cost = `${startLine + kept}| ${line}`.length + 1;
+      if (used + cost > maxChars && kept > 0) break;
+      used += cost;
+      kept += 1;
+    }
+    if (kept < slice.length) {
+      charCapped = true;
+      slice = slice.slice(0, kept);
+      clampedEnd = startLine + kept - 1;
+    }
+    if (slice[0]!.length > maxChars) slice = [slice[0]!.slice(0, maxChars)];
+  }
   // #726 — truncated means "you did not get what you asked for": the per-call
   // cap cut an explicit range, or an open-ended read stopped before the end of
   // the file. An explicit range that lies inside the file (or runs past its
@@ -213,7 +235,7 @@ async function execute(
   const truncated =
     validated.endLine === undefined
       ? clampedEnd < lines.length
-      : capped && clampedEnd < lines.length;
+      : (capped || charCapped) && clampedEnd < lines.length;
 
   // #773 — an OUT-OF-RANGE read is a BAD CALL, not a fact about the codebase. If it
   // returned `resultCount: 0` it would be indistinguishable from a well-formed empty
@@ -236,7 +258,9 @@ async function execute(
     ? { startLine: clampedEnd + 1, endLine: Math.min(clampedEnd + maxLines, lines.length) }
     : undefined;
   const paging = next
-    ? `\n[Cut at ${maxLines} lines per call: request lines ${next.startLine}-${next.endLine} next.]`
+    ? charCapped
+      ? `\n[Cut at ${maxChars} characters per call: request lines ${next.startLine}-${next.endLine} next.]`
+      : `\n[Cut at ${maxLines} lines per call: request lines ${next.startLine}-${next.endLine} next.]`
     : "";
 
   return {
@@ -272,21 +296,32 @@ export const readFileSliceTool: AgentTool = {
 };
 
 /**
- * #2560 — `read_file_slice` with another per-call line cap, for the eval's
- * explorer arm (A20), which may read a whole file in one call. Production
- * offers only {@link readFileSliceTool}; every check (containment, symlink
- * escape, hidden files, secret redaction) is the same code.
+ * #2560 — `read_file_slice` with another per-call line cap, which may read a
+ * whole file in one call: the eval's explorer arm (A20) and, since #2565, the
+ * analysis code pass in `explore` mode. `maxChars` (#2565) caps a read by size
+ * too; a read it cuts is `truncated` and names the next range. Every check
+ * (containment, symlink escape, hidden files, secret redaction) is the same
+ * code as {@link readFileSliceTool}'s.
  */
-export function createReadFileSliceTool(maxLines: number): AgentTool {
+export function createReadFileSliceTool(
+  maxLines: number,
+  opts: { maxChars?: number } = {},
+): AgentTool {
   if (!Number.isInteger(maxLines) || maxLines < 1) {
     throw new Error(`read_file_slice: maxLines must be a positive integer, not ${maxLines}`);
+  }
+  const { maxChars } = opts;
+  if (maxChars !== undefined && (!Number.isInteger(maxChars) || maxChars < 1)) {
+    throw new Error(`read_file_slice: maxChars must be a positive integer, not ${maxChars}`);
   }
   return {
     name: readFileSliceTool.name,
     description:
       "Read a file, or a range of its lines, from the repository. Returns numbered lines. " +
-      `Omit startLine and endLine to read the whole file; max ${maxLines} lines per call.`,
+      `Omit startLine and endLine to read the whole file; max ${maxLines} lines` +
+      (maxChars !== undefined ? ` and ${maxChars} characters` : "") +
+      " per call.",
     parameters: parametersFor(maxLines),
-    execute: (args, context) => execute(args, context, maxLines),
+    execute: (args, context) => execute(args, context, maxLines, maxChars),
   };
 }
