@@ -238,4 +238,12 @@ describe("CodeExplorationSettingsCard", () => {
     // The measured gain is hedged to the product it was measured on.
     expect(copy).toContain("On a real product we tested");
   });
+
+  it("states Thorough's measured gain as absolute figures, not a ratio (#2599)", () => {
+    const thorough = ANALYSIS_DEPTH_OPTIONS.find((o) => o.value === "explore")!.description;
+    // Recall@5 0.66 → 0.84 on Miniflux (docs/ARCHITECTURE.md, A21 vs A3A).
+    expect(thorough).toContain("84 in every 100 of the files a change touches");
+    expect(thorough).toContain("where Fast found 66");
+    expect(thorough).not.toMatch(/a fifth more/);
+  });
 });

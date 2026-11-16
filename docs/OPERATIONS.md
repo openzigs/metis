@@ -1165,10 +1165,11 @@ document reader figures are from `docs/DOCUMENT_UNDERSTANDING_BASELINE.md` (#225
   on the server always runs `fast`. On a model other than Sonnet 5.5, check the first
   analysis: its capability record should read `codePassMode: explore`, and its
   `codePassOutcomes` should show no pass stopped at the step limit. Explore's working memory
-  is capped at half the model's context window, and a model the catalog does not list
-  (`server/src/lib/ai/model-catalog.ts`, for example a Sonnet 5.5 id on `bedrock-gateway`) is
-  assumed to have 32,768 tokens; give its real window in `AI_MODEL_CATALOG_OVERRIDES` (see
-  [Setup quick start](SETUP_QUICKSTART.md)).
+  is capped at half the model's context window. A Claude id is read by its family on
+  `bedrock-gateway` and the Anthropic provider, so a Sonnet 5.5 id gets its 1M window in any
+  spelling (#2599). A model the catalog does not know (`server/src/lib/ai/model-catalog.ts`)
+  is assumed to have 32,768 tokens, with one warning per model in the log; give its real
+  window in `AI_MODEL_CATALOG_OVERRIDES` (see [Setup quick start](SETUP_QUICKSTART.md)).
 - **The project's Analysis depth card.** A project's **⚙ Settings → AI & cost → Analysis
   depth** overrides the platform value for that project: **Thorough** is `explore`, **Fast**
   is `fast`, and **Use the platform default** follows this key

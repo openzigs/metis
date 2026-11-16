@@ -46,13 +46,20 @@ These are read from the server's environment at start-up. Section 7 has them as 
 | `BEDROCK_GATEWAY_API_KEY` | The proxy's key | A secret. Store it in the vault (Settings → Configuration) or the environment, never in a file in the repository. |
 | `BEDROCK_MODEL` | The Sonnet 5.5 id the proxy serves | The built-in default is `us.anthropic.claude-sonnet-5`, which is Sonnet 5, not 5.5 (`server/src/lib/ai/config.ts`). Ask the proxy's owner for the exact id. `AI_MODEL`, if set, wins over it. |
 
-### Tell METIS the model's size: `AI_MODEL_CATALOG_OVERRIDES`
+### The model's size: `AI_MODEL_CATALOG_OVERRIDES` (only if needed)
 
-The model catalog has no Sonnet 5.5 entry for `bedrock-gateway`
-(`server/src/lib/ai/model-catalog.ts` lists Haiku 4.5, Sonnet 5, Fable 5 and Opus 4.8 there).
+METIS reads a Claude id's context window and output limit by its family, whatever the spelling,
+as it does for prices (#2599): on `bedrock-gateway` (and the Anthropic provider), an id
+containing `claude-sonnet-5-5` gets Sonnet 5.5's 1,000,000-token window and 128,000-token output
+limit, whether it is a `us.`/`eu.`/`global.` profile, a bare `anthropic.` id, dated or not
+(`catalogModelLimits` in `server/src/lib/ai/model-catalog.ts`). You need an override only when
+the id does not name the model (an application inference-profile ARN, a proxy alias such as
+`sonnet-prod`) or the proxy serves a smaller window.
+
 For a model it does not know, METIS assumes a context window of 32,768 tokens
-(`DEFAULT_CONTEXT_WINDOW_FALLBACK` in `server/src/lib/analysis/context-watermark.ts`). Two things
-then shrink without warning:
+(`DEFAULT_CONTEXT_WINDOW_FALLBACK` in `server/src/lib/analysis/context-watermark.ts`) and logs
+one warning per model, `The model catalog does not know this model's context window`. Two things
+then shrink:
 
 - the Thorough code pass's working memory, which is capped at half the window: 16,384 tokens
   instead of the 64,000 it was measured with (`resolveExploreTranscriptTokens` in
@@ -60,11 +67,11 @@ then shrink without warning:
 - the document reader, which reads in more, smaller pieces when the window is small
   (`server/src/lib/document-reader/reader.ts`).
 
-Set the window to the one the catalog gives Sonnet 5.5 on the native provider (1,000,000), with
-your exact model id. The key is `provider:model id`, matched exactly:
+If you see that warning, set the real window with your exact model id. The key is
+`provider:model id`, matched exactly:
 
 ```bash
-AI_MODEL_CATALOG_OVERRIDES={"bedrock-gateway:<your Sonnet 5.5 id>":{"contextWindow":1000000}}
+AI_MODEL_CATALOG_OVERRIDES={"bedrock-gateway:<your model id>":{"contextWindow":1000000}}
 ```
 
 If the proxy serves a smaller window, use that number.

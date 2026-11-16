@@ -2,8 +2,15 @@
  * Epic #515 / #519, revived by #138 — the watermark reads the model catalog's
  * context window and reports when it had to assume one.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
+vi.mock("../logger.js", () => ({
+  createChildLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() }),
+}));
+
 import {
+  __resetContextWindowFallbackWarnings,
   ContextWatermark,
   clampAnswerReservePercent,
   clampWatermarkPercent,
@@ -14,7 +21,11 @@ import {
 } from "./context-watermark.js";
 import { __resetModelCatalogForTests } from "../ai/model-catalog.js";
 
-afterEach(() => __resetModelCatalogForTests());
+afterEach(() => {
+  __resetModelCatalogForTests();
+  __resetContextWindowFallbackWarnings();
+  warn.mockClear();
+});
 
 describe("resolveContextWindow (#138)", () => {
   it("uses the catalog's real window — Sonnet 5 is 1M, not the old table's 200K", () => {
@@ -64,6 +75,92 @@ describe("resolveContextWindow (#138)", () => {
     expect(resolveContextWindow("offline-stub", "offline-stub", { env: {} }).source).toBe(
       "fallback",
     );
+  });
+});
+
+describe("a Claude family id on the Bedrock gateway or an Anthropic endpoint (#2599)", () => {
+  const SONNET_5_5_SPELLINGS = [
+    "us.anthropic.claude-sonnet-5-5",
+    "us.anthropic.claude-sonnet-5-5-20260101-v1:0",
+    "eu.anthropic.claude-sonnet-5-5-20260101-v1:0",
+    "global.anthropic.claude-sonnet-5-5-v1:0",
+    "anthropic.claude-sonnet-5-5-20260101-v1:0",
+    "anthropic.claude-sonnet-5-5-v1",
+    "claude-sonnet-5-5-20260101",
+  ];
+
+  it.each(SONNET_5_5_SPELLINGS)("reads %s as Sonnet 5.5's 1M window on bedrock-gateway", (id) => {
+    expect(resolveContextWindow("bedrock-gateway", id, { env: {} })).toEqual({
+      tokens: 1_000_000,
+      source: "catalog",
+    });
+  });
+
+  it("reads an undated in-region id on the Anthropic provider too", () => {
+    expect(
+      resolveContextWindow("anthropic", "anthropic.claude-sonnet-5-5-v1:0", { env: {} }).tokens,
+    ).toBe(1_000_000);
+  });
+
+  it("takes each family's own window, not Sonnet's", () => {
+    expect(
+      resolveContextWindow("bedrock-gateway", "us.anthropic.claude-haiku-4-5-v1:0", { env: {} })
+        .tokens,
+    ).toBe(200_000);
+  });
+
+  it("reserves the family's output ceiling for the answer", () => {
+    expect(
+      resolveAnswerReserve("bedrock-gateway", "us.anthropic.claude-sonnet-5-5", 1_000_000, {
+        percent: 50,
+        env: {},
+      }),
+    ).toEqual({ tokens: 128_000, source: "catalog" });
+  });
+
+  it("an operator override still wins over the family", () => {
+    const env = {
+      AI_MODEL_CATALOG_OVERRIDES: JSON.stringify({
+        "bedrock-gateway:us.anthropic.claude-sonnet-5-5": { contextWindow: 200_000 },
+      }),
+    };
+    expect(
+      resolveContextWindow("bedrock-gateway", "us.anthropic.claude-sonnet-5-5", { env }),
+    ).toEqual({ tokens: 200_000, source: "catalog" });
+  });
+
+  it("never guesses a window for a generation with no row, or on another provider", () => {
+    for (const [provider, id] of [
+      ["bedrock-gateway", "us.anthropic.claude-sonnet-5-6"],
+      ["openai", "us.anthropic.claude-sonnet-5-5"],
+    ]) {
+      expect(resolveContextWindow(provider, id, { env: {} })).toEqual({
+        tokens: DEFAULT_CONTEXT_WINDOW_FALLBACK,
+        source: "fallback",
+      });
+    }
+  });
+});
+
+describe("the fallback warning (#2599)", () => {
+  it("warns once per model that runs on the assumed window", () => {
+    resolveContextWindow("local-gemma", "mystery:1b", { env: {} });
+    resolveContextWindow("local-gemma", "mystery:1b", { env: {} });
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][1]).toEqual({
+      provider: "local-gemma",
+      model: "mystery:1b",
+      assumedContextWindow: DEFAULT_CONTEXT_WINDOW_FALLBACK,
+    });
+    expect(warn.mock.calls[0][0]).toContain("AI_MODEL_CATALOG_OVERRIDES");
+    resolveContextWindow("local-gemma", "other:2b", { env: {} });
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+
+  it("is silent when the catalog knows the window, and for the offline stub", () => {
+    resolveContextWindow("bedrock-gateway", "us.anthropic.claude-sonnet-5-5", { env: {} });
+    resolveContextWindow("offline-stub", "offline-stub", { env: {} });
+    expect(warn).not.toHaveBeenCalled();
   });
 });
 
