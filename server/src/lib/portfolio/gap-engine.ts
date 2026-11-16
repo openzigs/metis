@@ -106,6 +106,7 @@ import {
   REPO_VERDICT_SYSTEM_PROMPT,
   buildDecomposePrompt,
   buildRepoVerdictPrompt,
+  claimedFindingVerdict,
   parseDecomposition,
   parseRepoVerdict,
 } from "./gap-prompts.js";
@@ -655,10 +656,11 @@ async function evaluateRepo(
     const cited = claim.hitIndexes.map((n) => citationFromHit(hits[n], repo.repoConnectionId));
     // Retrieval for this repo worked (it returned this repo's excerpts), so a
     // gap may be confirmed when the query searched for this criterion (#1657);
-    // `implemented` still needs a grounded citation.
+    // `implemented` still needs a grounded citation. #2562 — `unrelated` (this
+    // repo does something else) is a gap in this repo, gated like one.
     const gated =
       gateFindingVerdict({
-        modelVerdict: claim.verdict,
+        modelVerdict: claimedFindingVerdict(claim.verdict),
         groundedCitations: cited,
         finding: { title: group.criteria[i], body: claim.reason },
         absenceConfirmable: group.searched[i] === true,
