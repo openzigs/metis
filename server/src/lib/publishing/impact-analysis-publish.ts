@@ -61,6 +61,29 @@ function buildImpactAnalysisPublisherPorts(): PublisherPorts {
   };
 }
 
+/** #2594 — the Jira issue an earlier publish of a run created. */
+export interface ImpactAnalysisJiraLink {
+  issueKey: string;
+  url: string;
+  publishedAt: Date;
+}
+
+/**
+ * #2594 — the run's existing Jira issue, read from the same IssueLink row
+ * {@link publishImpactAnalysisToJira} reuses, so a preview that finds one is
+ * exactly the case where the publish creates nothing new.
+ */
+export async function findImpactAnalysisJiraLink(
+  analysisId: string,
+): Promise<ImpactAnalysisJiraLink | null> {
+  const row = await prisma.issueLink.findFirst({
+    where: { impactAnalysisId: analysisId, provider: "jira" },
+    select: { externalId: true, externalUrl: true, createdAt: true },
+  });
+  if (!row) return null;
+  return { issueKey: row.externalId, url: row.externalUrl, publishedAt: row.createdAt };
+}
+
 export interface PublishImpactAnalysisInput {
   /** The impact-analysis run id (idempotency key together with the provider). */
   analysisId: string;

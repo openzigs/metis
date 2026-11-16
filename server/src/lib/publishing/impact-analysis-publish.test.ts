@@ -44,7 +44,8 @@ vi.mock("./octokit-factory.js", () => ({
   }),
 }));
 
-const { publishImpactAnalysisToJira } = await import("./impact-analysis-publish.js");
+const { publishImpactAnalysisToJira, findImpactAnalysisJiraLink } =
+  await import("./impact-analysis-publish.js");
 const { PublishError } = await import("./finding-publisher.js");
 
 afterEach(() => {
@@ -224,5 +225,31 @@ describe("publishImpactAnalysisToJira", () => {
     expect(labels.filter((l) => l.startsWith("metis"))).toEqual(["metis", "metis-impact-analysis"]);
     expect(labels).toContain("severity:medium");
     expect(labels).toContain("category:impact-analysis");
+  });
+});
+
+// #2594 — the preview reads the same IssueLink row the publish reuses.
+describe("findImpactAnalysisJiraLink", () => {
+  it("returns the run's Jira issue key, url and when it was published", async () => {
+    const createdAt = new Date("2026-11-16T09:00:00.000Z");
+    mockPrisma.issueLink.findFirst.mockResolvedValue({
+      externalId: "IMP-7",
+      externalUrl: "https://jira.example.com/browse/IMP-7",
+      createdAt,
+    });
+    await expect(findImpactAnalysisJiraLink("ia-1")).resolves.toEqual({
+      issueKey: "IMP-7",
+      url: "https://jira.example.com/browse/IMP-7",
+      publishedAt: createdAt,
+    });
+    expect(mockPrisma.issueLink.findFirst).toHaveBeenCalledWith({
+      where: { impactAnalysisId: "ia-1", provider: "jira" },
+      select: { externalId: true, externalUrl: true, createdAt: true },
+    });
+  });
+
+  it("returns null when the run was never published to Jira", async () => {
+    mockPrisma.issueLink.findFirst.mockResolvedValue(null);
+    await expect(findImpactAnalysisJiraLink("ia-new")).resolves.toBeNull();
   });
 });

@@ -6,7 +6,7 @@
  */
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -28,6 +28,7 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import { renderInlineCode } from "@/lib/inline-code-text";
 import { ProjectImpactSectionWithUsage } from "@/components/impact/project-impact-section";
+import { ImpactJiraPublishDialog } from "@/components/impact/impact-jira-publish-dialog";
 import { SharedTableImpactSection } from "@/components/impact/shared-table-impact-section";
 import { RequirementImpactMatrix } from "@/components/impact/requirement-impact-matrix";
 import { ImpactDriftSection } from "@/components/impact/impact-drift-section";
@@ -142,8 +143,20 @@ function ImpactAnalysisDetailView({
     mutationFn: (format: "docx" | "pdf") => impactAnalysisApi.exportHandoff(data.id, format),
     onSuccess: ({ blob, filename }) => triggerDownload(blob, filename),
   });
+  // #2594 — "Publish to Jira" opens a confirmation first; the preview it shows
+  // is read fresh on every open and sends nothing. The publish sends the
+  // project the preview named, so the issue goes where the analyst confirmed.
+  const [publishOpen, setPublishOpen] = useState(false);
+  const publishPreview = useQuery({
+    queryKey: ["impact-analysis", data.id, "jira-publish-preview"],
+    queryFn: () => impactAnalysisApi.previewJiraPublish(data.id),
+    enabled: publishOpen,
+    staleTime: 0,
+    retry: false,
+  });
   const publishMutation = useMutation({
-    mutationFn: () => impactAnalysisApi.publishToJira(data.id),
+    mutationFn: (projectId: string) => impactAnalysisApi.publishToJira(data.id, { projectId }),
+    onSuccess: () => setPublishOpen(false),
   });
 
   // Issue #966 — table relevance feedback (capture-only; no engine/filter effect).
@@ -209,7 +222,8 @@ function ImpactAnalysisDetailView({
         description={`${data.projectIds.length} project(s) · ${data.totalImpactedSymbols} impacted symbol(s)`}
       >
         {/* #963 — export + publish actions. Enabled once the run has completed
-            with at least one impact item; publishing to Jira is idempotent. */}
+            with at least one impact item; publishing to Jira is idempotent and,
+            since #2594, confirmed in a dialog before anything is sent. */}
         <div className="flex flex-wrap items-center gap-2 pt-1" data-testid="impact-detail-actions">
           <Button
             variant="outline"
@@ -241,9 +255,14 @@ function ImpactAnalysisDetailView({
             size="sm"
             data-testid="impact-publish-jira"
             disabled={!canExport || publishMutation.isPending}
-            onClick={() => publishMutation.mutate()}
+            onClick={() => {
+              // Clear only a failed attempt: a success keeps its "Published
+              // KEY" link until the next publish starts (onConfirm resets).
+              if (publishMutation.isError) publishMutation.reset();
+              setPublishOpen(true);
+            }}
           >
-            {publishMutation.isPending ? "Publishing…" : "Publish to Jira"}
+            Publish to Jira
           </Button>
           {publishMutation.isSuccess ? (
             <a
@@ -315,12 +334,28 @@ function ImpactAnalysisDetailView({
             {(handoffMutation.error as Error).message}
           </p>
         ) : null}
-        {publishMutation.isError ? (
-          <p className="text-xs text-destructive" data-testid="impact-publish-error">
-            {(publishMutation.error as Error).message}
-          </p>
-        ) : null}
       </PageHeader>
+
+      <ImpactJiraPublishDialog
+        open={publishOpen}
+        onOpenChange={(open) => {
+          if (!publishMutation.isPending) setPublishOpen(open);
+        }}
+        // Shown only once this open's read lands, so a run published since the
+        // last open never shows as unpublished.
+        preview={publishPreview.isFetching ? undefined : publishPreview.data}
+        previewLoading={publishPreview.isFetching}
+        previewError={publishPreview.error}
+        pending={publishMutation.isPending}
+        publishError={publishMutation.error}
+        onConfirm={() => {
+          const p = publishPreview.data;
+          if (p && !publishPreview.isFetching && !p.blockedReason) {
+            publishMutation.reset();
+            publishMutation.mutate(p.project.id);
+          }
+        }}
+      />
 
       {/* #1004 — THE REQUIREMENT this run analysed, verbatim. The results page
           previously never stated it: the requirement text appeared nowhere on

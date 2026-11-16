@@ -75,12 +75,26 @@ const projectNameRows = [
 ];
 // #1636 — the execution-time access check reads the run's soft-deleted projects.
 let deletedProjectIds: string[] = [];
+// #2594 — the Jira-target check (shared by the preview and the publish)
+// selects the key and connection too.
 const projectFindMany = vi.fn(
   async (args: {
-    select?: { name?: boolean };
+    select?: { name?: boolean; jiraProjectKey?: boolean };
     where?: { deletedAt?: unknown };
   }): Promise<Array<Record<string, unknown>>> => {
     if (args?.where?.deletedAt) return deletedProjectIds.map((id) => ({ id }));
+    if (args?.select?.jiraProjectKey) {
+      return jiraConfiguredIds.map((id) => ({
+        id,
+        name: projectNameRows.find((p) => p.id === id)?.name ?? id,
+        jiraProjectKey: "IMP",
+        jiraPublishConnection: {
+          baseUrl: "https://jira.example.com",
+          deletedAt: null,
+          status: "ok",
+        },
+      }));
+    }
     if (args?.select?.name) return projectNameRows;
     return jiraConfiguredIds.map((id) => ({ id }));
   },
@@ -96,7 +110,12 @@ const publishImpactAnalysisToJira = vi.fn(async () => ({
   externalId: "IMP-1",
   externalUrl: "https://jira.example.com/browse/IMP-1",
 }));
-vi.mock("../lib/publishing/impact-analysis-publish.js", () => ({ publishImpactAnalysisToJira }));
+// #2594 — the run's earlier Jira issue, read by the preview.
+const findImpactAnalysisJiraLink = vi.fn(async (): Promise<unknown> => null);
+vi.mock("../lib/publishing/impact-analysis-publish.js", () => ({
+  publishImpactAnalysisToJira,
+  findImpactAnalysisJiraLink,
+}));
 
 // Issue #958 — connector plumbing behind `defaultLiveIndexIntrospectorFor`.
 // Mocked here (not `../lib/impact-analysis/live-schema-ingest.js`) so the real
@@ -147,6 +166,7 @@ describe("impact-analyses router", () => {
     listImpactAnalyses.mockResolvedValue([]);
     getImpactAnalysisDetail.mockResolvedValue(null);
     jiraConfiguredIds = ["project-001", "project-002"];
+    findImpactAnalysisJiraLink.mockResolvedValue(null);
     publishImpactAnalysisToJira.mockResolvedValue({
       id: "link-1",
       sourceId: "ia-1",
@@ -592,6 +612,131 @@ describe("impact-analyses router", () => {
     it("returns 403 when issue.publish permission is denied", async () => {
       permitPublish = false;
       const res = await request(app).post("/impact-analyses/ia-1/publish/jira").send({});
+      expect(res.status).toBe(403);
+    });
+  });
+
+  // #2594 — what a publish would do, before anything is sent.
+  describe("GET /:id/publish/jira/preview", () => {
+    const detail = {
+      id: "ia-1",
+      status: "completed",
+      summary: "Summary text",
+      errorMessage: null,
+      totalImpactedSymbols: 1,
+      projectIds: ["project-002", "project-001"],
+      items: [],
+      sharedTableImpacts: [],
+    };
+    const url = "/impact-analyses/ia-1/publish/jira/preview";
+
+    it("names the first configured run project, and publishes nothing", async () => {
+      getImpactAnalysisDetail.mockResolvedValue(detail);
+      const res = await request(app).get(url);
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({
+        provider: "jira",
+        project: { id: "project-001", name: "Alpha" },
+        jiraProjectKey: "IMP",
+        jiraSite: "https://jira.example.com",
+        title: "Impact analysis: Summary text",
+        issuesToCreate: 1,
+        blockedReason: null,
+        alreadyPublished: null,
+      });
+      expect(findImpactAnalysisJiraLink).toHaveBeenCalledWith("ia-1");
+      expect(publishImpactAnalysisToJira).not.toHaveBeenCalled();
+    });
+
+    it("honours an explicit in-run projectId from the query", async () => {
+      getImpactAnalysisDetail.mockResolvedValue(detail);
+      const res = await request(app).get(`${url}?projectId=project-002`);
+      expect(res.status).toBe(200);
+      expect(res.body.data.project).toEqual({ id: "project-002", name: "Beta" });
+    });
+
+    it("says the run was published before, and that no new issue would be created", async () => {
+      getImpactAnalysisDetail.mockResolvedValue(detail);
+      findImpactAnalysisJiraLink.mockResolvedValueOnce({
+        issueKey: "IMP-1",
+        url: "https://jira.example.com/browse/IMP-1",
+        publishedAt: new Date("2026-11-16T10:00:00.000Z"),
+      });
+      const res = await request(app).get(url);
+      expect(res.status).toBe(200);
+      expect(res.body.data.issuesToCreate).toBe(0);
+      expect(res.body.data.blockedReason).toBeNull();
+      expect(res.body.data.alreadyPublished).toEqual({
+        issueKey: "IMP-1",
+        jiraProjectKey: "IMP",
+        url: "https://jira.example.com/browse/IMP-1",
+        publishedAt: "2026-11-16T10:00:00.000Z",
+      });
+    });
+
+    it("reports no Jira site when the project's connection was deleted", async () => {
+      getImpactAnalysisDetail.mockResolvedValue(detail);
+      projectFindMany.mockImplementationOnce(async () => [
+        {
+          id: "project-001",
+          name: "Alpha",
+          jiraProjectKey: "IMP",
+          jiraPublishConnection: { baseUrl: "https://old.example.com", deletedAt: new Date() },
+        },
+      ]);
+      const res = await request(app).get(url);
+      expect(res.status).toBe(200);
+      expect(res.body.data.jiraSite).toBeNull();
+      expect(res.body.data.blockedReason).toMatch(/Alpha was removed/);
+    });
+
+    it("blocks a first publish through a connection in an error state", async () => {
+      getImpactAnalysisDetail.mockResolvedValue(detail);
+      projectFindMany.mockImplementationOnce(async () => [
+        {
+          id: "project-001",
+          name: "Alpha",
+          jiraProjectKey: "IMP",
+          jiraPublishConnection: {
+            baseUrl: "https://jira.example.com",
+            deletedAt: null,
+            status: "error",
+          },
+        },
+      ]);
+      const res = await request(app).get(url);
+      expect(res.status).toBe(200);
+      expect(res.body.data.jiraSite).toBe("https://jira.example.com");
+      expect(res.body.data.blockedReason).toMatch(/Alpha is in an error state/);
+    });
+
+    it("rejects a projectId that is not part of the run with 400", async () => {
+      getImpactAnalysisDetail.mockResolvedValue(detail);
+      const res = await request(app).get(`${url}?projectId=project-ghost`);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("PROJECT_NOT_IN_RUN");
+    });
+
+    it("returns 400 when no run project has Jira configured", async () => {
+      getImpactAnalysisDetail.mockResolvedValue(detail);
+      jiraConfiguredIds = [];
+      const res = await request(app).get(url);
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe("JIRA_NOT_CONFIGURED");
+      expect(findImpactAnalysisJiraLink).not.toHaveBeenCalled();
+    });
+
+    it("returns 404 when the caller cannot access every project in the run", async () => {
+      accessibleIds = ["project-001"];
+      getImpactAnalysisDetail.mockResolvedValue(detail);
+      const res = await request(app).get(url);
+      expect(res.status).toBe(404);
+      expect(findImpactAnalysisJiraLink).not.toHaveBeenCalled();
+    });
+
+    it("returns 403 when issue.publish permission is denied", async () => {
+      permitPublish = false;
+      const res = await request(app).get(url);
       expect(res.status).toBe(403);
     });
   });
